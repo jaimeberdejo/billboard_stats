@@ -78,7 +78,8 @@ def search_songs(query: str, limit: int = 20) -> List[SongWithStats]:
         """
         SELECT s.id, s.title, s.artist_credit, s.image_url,
                ss.total_weeks, ss.peak_position, ss.weeks_at_number_one,
-               ss.debut_date,
+               ss.weeks_at_peak, ss.debut_date, ss.last_date,
+               ss.debut_position,
                similarity(s.title, %s) AS sim
         FROM songs s
         LEFT JOIN song_stats ss ON s.id = ss.song_id
@@ -98,7 +99,10 @@ def search_songs(query: str, limit: int = 20) -> List[SongWithStats]:
                 song_id=r["id"], total_weeks=r["total_weeks"],
                 peak_position=r["peak_position"],
                 weeks_at_number_one=r["weeks_at_number_one"],
+                weeks_at_peak=r["weeks_at_peak"],
                 debut_date=r["debut_date"],
+                last_date=r["last_date"],
+                debut_position=r["debut_position"],
             )
         results.append(SongWithStats(song=song, stats=stats))
     return results

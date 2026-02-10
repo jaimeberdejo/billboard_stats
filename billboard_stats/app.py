@@ -72,7 +72,7 @@ def _build_chart_run_chart(entries, chart_type: str) -> alt.Chart:
             x=alt.X("Date:T", title="Week"),
             y=alt.Y("Position:Q", title="Chart Position",
                      scale=alt.Scale(domain=[y_max, 1]),
-                     axis=alt.Axis(tickMinStep=1, titlePadding=40)),
+                     axis=alt.Axis(tickCount=10, titlePadding=40, labelFlush=True)),
             detail="run:N",
             tooltip=tooltip,
         )
@@ -119,6 +119,10 @@ def _build_chart_history_df(entries) -> pd.DataFrame:
 
 def _nav(page: str, **kwargs):
     st.session_state["page"] = page
+    # Clear drill-down state when leaving any page
+    for stale_key in ("_dd_last_sel_idx", "records_drilldown_artist_id",
+                       "records_drilldown_chart_date"):
+        st.session_state.pop(stale_key, None)
     for k, v in kwargs.items():
         st.session_state[k] = v
 
@@ -186,7 +190,8 @@ if page == "Latest Charts":
             key="lc_date",
         )
 
-        entries = chart_service.get_weekly_chart(selected_date, chart_type)
+        with st.spinner("Loading chart..."):
+            entries = chart_service.get_weekly_chart(selected_date, chart_type)
         if entries:
             rows = []
             for e in entries:
@@ -236,7 +241,8 @@ elif page == "Search":
 
     if query and len(query) >= 2:
         if search_type == "Artists":
-            artists = artist_service.search_artists(query, limit=50)
+            with st.spinner("Searching..."):
+                artists = artist_service.search_artists(query, limit=50)
             if artists:
                 rows = [{"Name": a.name, "_id": a.id} for a in artists]
                 df = pd.DataFrame(rows)
@@ -254,7 +260,8 @@ elif page == "Search":
                 st.info("No artists found.")
 
         elif search_type == "Songs":
-            songs = song_service.search_songs(query, limit=50)
+            with st.spinner("Searching..."):
+                songs = song_service.search_songs(query, limit=50)
             if songs:
                 rows = [{
                     "Title": s.song.title,
@@ -280,7 +287,8 @@ elif page == "Search":
                 st.info("No songs found.")
 
         elif search_type == "Albums":
-            albums = album_service.search_albums(query, limit=50)
+            with st.spinner("Searching..."):
+                albums = album_service.search_albums(query, limit=50)
             if albums:
                 rows = [{
                     "Title": a.album.title,
@@ -320,7 +328,8 @@ elif page == "Artist Detail":
     if not artist_id:
         st.error("No artist selected.")
     else:
-        profile = artist_service.get_artist_profile(artist_id)
+        with st.spinner("Loading artist..."):
+            profile = artist_service.get_artist_profile(artist_id)
         if not profile:
             st.error("Artist not found.")
         else:
@@ -352,7 +361,8 @@ elif page == "Artist Detail":
             # --- Songs table ---
             st.markdown("---")
             st.subheader("Songs")
-            songs = artist_service.get_artist_songs(artist_id)
+            with st.spinner("Loading songs..."):
+                songs = artist_service.get_artist_songs(artist_id)
             if songs:
                 rows = [{
                     "Title": sw.song.title,
@@ -380,7 +390,8 @@ elif page == "Artist Detail":
             # --- Albums table ---
             st.markdown("---")
             st.subheader("Albums")
-            albums = artist_service.get_artist_albums(artist_id)
+            with st.spinner("Loading albums..."):
+                albums = artist_service.get_artist_albums(artist_id)
             if albums:
                 rows = [{
                     "Title": aw.album.title,
@@ -418,7 +429,8 @@ elif page == "Song Detail":
     if not song_id:
         st.error("No song selected.")
     else:
-        sws = song_service.get_song(song_id)
+        with st.spinner("Loading song..."):
+            sws = song_service.get_song(song_id)
         if not sws:
             st.error("Song not found.")
         else:
@@ -442,7 +454,8 @@ elif page == "Song Detail":
                 c3.metric("Last Charted", last_dt)
 
             # Chart history table (always visible, primary data view)
-            chart_run = song_service.get_chart_run(song_id)
+            with st.spinner("Loading chart history..."):
+                chart_run = song_service.get_chart_run(song_id)
             if chart_run:
                 st.markdown("---")
                 st.subheader("Chart History")
@@ -482,7 +495,8 @@ elif page == "Album Detail":
     if not album_id:
         st.error("No album selected.")
     else:
-        aws = album_service.get_album(album_id)
+        with st.spinner("Loading album..."):
+            aws = album_service.get_album(album_id)
         if not aws:
             st.error("Album not found.")
         else:
@@ -505,7 +519,8 @@ elif page == "Album Detail":
                 c2.metric("Debut", debut_dt)
                 c3.metric("Last Charted", last_dt)
 
-            chart_run = album_service.get_chart_run(album_id)
+            with st.spinner("Loading chart history..."):
+                chart_run = album_service.get_chart_run(album_id)
             if chart_run:
                 st.markdown("---")
                 st.subheader("Chart History")
@@ -622,18 +637,19 @@ elif page == "Records":
             debut_pos_min = debut_range[0] if debut_range != (1, max_pos) else None
             debut_pos_max = debut_range[1] if debut_range != (1, max_pos) else None
 
-        results = records_service.custom_query(
-            rank_by=rank_by,
-            rank_by_param=rank_by_param,
-            chart=rec_chart,
-            limit=10000,
-            peak_min=peak_min,
-            peak_max=peak_max,
-            weeks_min=weeks_min,
-            debut_pos_min=debut_pos_min,
-            debut_pos_max=debut_pos_max,
-            artist_names=[n.strip() for n in artist_filter.split(",") if n.strip()] or None,
-        )
+        with st.spinner("Running query..."):
+            results = records_service.custom_query(
+                rank_by=rank_by,
+                rank_by_param=rank_by_param,
+                chart=rec_chart,
+                limit=10000,
+                peak_min=peak_min,
+                peak_max=peak_max,
+                weeks_min=weeks_min,
+                debut_pos_min=debut_pos_min,
+                debut_pos_max=debut_pos_max,
+                artist_names=[n.strip() for n in artist_filter.split(",") if n.strip()] or None,
+            )
     else:
         RECORD_FUNCS = {
             "Most Weeks at #1": records_service.most_weeks_at_number_one,
@@ -647,7 +663,8 @@ elif page == "Records":
         }
 
         func = RECORD_FUNCS[record_type]
-        results = func(chart=rec_chart, limit=10000)
+        with st.spinner("Loading records..."):
+            results = func(chart=rec_chart, limit=10000)
 
         value_labels = {
             "Most Weeks at #1": "Wks #1",
@@ -798,7 +815,8 @@ elif page == "Records":
 elif page == "Data Status":
     st.header("Data Status")
 
-    summary = data_status_service.get_data_summary()
+    with st.spinner("Loading data status..."):
+        summary = data_status_service.get_data_summary()
     latest = summary.get("latest_dates", {})
 
     hot100_latest = latest.get("hot-100", "—")

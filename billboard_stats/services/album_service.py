@@ -78,7 +78,8 @@ def search_albums(query: str, limit: int = 20) -> List[AlbumWithStats]:
         """
         SELECT a.id, a.title, a.artist_credit, a.image_url,
                als.total_weeks, als.peak_position, als.weeks_at_number_one,
-               als.debut_date,
+               als.weeks_at_peak, als.debut_date, als.last_date,
+               als.debut_position,
                similarity(a.title, %s) AS sim
         FROM albums a
         LEFT JOIN album_stats als ON a.id = als.album_id
@@ -98,7 +99,10 @@ def search_albums(query: str, limit: int = 20) -> List[AlbumWithStats]:
                 album_id=r["id"], total_weeks=r["total_weeks"],
                 peak_position=r["peak_position"],
                 weeks_at_number_one=r["weeks_at_number_one"],
+                weeks_at_peak=r["weeks_at_peak"],
                 debut_date=r["debut_date"],
+                last_date=r["last_date"],
+                debut_position=r["debut_position"],
             )
         results.append(AlbumWithStats(album=album, stats=stats))
     return results

@@ -140,6 +140,10 @@ CREATE INDEX idx_b200_chart_week ON b200_entries(chart_week_id);
 CREATE INDEX idx_chart_weeks_date ON chart_weeks(chart_date);
 CREATE INDEX idx_chart_weeks_type_date ON chart_weeks(chart_type, chart_date);
 
+-- Fast lookups by artist_id on join tables
+CREATE INDEX IF NOT EXISTS idx_song_artists_artist ON song_artists(artist_id);
+CREATE INDEX IF NOT EXISTS idx_album_artists_artist ON album_artists(artist_id);
+
 -- Artist name search (trigram)
 CREATE INDEX idx_artists_name_trgm ON artists USING gin (name gin_trgm_ops);
 

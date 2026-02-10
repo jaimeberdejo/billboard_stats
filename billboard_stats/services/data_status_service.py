@@ -3,15 +3,18 @@
 from billboard_stats.db.connection import execute_query
 
 
+_ALLOWED_TABLES = frozenset({
+    "chart_weeks", "hot100_entries", "b200_entries",
+    "songs", "albums", "artists",
+    "song_stats", "album_stats", "artist_stats",
+})
+
+
 def get_table_counts() -> dict:
     """Row counts for all major tables."""
-    tables = [
-        "chart_weeks", "hot100_entries", "b200_entries",
-        "songs", "albums", "artists",
-        "song_stats", "album_stats", "artist_stats",
-    ]
     counts = {}
-    for table in tables:
+    for table in sorted(_ALLOWED_TABLES):
+        # Safe: table name comes from a hardcoded allowlist.
         rows = execute_query(f"SELECT COUNT(*) AS cnt FROM {table};")
         counts[table] = rows[0]["cnt"] if rows else 0
     return counts
