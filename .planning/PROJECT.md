@@ -8,6 +8,17 @@ A public web app that replaces the existing Streamlit interface with a polished 
 
 Any visitor can browse current chart rankings, search any artist/song/album, and explore historical records — all fast, public, and without friction.
 
+## Current Milestone: v1.0 Initial Next.js Release
+
+**Goal:** Create a read-only public web app surfacing Billboard chart data — replacing the Streamlit interface with a polished Next.js UI deployed on Vercel and connected to a Neon PostgreSQL database.
+
+**Target features:**
+- Setup: Next.js App Router + TypeScript + Tailwind + Vercel deployment
+- Infrastructure: Neon PostgreSQL connectivity + Next.js API Routes (replacing Python services)
+- Main Pages: Latest Charts, Search (Fuzzy), Records, and Data Status
+- Detail Pages: Song, Album, Artist views with stats and chart history
+- UI: Mobile-responsive structure matching the HTML prototype
+
 ## Requirements
 
 ### Validated
@@ -83,4 +94,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-27 after initialization*
+*Last updated: 2026-04-27 after milestone v1.0 start*
