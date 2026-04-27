@@ -97,7 +97,7 @@ def _build_chart_history_df(entries) -> pd.DataFrame:
         rows.append({
             "Week": e.chart_date,
             "Pos": e.rank,
-            "LW": "—" if off_chart else (last if last is not None else "—"),
+            "LW": "—" if off_chart else (str(last) if last is not None else "—"),
             "Chg": change_label,
             "Pk": e.peak_pos,
             "Wks": e.weeks_on_chart,
@@ -155,7 +155,7 @@ page = st.session_state["page"]
 def _fmt_lw(last_pos, is_new):
     if last_pos is None or last_pos == 0:
         return "NEW" if is_new else "RE" if last_pos == 0 else "—"
-    return last_pos
+    return str(last_pos)
 
 
 def _fmt_chg(last_pos, rank, is_new):
@@ -211,7 +211,7 @@ if page == "Latest Charts":
 
             event = st.dataframe(
                 df[display_cols],
-                hide_index=True, use_container_width=True,
+                hide_index=True, width="stretch",
                 on_select="rerun", selection_mode="single-row",
                 key="lc_table",
             )
@@ -247,7 +247,7 @@ elif page == "Search":
                 rows = [{"Name": a.name, "_id": a.id} for a in artists]
                 df = pd.DataFrame(rows)
                 event = st.dataframe(
-                    df[["Name"]], hide_index=True, use_container_width=True,
+                    df[["Name"]], hide_index=True, width="stretch",
                     on_select="rerun", selection_mode="single-row",
                     key="search_artists_table",
                 )
@@ -274,7 +274,7 @@ elif page == "Search":
                 df = pd.DataFrame(rows)
                 event = st.dataframe(
                     df[["Title", "Artist", "Pk", "Wks", "Wks@Pk"]],
-                    hide_index=True, use_container_width=True,
+                    hide_index=True, width="stretch",
                     on_select="rerun", selection_mode="single-row",
                     key="search_songs_table",
                 )
@@ -301,7 +301,7 @@ elif page == "Search":
                 df = pd.DataFrame(rows)
                 event = st.dataframe(
                     df[["Title", "Artist", "Pk", "Wks", "Wks@Pk"]],
-                    hide_index=True, use_container_width=True,
+                    hide_index=True, width="stretch",
                     on_select="rerun", selection_mode="single-row",
                     key="search_albums_table",
                 )
@@ -375,7 +375,7 @@ elif page == "Artist Detail":
                 df = pd.DataFrame(rows)
                 event = st.dataframe(
                     df[["Title", "Pk", "Wks", "Wks@Pk", "Debut"]],
-                    hide_index=True, use_container_width=True,
+                    hide_index=True, width="stretch",
                     on_select="rerun", selection_mode="single-row",
                     key="artist_songs_table",
                 )
@@ -404,7 +404,7 @@ elif page == "Artist Detail":
                 df = pd.DataFrame(rows)
                 event = st.dataframe(
                     df[["Title", "Pk", "Wks", "Wks@Pk", "Debut"]],
-                    hide_index=True, use_container_width=True,
+                    hide_index=True, width="stretch",
                     on_select="rerun", selection_mode="single-row",
                     key="artist_albums_table",
                 )
@@ -460,13 +460,13 @@ elif page == "Song Detail":
                 st.markdown("---")
                 st.subheader("Chart History")
                 history_df = _build_chart_history_df(chart_run)
-                st.dataframe(history_df, hide_index=True, use_container_width=True,
+                st.dataframe(history_df, hide_index=True, width="stretch",
                              height=600)
 
                 # Chart visualization behind toggle
                 if st.checkbox("Show chart visualization", key="song_show_chart"):
                     chart = _build_chart_run_chart(chart_run, "hot-100")
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(chart, width="stretch")
             else:
                 st.info("No chart run data available.")
 
@@ -525,12 +525,12 @@ elif page == "Album Detail":
                 st.markdown("---")
                 st.subheader("Chart History")
                 history_df = _build_chart_history_df(chart_run)
-                st.dataframe(history_df, hide_index=True, use_container_width=True,
+                st.dataframe(history_df, hide_index=True, width="stretch",
                              height=600)
 
                 if st.checkbox("Show chart visualization", key="album_show_chart"):
                     chart = _build_chart_run_chart(chart_run, "billboard-200")
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(chart, width="stretch")
             else:
                 st.info("No chart run data available.")
 
@@ -713,7 +713,7 @@ elif page == "Records":
 
         event = st.dataframe(
             df[display_cols],
-            hide_index=True, use_container_width=True,
+            hide_index=True, width="stretch",
             on_select="rerun", selection_mode="single-row",
             key="records_table",
         )
@@ -794,7 +794,7 @@ elif page == "Records":
                 dd_df = pd.DataFrame(dd_rows)
                 dd_event = st.dataframe(
                     dd_df[["#", "Title", "Artist", dd_val_label]],
-                    hide_index=True, use_container_width=True,
+                    hide_index=True, width="stretch",
                     on_select="rerun", selection_mode="single-row",
                     key="dd_table",
                 )
@@ -827,7 +827,7 @@ elif page == "Data Status":
     counts = summary.get("counts", {})
     stats_rows = [{"Metric": table, "Count": f"{cnt:,}"} for table, cnt in counts.items()]
     stats_df = pd.DataFrame(stats_rows)
-    st.dataframe(stats_df, hide_index=True, use_container_width=True)
+    st.dataframe(stats_df, hide_index=True, width="stretch")
 
     st.markdown("---")
     if st.button("Update Now", type="primary"):

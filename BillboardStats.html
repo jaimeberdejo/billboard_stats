@@ -1,0 +1,1228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Billboard Stats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-size:13px;-webkit-text-size-adjust:100%}
+body{font-family:'Space Grotesk',sans-serif;background:#fff;color:#0a0a0a;min-height:100vh}
+a{color:inherit;text-decoration:none}
+button{font-family:inherit;cursor:pointer;border:none;background:none}
+input{font-family:inherit}
+
+/* Scrollbar */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#d4d4d4;border-radius:3px}
+
+/* Top Nav */
+.nav{position:sticky;top:0;z-index:100;background:#fff;border-bottom:1px solid #e5e5e5;height:44px;display:flex;align-items:center;padding:0 16px;gap:0}
+.nav-brand{font-size:15px;font-weight:700;letter-spacing:.05em;color:#C8102E;margin-right:28px;flex-shrink:0}
+.nav-links{display:flex;gap:2px;flex:1}
+.nav-link{padding:5px 10px;font-size:12px;font-weight:500;color:#555;border-radius:4px;cursor:pointer;letter-spacing:.02em;white-space:nowrap}
+.nav-link:hover{background:#f5f5f5;color:#0a0a0a}
+.nav-link.active{background:#0a0a0a;color:#fff}
+
+/* Content */
+.page{max-width:1100px;margin:0 auto;padding:16px 16px 80px}
+
+/* Section header */
+.section-header{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.section-title{font-size:16px;font-weight:700;letter-spacing:-.01em}
+.section-sub{font-size:11px;color:#888;margin-left:auto}
+
+/* Chart type toggle */
+.chart-toggle{display:flex;border:1px solid #e5e5e5;border-radius:5px;overflow:hidden}
+.chart-toggle button{padding:4px 12px;font-size:11px;font-weight:600;color:#666;background:#fff;letter-spacing:.04em}
+.chart-toggle button.active{background:#C8102E;color:#fff}
+
+/* Date select */
+.date-select{font-size:11px;color:#555;background:#f5f5f5;border:1px solid #e5e5e5;border-radius:4px;padding:4px 8px;cursor:pointer;outline:none}
+
+/* Dense table */
+.data-table{width:100%;border-collapse:collapse}
+.data-table th{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#999;padding:6px 8px;border-bottom:2px solid #e5e5e5;text-align:left;white-space:nowrap;background:#fff;position:sticky;top:44px}
+.data-table th.num{text-align:right}
+.data-table td{padding:5px 8px;border-bottom:1px solid #f0f0f0;vertical-align:middle;font-size:12px;font-variant-numeric:tabular-nums}
+.data-table tr:hover td{background:#fafafa}
+.data-table td.num{text-align:right;color:#555}
+.data-table .clickable{cursor:pointer}
+.data-table .clickable:hover td{background:#f0f7ff}
+
+/* Rank cell */
+.rank-num{font-size:14px;font-weight:700;width:36px;display:inline-block;text-align:right;font-variant-numeric:tabular-nums}
+.rank-1{color:#C8102E}
+.rank-top{color:#0a0a0a}
+
+/* Movement badge */
+.move{display:inline-flex;align-items:center;gap:1px;font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;min-width:36px;justify-content:flex-end}
+.move-up{color:#16a34a}
+.move-dn{color:#dc2626}
+.move-eq{color:#aaa}
+.badge{display:inline-block;font-size:9px;font-weight:700;letter-spacing:.06em;padding:1px 4px;border-radius:2px;background:#C8102E;color:#fff}
+.badge-re{background:#6b7280}
+
+/* Song/Album title */
+.entry-title{font-weight:600;font-size:12px;cursor:pointer;color:#0a0a0a}
+.entry-title:hover{color:#C8102E;text-decoration:underline}
+.entry-artist{font-size:11px;color:#666;cursor:pointer}
+.entry-artist:hover{color:#C8102E}
+
+/* Stats bar */
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:1px;background:#e5e5e5;border:1px solid #e5e5e5;border-radius:6px;overflow:hidden;margin-bottom:16px}
+.stat-cell{background:#fff;padding:10px 12px}
+.stat-label{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:#999;margin-bottom:3px}
+.stat-val{font-size:18px;font-weight:700;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.stat-val.red{color:#C8102E}
+.stat-sub{font-size:10px;color:#aaa;margin-top:1px}
+
+/* Rank medal */
+.medal{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;font-size:10px;font-weight:700}
+.medal-1{background:#FFD700;color:#7a6000}
+.medal-2{background:#C0C0C0;color:#555}
+.medal-3{background:#CD7F32;color:#5a3500}
+.medal-n{background:#f0f0f0;color:#666;font-size:9px}
+
+/* Search */
+.search-input{width:100%;padding:9px 12px;font-size:13px;border:1px solid #e5e5e5;border-radius:6px;outline:none;background:#fafafa;font-family:inherit}
+.search-input:focus{border-color:#0a0a0a;background:#fff}
+.search-tabs{display:flex;gap:2px;margin-top:10px;margin-bottom:12px;border-bottom:1px solid #e5e5e5;padding-bottom:0}
+.search-tab{padding:6px 12px;font-size:11px;font-weight:600;color:#888;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;letter-spacing:.03em}
+.search-tab.active{color:#0a0a0a;border-bottom-color:#0a0a0a}
+
+/* Back button */
+.back-btn{font-size:11px;font-weight:600;color:#888;padding:4px 0;cursor:pointer;display:inline-flex;align-items:center;gap:4px;margin-bottom:12px;letter-spacing:.02em}
+.back-btn:hover{color:#0a0a0a}
+
+/* Detail header */
+.detail-header{margin-bottom:14px}
+.detail-title{font-size:22px;font-weight:700;letter-spacing:-.02em;line-height:1.2}
+.detail-sub{font-size:13px;color:#666;margin-top:3px}
+.detail-peak{display:inline-flex;align-items:center;gap:6px;margin-top:6px}
+
+/* Section divider */
+.divider{border:none;border-top:1px solid #e5e5e5;margin:16px 0}
+
+/* Subhead */
+.subhead{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#888;margin-bottom:8px}
+
+/* Chart viz */
+.chart-viz-toggle{font-size:11px;font-weight:600;color:#555;cursor:pointer;padding:5px 0;display:inline-flex;align-items:center;gap:5px;margin-bottom:8px}
+.chart-viz-toggle:hover{color:#0a0a0a}
+.chart-viz{border:1px solid #e5e5e5;border-radius:6px;overflow:hidden;margin-bottom:12px}
+.chart-viz svg{display:block;width:100%;height:auto}
+
+/* Records */
+.records-controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+.rec-select{font-size:11px;font-weight:600;background:#f5f5f5;border:1px solid #e5e5e5;border-radius:4px;padding:5px 10px;outline:none;cursor:pointer;font-family:inherit;color:#0a0a0a}
+.leaderboard-row{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;cursor:pointer}
+.leaderboard-row:hover{background:#fafafa;margin:0 -8px;padding:8px}
+.lb-info{flex:1;min-width:0}
+.lb-title{font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lb-artist{font-size:11px;color:#888}
+.lb-val{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;color:#0a0a0a;flex-shrink:0;text-align:right;min-width:40px}
+.lb-val-label{font-size:9px;color:#aaa;font-weight:600;letter-spacing:.05em;text-transform:uppercase;text-align:right}
+.drill-row{background:#fafafa;border-left:3px solid #C8102E;padding:6px 10px;font-size:11px;display:flex;justify-content:space-between;align-items:center}
+.drill-row:hover{background:#fff0f0}
+
+/* Artist pill buttons */
+.artist-pills{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.artist-pill{font-size:11px;font-weight:600;padding:4px 10px;border:1px solid #e5e5e5;border-radius:20px;cursor:pointer;color:#555}
+.artist-pill:hover{border-color:#0a0a0a;color:#0a0a0a}
+
+/* Data status */
+.status-table{width:100%;border-collapse:collapse}
+.status-table td{padding:7px 0;border-bottom:1px solid #f0f0f0;font-size:12px}
+.status-table td:first-child{color:#888;width:200px}
+.status-table td:last-child{font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.update-btn{background:#0a0a0a;color:#fff;font-size:12px;font-weight:600;padding:8px 18px;border-radius:5px;cursor:pointer;margin-top:14px;display:inline-flex;align-items:center;gap:6px}
+.update-btn:hover{background:#C8102E}
+.update-btn.loading{opacity:.6;pointer-events:none}
+
+/* Bottom nav (mobile) */
+.bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid #e5e5e5;height:52px;z-index:100}
+.bottom-nav-inner{display:flex;height:100%}
+.bn-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;cursor:pointer;font-size:9px;font-weight:600;letter-spacing:.04em;color:#999;text-transform:uppercase}
+.bn-item.active{color:#C8102E}
+.bn-icon{font-size:16px;line-height:1}
+
+/* Info empty */
+.info-empty{padding:24px;text-align:center;color:#aaa;font-size:12px}
+
+/* Table scroll wrapper */
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+/* Responsive */
+@media(max-width:600px){
+  .bottom-nav{display:flex}
+  .nav-links{display:none}
+  .page{padding:12px 10px 64px}
+  .stats-bar{grid-template-columns:repeat(2,1fr)}
+  .detail-title{font-size:18px}
+  .nav-brand{font-size:14px}
+  .data-table th,.data-table td{padding:5px 6px}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useRef } = React;
+
+// ─── MOCK DATA ────────────────────────────────────────────────────────────────
+
+const WEEKS = ["April 26, 2025","April 19, 2025","April 12, 2025","April 5, 2025","March 29, 2025"];
+
+const HOT100 = [
+  {rank:1,title:"APT.",artist:"ROSÉ & Bruno Mars",lw:1,pk:1,wks:18,isNew:false,songId:1},
+  {rank:2,title:"Die With A Smile",artist:"Lady Gaga & Bruno Mars",lw:3,pk:1,wks:34,isNew:false,songId:2},
+  {rank:3,title:"Not Like Us",artist:"Kendrick Lamar",lw:2,pk:1,wks:52,isNew:false,songId:3},
+  {rank:4,title:"Birds of a Feather",artist:"Billie Eilish",lw:5,pk:2,wks:46,isNew:false,songId:4},
+  {rank:5,title:"Good Luck, Babe!",artist:"Chappell Roan",lw:4,pk:3,wks:40,isNew:false,songId:5},
+  {rank:6,title:"A Bar Song (Tipsy)",artist:"Shaboozey",lw:7,pk:1,wks:58,isNew:false,songId:6},
+  {rank:7,title:"Luther",artist:"Kendrick Lamar & SZA",lw:6,pk:1,wks:22,isNew:false,songId:7},
+  {rank:8,title:"Pink Pony Club",artist:"Chappell Roan",lw:10,pk:6,wks:60,isNew:false,songId:8},
+  {rank:9,title:"Espresso",artist:"Sabrina Carpenter",lw:9,pk:1,wks:54,isNew:false,songId:9},
+  {rank:10,title:"Who",artist:"Jimin",lw:0,pk:10,wks:1,isNew:true,songId:10},
+  {rank:11,title:"Sailor Song",artist:"Gigi Perez",lw:13,pk:9,wks:28,isNew:false,songId:11},
+  {rank:12,title:"Please Please Please",artist:"Sabrina Carpenter",lw:12,pk:1,wks:44,isNew:false,songId:12},
+  {rank:13,title:"Beautiful Things",artist:"Benson Boone",lw:11,pk:2,wks:62,isNew:false,songId:13},
+  {rank:14,title:"Lose Control",artist:"Teddy Swims",lw:15,pk:4,wks:70,isNew:false,songId:14},
+  {rank:15,title:"Pink Skies",artist:"Zach Bryan",lw:16,pk:14,wks:12,isNew:false,songId:15},
+  {rank:16,title:"I Had Some Help",artist:"Post Malone ft. Morgan Wallen",lw:14,pk:1,wks:30,isNew:false,songId:16},
+  {rank:17,title:"We Can't Be Friends",artist:"Ariana Grande",lw:18,pk:3,wks:56,isNew:false,songId:17},
+  {rank:18,title:"Texas Hold 'Em",artist:"Beyoncé",lw:17,pk:1,wks:48,isNew:false,songId:18},
+  {rank:19,title:"Supernatural",artist:"NewJeans",lw:0,pk:19,wks:1,isNew:true,songId:19},
+  {rank:20,title:"Stargazing",artist:"Myles Smith",lw:22,pk:18,wks:22,isNew:false,songId:20},
+  {rank:21,title:"Now & Then",artist:"The Beatles",lw:21,pk:12,wks:30,isNew:false,songId:21},
+  {rank:22,title:"Get Him Back!",artist:"Olivia Rodrigo",lw:20,pk:10,wks:36,isNew:false,songId:22},
+  {rank:23,title:"Like That",artist:"Future, Metro Boomin & Kendrick Lamar",lw:25,pk:6,wks:48,isNew:false,songId:23},
+  {rank:24,title:"Stick Season",artist:"Noah Kahan",lw:24,pk:7,wks:88,isNew:false,songId:24},
+  {rank:25,title:"Chicago",artist:"Post Malone",lw:23,pk:22,wks:14,isNew:false,songId:25},
+  {rank:26,title:"Fortnight",artist:"Taylor Swift ft. Post Malone",lw:27,pk:1,wks:44,isNew:false,songId:26},
+  {rank:27,title:"I Can Do It With A Broken Heart",artist:"Taylor Swift",lw:26,pk:3,wks:38,isNew:false,songId:27},
+  {rank:28,title:"Million Dollar Baby",artist:"Tommy Richman",lw:29,pk:1,wks:40,isNew:false,songId:28},
+  {rank:29,title:"One Of The Girls",artist:"The Weeknd, Jennie & Lily-Rose Depp",lw:31,pk:22,wks:10,isNew:false,songId:29},
+  {rank:30,title:"Cruel Summer",artist:"Taylor Swift",lw:28,pk:1,wks:120,isNew:false,songId:30},
+];
+
+const B200 = [
+  {rank:1,title:"Brat",artist:"Charli XCX",lw:1,pk:1,wks:42,albumId:101},
+  {rank:2,title:"Short n' Sweet",artist:"Sabrina Carpenter",lw:2,pk:1,wks:34,albumId:102},
+  {rank:3,title:"GNX",artist:"Kendrick Lamar",lw:4,pk:1,wks:22,albumId:103},
+  {rank:4,title:"The Great Impersonator",artist:"Halsey",lw:3,pk:2,wks:18,albumId:104},
+  {rank:5,title:"Eternal Sunshine",artist:"Ariana Grande",lw:5,pk:1,wks:60,albumId:105},
+  {rank:6,title:"THE TORTURED POETS DEPARTMENT",artist:"Taylor Swift",lw:6,pk:1,wks:52,albumId:106},
+  {rank:7,title:"Cowboy Carter",artist:"Beyoncé",lw:7,pk:1,wks:56,albumId:107},
+  {rank:8,title:"Diamond Jubilee",artist:"Cindy Lee",lw:9,pk:7,wks:16,albumId:108},
+  {rank:9,title:"Chromakopia",artist:"Tyler, the Creator",lw:8,pk:1,wks:28,albumId:109},
+  {rank:10,title:"Manning Fireworks",artist:"MJ Lenderman",lw:12,pk:9,wks:12,albumId:110},
+  {rank:11,title:"Hit Me Hard and Soft",artist:"Billie Eilish",lw:11,pk:1,wks:50,albumId:111},
+  {rank:12,title:"Radical Optimism",artist:"Dua Lipa",lw:10,pk:2,wks:46,albumId:112},
+  {rank:13,title:"Vultures 1",artist:"Kanye West & Ty Dolla $ign",lw:14,pk:1,wks:32,albumId:113},
+  {rank:14,title:"Charm",artist:"Clairo",lw:13,pk:4,wks:18,albumId:114},
+  {rank:15,title:"Deeper Well",artist:"Kacey Musgraves",lw:16,pk:5,wks:40,albumId:115},
+  {rank:16,title:"The Rise and Fall of a Midwest Princess",artist:"Chappell Roan",lw:15,pk:2,wks:94,albumId:116},
+  {rank:17,title:"Preacher's Daughter",artist:"Ethel Cain",lw:18,pk:17,wks:8,albumId:117},
+  {rank:18,title:"We Don't Trust You",artist:"Future & Metro Boomin",lw:17,pk:1,wks:24,albumId:118},
+  {rank:19,title:"Alligator Bites Never Heal",artist:"Doechii",lw:0,pk:19,wks:1,isNew:true,albumId:119},
+  {rank:20,title:"Desire, I Want to Turn Into You",artist:"Caroline Polachek",lw:20,pk:12,wks:62,albumId:120},
+];
+
+const ARTISTS = {
+  1:{id:1,name:"Taylor Swift",hot100Songs:68,b200Albums:14,hot100Ones:12,b200Ones:10,hot100Wks:4840,b200Wks:1020,bestHot100:1,bestB200:1,firstChart:"Jan 2006",latestChart:"Apr 2025",maxSimult:35},
+  2:{id:2,name:"Drake",hot100Songs:118,b200Albums:14,hot100Ones:24,b200Ones:12,hot100Wks:6200,b200Wks:900,bestHot100:1,bestB200:1,firstChart:"Jun 2009",latestChart:"Apr 2025",maxSimult:27},
+  3:{id:3,name:"Sabrina Carpenter",hot100Songs:22,b200Albums:4,hot100Ones:3,b200Ones:1,hot100Wks:820,b200Wks:200,bestHot100:1,bestB200:1,firstChart:"Feb 2014",latestChart:"Apr 2025",maxSimult:8},
+  4:{id:4,name:"Kendrick Lamar",hot100Songs:58,b200Albums:8,hot100Ones:4,b200Ones:3,hot100Wks:2400,b200Wks:440,bestHot100:1,bestB200:1,firstChart:"Mar 2011",latestChart:"Apr 2025",maxSimult:18},
+  5:{id:5,name:"Beyoncé",hot100Songs:72,b200Albums:12,hot100Ones:8,b200Ones:6,hot100Wks:3100,b200Wks:620,bestHot100:1,bestB200:1,firstChart:"Dec 2001",latestChart:"Apr 2025",maxSimult:12},
+};
+
+const SONGS = {
+  1:{id:1,title:"APT.",artist:"ROSÉ & Bruno Mars",pk:1,wks:18,wksPk:8,wksNo1:8,debutPos:3,debut:"Dec 7, 2024",last:"—",artistIds:[10,11]},
+  2:{id:2,title:"Die With A Smile",artist:"Lady Gaga & Bruno Mars",pk:1,wks:34,wksPk:10,wksNo1:4,debutPos:1,debut:"Aug 10, 2024",last:"—",artistIds:[12,11]},
+  3:{id:3,title:"Not Like Us",artist:"Kendrick Lamar",pk:1,wks:52,wksPk:5,wksNo1:5,debutPos:1,debut:"May 4, 2024",last:"—",artistIds:[4]},
+  4:{id:4,title:"Birds of a Feather",artist:"Billie Eilish",pk:2,wks:46,wksPk:14,wksNo1:0,debutPos:2,debut:"May 25, 2024",last:"—",artistIds:[13]},
+  6:{id:6,title:"A Bar Song (Tipsy)",artist:"Shaboozey",pk:1,wks:58,wksPk:19,wksNo1:19,debutPos:70,debut:"Mar 16, 2024",last:"—",artistIds:[14]},
+  9:{id:9,title:"Espresso",artist:"Sabrina Carpenter",pk:1,wks:54,wksPk:8,wksNo1:4,debutPos:6,debut:"Apr 13, 2024",last:"—",artistIds:[3]},
+  12:{id:12,title:"Please Please Please",artist:"Sabrina Carpenter",pk:1,wks:44,wksPk:6,wksNo1:6,debutPos:1,debut:"Jun 8, 2024",last:"—",artistIds:[3]},
+  30:{id:30,title:"Cruel Summer",artist:"Taylor Swift",pk:1,wks:120,wksPk:32,wksNo1:7,debutPos:80,debut:"Jun 2019",last:"—",artistIds:[1]},
+};
+
+const ALBUMS = {
+  101:{id:101,title:"Brat",artist:"Charli XCX",pk:1,wks:42,wksPk:10,wksNo1:4,debutPos:1,debut:"Jun 8, 2024",last:"—",artistIds:[15]},
+  102:{id:102,title:"Short n' Sweet",artist:"Sabrina Carpenter",pk:1,wks:34,wksPk:12,wksNo1:8,debutPos:1,debut:"Aug 24, 2024",last:"—",artistIds:[3]},
+  106:{id:106,title:"THE TORTURED POETS DEPARTMENT",artist:"Taylor Swift",pk:1,wks:52,wksPk:10,wksNo1:10,debutPos:1,debut:"Apr 20, 2024",last:"—",artistIds:[1]},
+  116:{id:116,title:"The Rise and Fall of a Midwest Princess",artist:"Chappell Roan",pk:2,wks:94,wksPk:28,wksNo1:0,debutPos:42,debut:"Sep 23, 2023",last:"—",artistIds:[16]},
+};
+
+// Chart run mock data generator
+function genChartRun(peak, totalWks, chartMax) {
+  const dates = [];
+  const base = new Date("2025-04-26");
+  for (let i = totalWks - 1; i >= 0; i--) {
+    const d = new Date(base);
+    d.setDate(d.getDate() - i * 7);
+    const progress = i / (totalWks - 1);
+    let pos;
+    if (progress > 0.8) pos = chartMax - Math.floor((chartMax - peak * 3) * (1 - progress) * 5);
+    else if (progress > 0.5) pos = Math.max(peak, peak + Math.floor(Math.random() * 8));
+    else if (progress < 0.1) pos = Math.min(chartMax, peak + Math.floor(progress * chartMax * 0.8));
+    else pos = peak + Math.floor(Math.random() * 15);
+    pos = Math.max(peak, Math.min(chartMax, pos));
+    dates.push({ date: d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}), rank: pos });
+  }
+  // force peak at middle
+  const mid = Math.floor(dates.length / 3);
+  dates[mid].rank = peak;
+  return dates;
+}
+
+const CHART_RUNS = {
+  1: genChartRun(1, 18, 100),
+  2: genChartRun(1, 34, 100),
+  3: genChartRun(1, 52, 100),
+  4: genChartRun(2, 46, 100),
+  6: genChartRun(1, 58, 100),
+  9: genChartRun(1, 54, 100),
+  12: genChartRun(1, 44, 100),
+  30: genChartRun(1, 120, 100),
+  101: genChartRun(1, 42, 200),
+  102: genChartRun(1, 34, 200),
+  106: genChartRun(1, 52, 200),
+  116: genChartRun(2, 94, 200),
+};
+
+const RECORDS_DATA = {
+  "Most Weeks at #1": [
+    {rank:1,title:"Old Town Road",artist:"Lil Nas X ft. Billy Ray Cyrus",val:19,songId:200},
+    {rank:2,title:"A Bar Song (Tipsy)",artist:"Shaboozey",val:19,songId:6},
+    {rank:3,title:"One Sweet Day",artist:"Mariah Carey & Boyz II Men",val:16,songId:201},
+    {rank:4,title:"Blinding Lights",artist:"The Weeknd",val:4,songId:202},
+    {rank:5,title:"Shape of You",artist:"Ed Sheeran",val:12,songId:203},
+    {rank:6,title:"Despacito",artist:"Luis Fonsi & Daddy Yankee",val:16,songId:204},
+    {rank:7,title:"Uptown Funk!",artist:"Mark Ronson ft. Bruno Mars",val:14,songId:205},
+    {rank:8,title:"Happy",artist:"Pharrell Williams",val:10,songId:206},
+    {rank:9,title:"Dynamite",artist:"BTS",val:3,songId:207},
+    {rank:10,title:"Watermelon Sugar",artist:"Harry Styles",val:1,songId:208},
+  ],
+  "Longest Chart Runs": [
+    {rank:1,title:"Blinding Lights",artist:"The Weeknd",val:90,songId:202},
+    {rank:2,title:"Radioactive",artist:"Imagine Dragons",val:87,songId:209},
+    {rank:3,title:"Counting Stars",artist:"OneRepublic",val:68,songId:210},
+    {rank:4,title:"Sail",artist:"AWOLNATION",val:79,songId:211},
+    {rank:5,title:"Ho Hey",artist:"The Lumineers",val:62,songId:212},
+    {rank:6,title:"Cruise",artist:"Florida Georgia Line",val:73,songId:213},
+    {rank:7,title:"Cruel Summer",artist:"Taylor Swift",val:120,songId:30},
+    {rank:8,title:"Levitating",artist:"Dua Lipa",val:77,songId:214},
+    {rank:9,title:"Stay",artist:"The Kid LAROI & Justin Bieber",val:58,songId:215},
+    {rank:10,title:"Good 4 U",artist:"Olivia Rodrigo",val:54,songId:216},
+  ],
+  "Most #1 Songs (by Artist)": [
+    {rank:1,title:"Drake",artist:"",val:24,artistId:2},
+    {rank:2,title:"The Beatles",artist:"",val:20,artistId:20},
+    {rank:3,title:"Mariah Carey",artist:"",val:19,artistId:21},
+    {rank:4,title:"Rihanna",artist:"",val:14,artistId:22},
+    {rank:5,title:"Taylor Swift",artist:"",val:12,artistId:1},
+    {rank:6,title:"Michael Jackson",artist:"",val:13,artistId:23},
+    {rank:7,title:"Whitney Houston",artist:"",val:11,artistId:24},
+    {rank:8,title:"Janet Jackson",artist:"",val:10,artistId:25},
+    {rank:9,title:"Stevie Wonder",artist:"",val:10,artistId:26},
+    {rank:10,title:"Eminem",artist:"",val:9,artistId:27},
+  ],
+  "Biggest Debuts": [
+    {rank:1,title:"My World 2.0",artist:"Justin Bieber",val:1,albumId:300,chartDate:"Mar 27, 2010"},
+    {rank:2,title:"THE TORTURED POETS DEPARTMENT",artist:"Taylor Swift",val:1,albumId:106,chartDate:"Apr 27, 2024"},
+    {rank:3,title:"Midnights",artist:"Taylor Swift",val:1,albumId:301,chartDate:"Oct 29, 2022"},
+    {rank:4,title:"÷",artist:"Ed Sheeran",val:1,albumId:302,chartDate:"Mar 18, 2017"},
+    {rank:5,title:"folklore",artist:"Taylor Swift",val:1,albumId:303,chartDate:"Jul 31, 2020"},
+    {rank:6,title:"Certified Lover Boy",artist:"Drake",val:1,albumId:304,chartDate:"Sep 17, 2021"},
+    {rank:7,title:"GNX",artist:"Kendrick Lamar",val:1,albumId:103,chartDate:"Nov 30, 2024"},
+    {rank:8,title:"Brat",artist:"Charli XCX",val:1,albumId:101,chartDate:"Jun 15, 2024"},
+    {rank:9,title:"Short n' Sweet",artist:"Sabrina Carpenter",val:1,albumId:102,chartDate:"Aug 31, 2024"},
+    {rank:10,title:"Chromakopia",artist:"Tyler, the Creator",val:1,albumId:109,chartDate:"Oct 26, 2024"},
+  ],
+  "Most Entries by Artist": [
+    {rank:1,title:"Drake",artist:"",val:118,artistId:2},
+    {rank:2,title:"Taylor Swift",artist:"",val:68,artistId:1},
+    {rank:3,title:"Lil Wayne",artist:"",val:116,artistId:28},
+    {rank:4,title:"Future",artist:"",val:82,artistId:29},
+    {rank:5,title:"Eminem",artist:"",val:80,artistId:27},
+    {rank:6,title:"Nicki Minaj",artist:"",val:76,artistId:30},
+    {rank:7,title:"21 Savage",artist:"",val:70,artistId:31},
+    {rank:8,title:"Kendrick Lamar",artist:"",val:58,artistId:4},
+    {rank:9,title:"Jay-Z",artist:"",val:58,artistId:32},
+    {rank:10,title:"Beyoncé",artist:"",val:72,artistId:5},
+  ],
+};
+
+const ARTIST_SONGS = {
+  1: [
+    {id:26,title:"Fortnight",pk:1,wks:44,wksPk:5,debut:"Apr 2024"},
+    {id:27,title:"I Can Do It With A Broken Heart",pk:3,wks:38,wksPk:4,debut:"Apr 2024"},
+    {id:30,title:"Cruel Summer",pk:1,wks:120,wksPk:32,debut:"Jun 2019"},
+    {id:400,title:"Anti-Hero",pk:1,wks:60,wksPk:8,debut:"Oct 2022"},
+    {id:401,title:"Shake It Off",pk:1,wks:50,wksPk:4,debut:"Aug 2014"},
+    {id:402,title:"Blank Space",pk:1,wks:44,wksPk:7,debut:"Nov 2014"},
+  ],
+  3: [
+    {id:9,title:"Espresso",pk:1,wks:54,wksPk:8,debut:"Apr 2024"},
+    {id:12,title:"Please Please Please",pk:1,wks:44,wksPk:6,debut:"Jun 2024"},
+    {id:403,title:"Feather",pk:35,wks:20,wksPk:2,debut:"Aug 2023"},
+    {id:404,title:"because i liked a boy",pk:58,wks:12,wksPk:1,debut:"Aug 2023"},
+  ],
+  4: [
+    {id:3,title:"Not Like Us",pk:1,wks:52,wksPk:5,debut:"May 2024"},
+    {id:7,title:"Luther",pk:1,wks:22,wksPk:4,debut:"Nov 2024"},
+    {id:23,title:"Like That",pk:6,wks:48,wksPk:3,debut:"Mar 2024"},
+    {id:405,title:"HUMBLE.",pk:1,wks:72,wksPk:7,debut:"Mar 2017"},
+    {id:406,title:"LOYALTY.",pk:14,wks:38,wksPk:3,debut:"Mar 2017"},
+  ],
+};
+const ARTIST_ALBUMS = {
+  1: [
+    {id:106,title:"THE TORTURED POETS DEPARTMENT",pk:1,wks:52,wksPk:10,debut:"Apr 2024"},
+    {id:301,title:"Midnights",pk:1,wks:88,wksPk:16,debut:"Oct 2022"},
+    {id:303,title:"folklore",pk:1,wks:60,wksPk:8,debut:"Jul 2020"},
+    {id:407,title:"Lover",pk:1,wks:110,wksPk:10,debut:"Aug 2019"},
+    {id:408,title:"1989",pk:1,wks:120,wksPk:11,debut:"Oct 2014"},
+  ],
+  3: [
+    {id:102,title:"Short n' Sweet",pk:1,wks:34,wksPk:12,debut:"Aug 2024"},
+    {id:409,title:"emails i can't send",pk:23,wks:40,wksPk:6,debut:"Aug 2022"},
+  ],
+};
+
+const ALL_ARTISTS = Object.values(ARTISTS);
+const ALL_SONGS = HOT100.map(e => ({
+  id: e.songId, title: e.title, artist: e.artist, pk: e.pk, wks: e.wks,
+  wksPk: Math.floor(e.wks * 0.2), ...(SONGS[e.songId] || {})
+}));
+const ALL_ALBUMS = B200.map(e => ({
+  id: e.albumId, title: e.title, artist: e.artist, pk: e.pk, wks: e.wks,
+  wksPk: Math.floor(e.wks * 0.2), ...(ALBUMS[e.albumId] || {})
+}));
+
+// ─── UTILS ────────────────────────────────────────────────────────────────────
+
+function Move({ lw, rank, isNew }) {
+  if (isNew) return <span className="badge">NEW</span>;
+  if (lw === 0) return <span className="badge badge-re">RE</span>;
+  const diff = lw - rank;
+  if (diff > 0) return <span className="move move-up">▲ {diff}</span>;
+  if (diff < 0) return <span className="move move-dn">▼ {Math.abs(diff)}</span>;
+  return <span className="move move-eq">=</span>;
+}
+
+function Medal({ rank }) {
+  const cls = rank === 1 ? "medal medal-1" : rank === 2 ? "medal medal-2" : rank === 3 ? "medal medal-3" : "medal medal-n";
+  return <span className={cls}>{rank}</span>;
+}
+
+// ─── CHART VIZ ────────────────────────────────────────────────────────────────
+
+function ChartViz({ entries, chartMax }) {
+  if (!entries || entries.length < 2) return null;
+  const W = 800, H = 180, PAD = { top: 16, right: 12, bottom: 24, left: 36 };
+  const iW = W - PAD.left - PAD.right;
+  const iH = H - PAD.top - PAD.bottom;
+  const n = entries.length;
+  const xScale = i => PAD.left + (i / (n - 1)) * iW;
+  const yScale = v => PAD.top + ((v - 1) / (chartMax - 1)) * iH;
+
+  const pts = entries.map((e, i) => [xScale(i), yScale(e.rank)]);
+  const d = pts.map((p, i) => (i === 0 ? `M${p[0]},${p[1]}` : `L${p[0]},${p[1]}`)).join(" ");
+  const peak = entries.reduce((a, b) => a.rank < b.rank ? a : b);
+  const peakIdx = entries.indexOf(peak);
+
+  // Y-axis ticks
+  const ticks = chartMax === 100 ? [1, 25, 50, 75, 100] : [1, 50, 100, 150, 200];
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" style={{width:"100%",height:"auto"}}>
+      {/* Grid lines */}
+      {ticks.map(t => (
+        <g key={t}>
+          <line x1={PAD.left} y1={yScale(t)} x2={W - PAD.right} y2={yScale(t)} stroke="#f0f0f0" strokeWidth="1"/>
+          <text x={PAD.left - 4} y={yScale(t)} textAnchor="end" dominantBaseline="middle" fill="#bbb" fontSize="8">{t}</text>
+        </g>
+      ))}
+      {/* Chart line */}
+      <path d={d} fill="none" stroke="#C8102E" strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round"/>
+      {/* Peak dot */}
+      <circle cx={pts[peakIdx][0]} cy={pts[peakIdx][1]} r="3.5" fill="#C8102E"/>
+      <text x={pts[peakIdx][0]} y={pts[peakIdx][1] - 7} textAnchor="middle" fill="#C8102E" fontSize="9" fontWeight="700">#{peak.rank}</text>
+      {/* X-axis: first & last date */}
+      <text x={PAD.left} y={H - 4} fill="#bbb" fontSize="8">{entries[0].date}</text>
+      <text x={W - PAD.right} y={H - 4} textAnchor="end" fill="#bbb" fontSize="8">{entries[n-1].date}</text>
+    </svg>
+  );
+}
+
+// ─── PAGES ────────────────────────────────────────────────────────────────────
+
+function LatestCharts({ navigate }) {
+  const [chartType, setChartType] = useState("hot-100");
+  const [weekIdx, setWeekIdx] = useState(0);
+  const entries = chartType === "hot-100" ? HOT100 : B200;
+  const chartMax = chartType === "hot-100" ? 100 : 200;
+
+  return (
+    <div className="page">
+      <div className="section-header">
+        <div className="chart-toggle">
+          <button className={chartType === "hot-100" ? "active" : ""} onClick={() => setChartType("hot-100")}>HOT 100</button>
+          <button className={chartType === "billboard-200" ? "active" : ""} onClick={() => setChartType("billboard-200")}>B200</button>
+        </div>
+        <select className="date-select" value={weekIdx} onChange={e => setWeekIdx(+e.target.value)}>
+          {WEEKS.map((w, i) => <option key={i} value={i}>{w}</option>)}
+        </select>
+        <span className="section-sub">{entries.length} entries</span>
+      </div>
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th style={{width:48}}>POS</th>
+              <th style={{width:56}}>MV</th>
+              <th>TITLE / ARTIST</th>
+              <th className="num" style={{width:36}}>LW</th>
+              <th className="num" style={{width:36}}>PK</th>
+              <th className="num" style={{width:42}}>WKS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map(e => {
+              const id = e.songId || e.albumId;
+              const isSong = !!e.songId;
+              return (
+                <tr key={e.rank} className="clickable" onClick={() => navigate(isSong ? "song" : "album", id)}>
+                  <td>
+                    <span className={`rank-num ${e.rank === 1 ? "rank-1" : e.rank <= 10 ? "rank-top" : ""}`}>
+                      {e.rank}
+                    </span>
+                  </td>
+                  <td><Move lw={e.lw} rank={e.rank} isNew={e.isNew} /></td>
+                  <td>
+                    <div className="entry-title">{e.title}</div>
+                    <div className="entry-artist">{e.artist}</div>
+                  </td>
+                  <td className="num">{e.lw === 0 || e.isNew ? "—" : e.lw}</td>
+                  <td className="num" style={{fontWeight: e.pk === 1 ? 700 : 400, color: e.pk === 1 ? "#C8102E" : "inherit"}}>{e.pk}</td>
+                  <td className="num">{e.wks}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function Search({ navigate }) {
+  const [query, setQuery] = useState("");
+  const [tab, setTab] = useState("Songs");
+  const q = query.toLowerCase().trim();
+
+  const artists = useMemo(() => !q || q.length < 2 ? [] : ALL_ARTISTS.filter(a => a.name.toLowerCase().includes(q)), [q]);
+  const songs = useMemo(() => !q || q.length < 2 ? [] : ALL_SONGS.filter(s => s.title.toLowerCase().includes(q) || s.artist.toLowerCase().includes(q)), [q]);
+  const albums = useMemo(() => !q || q.length < 2 ? [] : ALL_ALBUMS.filter(a => a.title.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)), [q]);
+
+  return (
+    <div className="page">
+      <input className="search-input" placeholder="Search artists, songs, albums…" value={query} onChange={e => setQuery(e.target.value)} autoFocus />
+      <div className="search-tabs">
+        {["Songs","Albums","Artists"].map(t => (
+          <div key={t} className={`search-tab ${tab === t ? "active" : ""}`} onClick={() => setTab(t)}>
+            {t} {q.length >= 2 && <span style={{color:"#bbb"}}>({(t==="Songs"?songs:t==="Albums"?albums:artists).length})</span>}
+          </div>
+        ))}
+      </div>
+
+      {q.length < 2 && <div className="info-empty">Type at least 2 characters to search</div>}
+
+      {q.length >= 2 && tab === "Songs" && (
+        songs.length === 0 ? <div className="info-empty">No songs found</div> :
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>TITLE</th><th>ARTIST</th><th className="num">PK</th><th className="num">WKS</th><th className="num">WKS@PK</th></tr></thead>
+            <tbody>
+              {songs.map(s => (
+                <tr key={s.id} className="clickable" onClick={() => navigate("song", s.id)}>
+                  <td className="entry-title">{s.title}</td>
+                  <td className="entry-artist">{s.artist}</td>
+                  <td className="num" style={{fontWeight: s.pk===1?700:400, color:s.pk===1?"#C8102E":"inherit"}}>{s.pk}</td>
+                  <td className="num">{s.wks}</td>
+                  <td className="num">{s.wksPk}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {q.length >= 2 && tab === "Albums" && (
+        albums.length === 0 ? <div className="info-empty">No albums found</div> :
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>TITLE</th><th>ARTIST</th><th className="num">PK</th><th className="num">WKS</th><th className="num">WKS@PK</th></tr></thead>
+            <tbody>
+              {albums.map(a => (
+                <tr key={a.id} className="clickable" onClick={() => navigate("album", a.id)}>
+                  <td className="entry-title">{a.title}</td>
+                  <td className="entry-artist">{a.artist}</td>
+                  <td className="num" style={{fontWeight:a.pk===1?700:400,color:a.pk===1?"#C8102E":"inherit"}}>{a.pk}</td>
+                  <td className="num">{a.wks}</td>
+                  <td className="num">{a.wksPk}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {q.length >= 2 && tab === "Artists" && (
+        artists.length === 0 ? <div className="info-empty">No artists found</div> :
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>NAME</th><th className="num">SONGS</th><th className="num">ALBUMS</th><th className="num">#1 SNG</th><th className="num">#1 ALB</th></tr></thead>
+            <tbody>
+              {artists.map(a => (
+                <tr key={a.id} className="clickable" onClick={() => navigate("artist", a.id)}>
+                  <td style={{fontWeight:600}}>{a.name}</td>
+                  <td className="num">{a.hot100Songs}</td>
+                  <td className="num">{a.b200Albums}</td>
+                  <td className="num" style={{color:a.hot100Ones>0?"#C8102E":"inherit",fontWeight:a.hot100Ones>0?700:400}}>{a.hot100Ones}</td>
+                  <td className="num">{a.b200Ones}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ArtistDetail({ id, navigate, back }) {
+  const artist = ARTISTS[id];
+  const songs = ARTIST_SONGS[id] || [];
+  const albums = ARTIST_ALBUMS[id] || [];
+  if (!artist) return <div className="page"><div className="back-btn" onClick={back}>← Back</div><div className="info-empty">Artist not found</div></div>;
+
+  return (
+    <div className="page">
+      <div className="back-btn" onClick={back}>← Back</div>
+      <div className="detail-header">
+        <div className="detail-title">{artist.name}</div>
+        <div className="detail-sub">{artist.firstChart} – {artist.latestChart}</div>
+      </div>
+
+      <div className="stats-bar">
+        <div className="stat-cell"><div className="stat-label">Hot 100 Songs</div><div className="stat-val">{artist.hot100Songs}</div></div>
+        <div className="stat-cell"><div className="stat-label">B200 Albums</div><div className="stat-val">{artist.b200Albums}</div></div>
+        <div className="stat-cell"><div className="stat-label">#1 Songs</div><div className="stat-val red">{artist.hot100Ones}</div></div>
+        <div className="stat-cell"><div className="stat-label">#1 Albums</div><div className="stat-val red">{artist.b200Ones}</div></div>
+        <div className="stat-cell"><div className="stat-label">Hot 100 Weeks</div><div className="stat-val">{artist.hot100Wks.toLocaleString()}</div></div>
+        <div className="stat-cell"><div className="stat-label">B200 Weeks</div><div className="stat-val">{artist.b200Wks.toLocaleString()}</div></div>
+        <div className="stat-cell"><div className="stat-label">Best Hot 100</div><div className="stat-val red">#{artist.bestHot100}</div></div>
+        <div className="stat-cell"><div className="stat-label">Max Simultaneous</div><div className="stat-val">{artist.maxSimult}</div></div>
+      </div>
+
+      {songs.length > 0 && <>
+        <div className="subhead">Hot 100 Songs</div>
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>TITLE</th><th className="num">PK</th><th className="num">WKS</th><th className="num">WKS@PK</th><th className="num">DEBUT</th></tr></thead>
+            <tbody>
+              {songs.map(s => (
+                <tr key={s.id} className="clickable" onClick={() => navigate("song", s.id)}>
+                  <td className="entry-title">{s.title}</td>
+                  <td className="num" style={{fontWeight:s.pk===1?700:400,color:s.pk===1?"#C8102E":"inherit"}}>{s.pk}</td>
+                  <td className="num">{s.wks}</td>
+                  <td className="num">{s.wksPk}</td>
+                  <td className="num" style={{color:"#aaa"}}>{s.debut}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <hr className="divider"/>
+      </>}
+
+      {albums.length > 0 && <>
+        <div className="subhead">Billboard 200 Albums</div>
+        <div className="table-scroll">
+          <table className="data-table">
+            <thead><tr><th>TITLE</th><th className="num">PK</th><th className="num">WKS</th><th className="num">WKS@PK</th><th className="num">DEBUT</th></tr></thead>
+            <tbody>
+              {albums.map(a => (
+                <tr key={a.id} className="clickable" onClick={() => navigate("album", a.id)}>
+                  <td className="entry-title">{a.title}</td>
+                  <td className="num" style={{fontWeight:a.pk===1?700:400,color:a.pk===1?"#C8102E":"inherit"}}>{a.pk}</td>
+                  <td className="num">{a.wks}</td>
+                  <td className="num">{a.wksPk}</td>
+                  <td className="num" style={{color:"#aaa"}}>{a.debut}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </>}
+      {songs.length === 0 && albums.length === 0 && <div className="info-empty">No chart history in demo data</div>}
+    </div>
+  );
+}
+
+function SongOrAlbumDetail({ type, id, navigate, back }) {
+  const [showViz, setShowViz] = useState(false);
+  const isSong = type === "song";
+  const item = isSong ? (SONGS[id] || ALL_SONGS.find(s => s.id === id)) : (ALBUMS[id] || ALL_ALBUMS.find(a => a.id === id));
+  const run = CHART_RUNS[id];
+  const chartMax = isSong ? 100 : 200;
+
+  if (!item) return <div className="page"><div className="back-btn" onClick={back}>← Back</div><div className="info-empty">Not found in demo data</div></div>;
+
+  const historyRows = run ? [...run].reverse().map((e, i, arr) => {
+    const prev = arr[i + 1];
+    const lw = prev ? prev.rank : null;
+    const chg = lw ? lw - e.rank : null;
+    return { ...e, lw, chg };
+  }) : [];
+
+  return (
+    <div className="page">
+      <div className="back-btn" onClick={back}>← Back</div>
+      <div className="detail-header">
+        <div className="detail-title">"{item.title}"</div>
+        <div className="detail-sub">{item.artist}</div>
+      </div>
+
+      <div className="stats-bar">
+        <div className="stat-cell"><div className="stat-label">Peak</div><div className="stat-val red">#{item.pk}</div></div>
+        <div className="stat-cell"><div className="stat-label">Weeks on Chart</div><div className="stat-val">{item.wks}</div></div>
+        <div className="stat-cell"><div className="stat-label">Weeks at #1</div><div className="stat-val" style={{color:item.wksNo1>0?"#C8102E":"inherit"}}>{item.wksNo1 ?? "—"}</div></div>
+        <div className="stat-cell"><div className="stat-label">Weeks at Peak</div><div className="stat-val">{item.wksPk ?? "—"}</div></div>
+        <div className="stat-cell"><div className="stat-label">Debut Position</div><div className="stat-val">#{item.debutPos ?? "—"}</div></div>
+        <div className="stat-cell"><div className="stat-label">Debut Date</div><div className="stat-val" style={{fontSize:13}}>{item.debut ?? "—"}</div></div>
+      </div>
+
+      {run && <>
+        <div className="chart-viz-toggle" onClick={() => setShowViz(v => !v)}>
+          {showViz ? "▼" : "▶"} Chart Run Visualization
+        </div>
+        {showViz && (
+          <div className="chart-viz">
+            <ChartViz entries={run} chartMax={chartMax} />
+          </div>
+        )}
+      </>}
+
+      <div className="subhead">Chart History</div>
+      <div className="table-scroll" style={{maxHeight:480,overflowY:"auto"}}>
+        <table className="data-table">
+          <thead><tr><th>WEEK</th><th className="num">POS</th><th className="num">MV</th><th className="num">LW</th><th className="num">PK</th><th className="num">WKS</th></tr></thead>
+          <tbody>
+            {historyRows.map((e, i) => (
+              <tr key={i}>
+                <td style={{color:"#888"}}>{e.date}</td>
+                <td className="num" style={{fontWeight:e.rank===item.pk?700:400,color:e.rank===item.pk?"#C8102E":"inherit"}}>{e.rank}</td>
+                <td className="num">
+                  {e.chg === null ? <span className="badge">NEW</span>
+                    : e.chg > 0 ? <span className="move move-up">▲{e.chg}</span>
+                    : e.chg < 0 ? <span className="move move-dn">▼{Math.abs(e.chg)}</span>
+                    : <span className="move move-eq">=</span>}
+                </td>
+                <td className="num">{e.lw ?? "—"}</td>
+                <td className="num">{item.pk}</td>
+                <td className="num">{i + 1}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {item.artistIds && item.artistIds.length > 0 && <>
+        <hr className="divider"/>
+        <div className="subhead">Artists</div>
+        <div className="artist-pills">
+          {item.artistIds.map(aid => {
+            const a = ARTISTS[aid];
+            if (!a) return null;
+            return <div key={aid} className="artist-pill" onClick={() => navigate("artist", aid)}>{a.name}</div>;
+          })}
+        </div>
+      </>}
+    </div>
+  );
+}
+
+const DESIGN_NOTES = [
+  {
+    title: "Softened Jargon",
+    body: "Query parameters now use natural language — e.g. \"Specific Position\" instead of \"Weeks at Position #X\" — so anyone can build a meaningful query without prior knowledge of the data model.",
+  },
+  {
+    title: "Visible Dynamic Inputs",
+    body: "When a position or range is relevant, a highlighted number input appears inline inside the sentence itself, reducing hidden friction and making the parameter impossible to miss.",
+  },
+  {
+    title: "Sorting vs. Filtering",
+    body: "The top bar handles dataset filtering only (who, how long, where they peaked). The sentence builder defines the metric and sort direction, giving each panel a single clear responsibility.",
+  },
+];
+
+// Inline-select styled to blend into sentence prose
+function SentenceSelect({ value, onChange, options, style }) {
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      style={{
+        fontFamily:"inherit", fontSize:"inherit", fontWeight:700,
+        color:"#C8102E", background:"#fff0f0",
+        border:"1px solid #C8102E", borderRadius:4,
+        padding:"2px 20px 2px 6px", cursor:"pointer", outline:"none",
+        appearance:"auto", ...style,
+      }}
+    >
+      {options.map(o => <option key={o.val} value={o.val}>{o.label}</option>)}
+    </select>
+  );
+}
+
+function SentenceNumber({ value, onChange, min=1, max=200 }) {
+  return (
+    <input
+      type="number" min={min} max={max}
+      value={value}
+      onChange={e => onChange(Math.max(min, Math.min(max, +e.target.value || min)))}
+      style={{
+        fontFamily:"inherit", fontSize:"inherit", fontWeight:700,
+        color:"#C8102E", background:"#fff0f0",
+        border:"1px solid #C8102E", borderRadius:4,
+        padding:"2px 6px", outline:"none", width:62,
+        fontVariantNumeric:"tabular-nums", textAlign:"center",
+      }}
+    />
+  );
+}
+
+function Records({ navigate }) {
+  const [recType, setRecType] = useState("Custom Query");
+  const [chart, setChart] = useState("hot-100");
+  const [expanded, setExpanded] = useState(null);
+
+  // Custom query sentence state
+  const [cqRankBy, setCqRankBy] = useState("number_one");
+  const [cqParam, setCqParam] = useState(10);
+  const [cqSortDir, setCqSortDir] = useState("desc");
+
+  // Filters
+  const [cqArtist, setCqArtist] = useState("");
+  const [cqPeakMin, setCqPeakMin] = useState(1);
+  const [cqPeakMax, setCqPeakMax] = useState(100);
+  const [cqWeeksMin, setCqWeeksMin] = useState("");
+  const [cqDebutMin, setCqDebutMin] = useState(1);
+  const [cqDebutMax, setCqDebutMax] = useState(100);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
+  const TYPES = ["Custom Query","Most Weeks at #1","Longest Chart Runs","Most #1 Songs (by Artist)","Most Entries by Artist","Biggest Debuts"];
+  const VAL_LABELS = {
+    "Most Weeks at #1": "Wks #1",
+    "Longest Chart Runs": "Total Wks",
+    "Most #1 Songs (by Artist)": "#1 Songs",
+    "Most Entries by Artist": "Entries",
+    "Biggest Debuts": "Debut Pos",
+  };
+
+  const chartMax = chart === "hot-100" ? 100 : 200;
+  const entity = chart === "hot-100" ? "songs" : "albums";
+
+  const RANK_BY_OPTIONS = [
+    { val: "number_one", label: "#1 Rank" },
+    { val: "specific_position", label: "Specific Position" },
+    { val: "top_range", label: "Top Range" },
+    { val: "total_weeks", label: "Total Weeks on Chart" },
+    { val: "peak_weeks", label: "Weeks at Peak" },
+  ];
+
+  const SORT_OPTIONS = [
+    { val: "desc", label: "most weeks" },
+    { val: "asc", label: "least weeks" },
+  ];
+
+  const needsParam = cqRankBy === "specific_position" || cqRankBy === "top_range";
+  const paramLabel = cqRankBy === "specific_position" ? "position #" : "top";
+
+  const cqResults = useMemo(() => {
+    if (recType !== "Custom Query") return null;
+    let pool = chart === "hot-100"
+      ? ALL_SONGS.map(s => ({ title: s.title, artist: s.artist, pk: s.pk, wks: s.wks, wksPk: s.wksPk, wksNo1: SONGS[s.id]?.wksNo1 ?? 0, debutPos: SONGS[s.id]?.debutPos ?? null, songId: s.id }))
+      : ALL_ALBUMS.map(a => ({ title: a.title, artist: a.artist, pk: a.pk, wks: a.wks, wksPk: a.wksPk, wksNo1: ALBUMS[a.id]?.wksNo1 ?? 0, debutPos: ALBUMS[a.id]?.debutPos ?? null, albumId: a.id }));
+
+    // Apply filters
+    if (cqArtist.trim()) {
+      const terms = cqArtist.toLowerCase().split(",").map(s => s.trim()).filter(Boolean);
+      pool = pool.filter(r => terms.some(t => r.artist.toLowerCase().includes(t)));
+    }
+    pool = pool.filter(r => r.pk >= cqPeakMin && r.pk <= cqPeakMax);
+    pool = pool.filter(r => !r.debutPos || (r.debutPos >= cqDebutMin && r.debutPos <= cqDebutMax));
+    if (cqWeeksMin !== "" && !isNaN(+cqWeeksMin)) pool = pool.filter(r => r.wks >= +cqWeeksMin);
+
+    // Compute metric
+    const param = parseInt(cqParam) || 1;
+    let getValue, vLabel;
+    if (cqRankBy === "number_one") {
+      getValue = r => r.wksNo1 ?? 0; vLabel = "Wks #1";
+    } else if (cqRankBy === "specific_position") {
+      getValue = r => {
+        const run = CHART_RUNS[r.songId || r.albumId];
+        return run ? run.filter(e => e.rank === param).length : 0;
+      };
+      vLabel = `Wks @#${param}`;
+    } else if (cqRankBy === "top_range") {
+      getValue = r => {
+        const run = CHART_RUNS[r.songId || r.albumId];
+        if (run) return run.filter(e => e.rank <= param).length;
+        return r.pk <= param ? Math.floor(r.wks * (param / chartMax)) : 0;
+      };
+      vLabel = `Wks Top ${param}`;
+    } else if (cqRankBy === "total_weeks") {
+      getValue = r => r.wks; vLabel = "Total Wks";
+    } else {
+      getValue = r => r.wksPk ?? 0; vLabel = "Wks@Pk";
+    }
+
+    pool = pool.map(r => ({ ...r, val: getValue(r) }))
+      .filter(r => r.val > 0 || (cqRankBy !== "specific_position" && cqRankBy !== "top_range"))
+      .sort((a, b) => cqSortDir === "asc" ? a.val - b.val : b.val - a.val);
+
+    return { rows: pool.slice(0, 50).map((r, i) => ({ ...r, rank: i + 1 })), vLabel };
+  }, [recType, chart, cqRankBy, cqParam, cqSortDir, cqArtist, cqPeakMin, cqPeakMax, cqWeeksMin, cqDebutMin, cqDebutMax]);
+
+  const results = recType === "Custom Query" ? (cqResults?.rows || []) : (RECORDS_DATA[recType] || []);
+  const isArtistRec = recType === "Most #1 Songs (by Artist)" || recType === "Most Entries by Artist";
+  const valLabel = recType === "Custom Query" ? (cqResults?.vLabel || "Value") : (VAL_LABELS[recType] || "Value");
+
+  const handleRowClick = (r) => {
+    if (isArtistRec && r.artistId) {
+      setExpanded(expanded === r.rank ? null : r.rank);
+    } else if (r.songId && SONGS[r.songId]) {
+      navigate("song", r.songId);
+    } else if (r.albumId && ALBUMS[r.albumId]) {
+      navigate("album", r.albumId);
+    }
+  };
+
+  return (
+    <div style={{display:"flex",gap:0,alignItems:"flex-start",maxWidth:1300,margin:"0 auto",padding:"0 0"}}>
+
+      {/* Design Notes sidebar */}
+      <aside style={{
+        width:230,flexShrink:0,padding:"16px 20px 16px 16px",
+        borderRight:"1px solid #e5e5e5",minHeight:"calc(100vh - 44px)",
+        display:"none",
+      }} className="records-sidebar">
+        <div style={{fontSize:10,fontWeight:700,letterSpacing:".1em",textTransform:"uppercase",color:"#C8102E",marginBottom:14}}>Design Notes</div>
+        {DESIGN_NOTES.map((n,i) => (
+          <div key={i} style={{marginBottom:18}}>
+            <div style={{fontSize:11,fontWeight:700,color:"#0a0a0a",marginBottom:4}}>{n.title}</div>
+            <div style={{fontSize:11,color:"#777",lineHeight:1.6}}>{n.body}</div>
+          </div>
+        ))}
+      </aside>
+
+      <div className="page" style={{flex:1,minWidth:0}}>
+
+        {/* Top control bar — filtering only */}
+        <div style={{marginBottom:12}}>
+          <div className="records-controls" style={{marginBottom:8}}>
+            <select className="rec-select" value={recType} onChange={e => { setRecType(e.target.value); setExpanded(null); }}>
+              {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <div className="chart-toggle">
+              <button className={chart === "hot-100" ? "active" : ""} onClick={() => setChart("hot-100")}>HOT 100</button>
+              <button className={chart === "billboard-200" ? "active" : ""} onClick={() => setChart("billboard-200")}>B200</button>
+            </div>
+            <span className="section-sub">{results.length} results</span>
+          </div>
+
+          {recType === "Custom Query" && (
+            <div style={{background:"#fafafa",border:"1px solid #e5e5e5",borderRadius:6,padding:"10px 14px"}}>
+              <div style={{display:"flex",gap:16,flexWrap:"wrap",alignItems:"flex-end"}}>
+                <div style={{flex:1,minWidth:160}}>
+                  <div className="stat-label" style={{marginBottom:4}}>Artist</div>
+                  <input
+                    style={{fontFamily:"inherit",fontSize:11,padding:"5px 8px",border:"1px solid #e5e5e5",borderRadius:4,background:"#fff",outline:"none",width:"100%"}}
+                    placeholder="e.g. Drake, Taylor Swift"
+                    value={cqArtist}
+                    onChange={e => setCqArtist(e.target.value)}
+                  />
+                </div>
+                <div style={{minWidth:100}}>
+                  <div className="stat-label" style={{marginBottom:4}}>Min. chart weeks</div>
+                  <input
+                    type="number" min="1"
+                    style={{fontFamily:"inherit",fontSize:11,padding:"5px 8px",border:"1px solid #e5e5e5",borderRadius:4,background:"#fff",outline:"none",width:80,fontVariantNumeric:"tabular-nums"}}
+                    placeholder="any"
+                    value={cqWeeksMin}
+                    onChange={e => setCqWeeksMin(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <div className="stat-label" style={{marginBottom:4,opacity:0}}>&nbsp;</div>
+                  <button onClick={() => setFiltersOpen(f => !f)} style={{fontSize:11,fontWeight:600,color:"#555",padding:"5px 10px",border:"1px solid #e5e5e5",borderRadius:4,background:"#fff",cursor:"pointer",fontFamily:"inherit"}}>
+                    {filtersOpen ? "▲ Fewer filters" : "▼ Position filters"}
+                  </button>
+                </div>
+              </div>
+
+              {filtersOpen && (
+                <div style={{display:"flex",gap:24,flexWrap:"wrap",paddingTop:12,marginTop:10,borderTop:"1px solid #e5e5e5"}}>
+                  <div style={{flex:1,minWidth:200}}>
+                    <div className="stat-label" style={{marginBottom:6}}>Best peak — between #{cqPeakMin} and #{cqPeakMax}</div>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <span style={{fontSize:10,color:"#aaa",minWidth:12}}>1</span>
+                      <input type="range" min="1" max={chartMax} value={cqPeakMin}
+                        onChange={e => setCqPeakMin(Math.min(+e.target.value, cqPeakMax))}
+                        style={{flex:1,accentColor:"#C8102E"}}/>
+                      <input type="range" min="1" max={chartMax} value={cqPeakMax}
+                        onChange={e => setCqPeakMax(Math.max(+e.target.value, cqPeakMin))}
+                        style={{flex:1,accentColor:"#C8102E"}}/>
+                      <span style={{fontSize:10,color:"#aaa",minWidth:20}}>{chartMax}</span>
+                    </div>
+                  </div>
+                  <div style={{flex:1,minWidth:200}}>
+                    <div className="stat-label" style={{marginBottom:6}}>Debut position — between #{cqDebutMin} and #{cqDebutMax}</div>
+                    <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                      <span style={{fontSize:10,color:"#aaa",minWidth:12}}>1</span>
+                      <input type="range" min="1" max={chartMax} value={cqDebutMin}
+                        onChange={e => setCqDebutMin(Math.min(+e.target.value, cqDebutMax))}
+                        style={{flex:1,accentColor:"#C8102E"}}/>
+                      <input type="range" min="1" max={chartMax} value={cqDebutMax}
+                        onChange={e => setCqDebutMax(Math.max(+e.target.value, cqDebutMin))}
+                        style={{flex:1,accentColor:"#C8102E"}}/>
+                      <span style={{fontSize:10,color:"#aaa",minWidth:20}}>{chartMax}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Natural-language query builder — Custom Query only */}
+        {recType === "Custom Query" && (
+          <div style={{
+            background:"#fff",border:"1px solid #e0e0e0",borderLeft:"3px solid #C8102E",
+            borderRadius:"0 6px 6px 0",padding:"14px 16px",marginBottom:16,
+          }}>
+            <div style={{fontSize:14,color:"#333",lineHeight:2,flexWrap:"wrap",display:"flex",alignItems:"center",gap:"6px 4px"}}>
+              <span>Show me <strong>{entity}</strong> with the</span>
+              <SentenceSelect
+                value={cqSortDir}
+                onChange={setCqSortDir}
+                options={SORT_OPTIONS}
+              />
+              <span>weeks at:</span>
+              <SentenceSelect
+                value={cqRankBy}
+                onChange={v => { setCqRankBy(v); if (!needsParam) setCqParam(10); }}
+                options={RANK_BY_OPTIONS}
+              />
+              {needsParam && (
+                <>
+                  <span style={{color:"#888"}}>{paramLabel}</span>
+                  <SentenceNumber
+                    value={cqParam}
+                    onChange={setCqParam}
+                    min={1}
+                    max={chartMax}
+                  />
+                </>
+              )}
+              <span style={{color:"#aaa",fontSize:12,marginLeft:4}}>
+                — {results.length} result{results.length !== 1 ? "s" : ""}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Results list */}
+        {results.map(r => (
+          <React.Fragment key={r.rank}>
+            <div className="leaderboard-row" onClick={() => handleRowClick(r)}>
+              <Medal rank={r.rank} />
+              <div className="lb-info">
+                <div className="lb-title" style={{cursor: isArtistRec && r.artistId ? "pointer" : r.songId || r.albumId ? "pointer" : "default"}}>
+                  {r.title}
+                  {isArtistRec && r.artistId && <span style={{fontSize:10,color:"#bbb",marginLeft:6}}>{expanded === r.rank ? "▲" : "▼"}</span>}
+                </div>
+                {r.artist && <div className="lb-artist">{r.artist}</div>}
+                {r.chartDate && <div className="lb-artist">{r.chartDate}</div>}
+              </div>
+              <div>
+                <div className="lb-val">{r.val}</div>
+                <div className="lb-val-label">{valLabel}</div>
+              </div>
+            </div>
+            {expanded === r.rank && isArtistRec && r.artistId && (
+              <ArtistDrilldown artistId={r.artistId} chart={chart} recType={recType} navigate={navigate} />
+            )}
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ArtistDrilldown({ artistId, chart, recType, navigate }) {
+  const songs = ARTIST_SONGS[artistId] || [];
+  const albums = ARTIST_ALBUMS[artistId] || [];
+  const items = chart === "hot-100" ? songs : albums;
+  const type = chart === "hot-100" ? "song" : "album";
+  if (items.length === 0) return (
+    <div className="drill-row" style={{justifyContent:"center",color:"#aaa"}}>No items in demo data — click artist name to view profile</div>
+  );
+  return (
+    <>
+      {items.slice(0, 5).map(item => (
+        <div key={item.id} className="drill-row" onClick={() => navigate(type, item.id)}>
+          <div style={{flex:1}}>
+            <span style={{fontWeight:600,color:"#0a0a0a"}}>{item.title}</span>
+          </div>
+          <div style={{display:"flex",gap:16,color:"#888"}}>
+            <span>#{item.pk}</span>
+            <span>{item.wks} wks</span>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function DataStatus({ }) {
+  const [loading, setLoading] = useState(false);
+  const [updated, setUpdated] = useState(false);
+
+  const handleUpdate = () => {
+    setLoading(true);
+    setTimeout(() => { setLoading(false); setUpdated(true); }, 2200);
+  };
+
+  return (
+    <div className="page">
+      <div className="section-header">
+        <div className="section-title">Data Status</div>
+        <div className="section-sub">Last updated: April 26, 2025</div>
+      </div>
+      <div className="stats-bar" style={{marginBottom:20}}>
+        <div className="stat-cell"><div className="stat-label">Hot 100 Latest</div><div className="stat-val" style={{fontSize:14}}>Apr 26, 2025</div></div>
+        <div className="stat-cell"><div className="stat-label">B200 Latest</div><div className="stat-val" style={{fontSize:14}}>Apr 26, 2025</div></div>
+        <div className="stat-cell"><div className="stat-label">Coverage</div><div className="stat-val">1958–2025</div></div>
+        <div className="stat-cell"><div className="stat-label">Weeks Loaded</div><div className="stat-val">3,472</div></div>
+      </div>
+
+      <table className="status-table">
+        <tbody>
+          <tr><td>chart_weeks</td><td>6,944</td></tr>
+          <tr><td>hot100_entries</td><td>694,400</td></tr>
+          <tr><td>b200_entries</td><td>522,800</td></tr>
+          <tr><td>songs</td><td>28,416</td></tr>
+          <tr><td>albums</td><td>14,882</td></tr>
+          <tr><td>artists</td><td>19,204</td></tr>
+          <tr><td>song_stats</td><td>28,416</td></tr>
+          <tr><td>album_stats</td><td>14,882</td></tr>
+          <tr><td>artist_stats</td><td>19,204</td></tr>
+        </tbody>
+      </table>
+
+      {updated && <div style={{marginTop:12,fontSize:12,color:"#16a34a",fontWeight:600}}>✓ Update complete. 0 new weeks loaded (already up to date).</div>}
+
+      <button className={`update-btn${loading ? " loading" : ""}`} onClick={handleUpdate} disabled={loading}>
+        {loading ? <>⟳ Fetching new data…</> : <>↻ Update Now</>}
+      </button>
+    </div>
+  );
+}
+
+// ─── APP SHELL ───────────────────────────────────────────────────────────────
+
+const NAV_ITEMS = [
+  { id: "charts", label: "Latest Charts", icon: "♫" },
+  { id: "search", label: "Search", icon: "⌕" },
+  { id: "records", label: "Records", icon: "★" },
+  { id: "status", label: "Data Status", icon: "⊙" },
+];
+
+function App() {
+  const [page, setPage] = useState({ type: "charts" });
+  const [history, setHistory] = useState([]);
+
+  const navigate = (type, id) => {
+    setHistory(h => [...h, page]);
+    setPage({ type, id });
+  };
+
+  const back = () => {
+    if (history.length > 0) {
+      setPage(history[history.length - 1]);
+      setHistory(h => h.slice(0, -1));
+    }
+  };
+
+  const goTo = (type) => {
+    setHistory([]);
+    setPage({ type });
+  };
+
+  const isTopLevel = ["charts","search","records","status"].includes(page.type);
+
+  return (
+    <>
+      <nav className="nav">
+        <div className="nav-brand">BILLBOARD</div>
+        <div className="nav-links">
+          {NAV_ITEMS.map(n => (
+            <div key={n.id} className={`nav-link${page.type === n.id ? " active" : ""}`} onClick={() => goTo(n.id)}>
+              {n.label}
+            </div>
+          ))}
+        </div>
+      </nav>
+
+      {page.type === "charts" && <LatestCharts navigate={navigate} />}
+      {page.type === "search" && <Search navigate={navigate} />}
+      {page.type === "records" && <Records navigate={navigate} />}
+      {page.type === "status" && <DataStatus />}
+      {page.type === "artist" && <ArtistDetail id={page.id} navigate={navigate} back={back} />}
+      {page.type === "song" && <SongOrAlbumDetail type="song" id={page.id} navigate={navigate} back={back} />}
+      {page.type === "album" && <SongOrAlbumDetail type="album" id={page.id} navigate={navigate} back={back} />}
+
+      {/* Mobile bottom nav */}
+      <nav className="bottom-nav">
+        <div className="bottom-nav-inner">
+          {NAV_ITEMS.map(n => (
+            <div key={n.id} className={`bn-item${page.type === n.id ? " active" : ""}`} onClick={() => goTo(n.id)}>
+              <div className="bn-icon">{n.icon}</div>
+              <div>{n.label.split(" ")[0]}</div>
+            </div>
+          ))}
+        </div>
+      </nav>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
