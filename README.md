@@ -1,102 +1,36 @@
-# Billboard Stats
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-A data platform for exploring Billboard Hot 100 and Billboard 200 chart history, built with Python, PostgreSQL, and Streamlit.
+## Getting Started
 
-## Features
-
-- **Latest Charts** — Browse any weekly chart with position, peak, movement, and weeks on chart
-- **Search** — Find artists, songs, or albums by name
-- **Artist Detail** — Career stats, full discography with chart performance, navigable song/album lists
-- **Song / Album Detail** — Peak position, total weeks, chart run history table and interactive visualization
-- **Records** — Leaderboards including:
-  - Most weeks at #1, longest chart runs, biggest debuts, fastest to #1
-  - Most #1 songs/albums by artist (with inline drill-down showing the actual items)
-  - Most entries by artist, most simultaneous entries
-  - Custom query builder with artist filter, peak/debut position range sliders, and min-weeks filter
-- **Data Status** — Database stats and one-click incremental updates
-
-## Architecture
-
-```
-billboard_stats/
-├── app.py                  # Streamlit frontend (all pages)
-├── db/
-│   ├── connection.py       # psycopg2 connection pool
-│   └── schema.sql          # DDL (CREATE TABLE IF NOT EXISTS)
-├── models/
-│   └── schemas.py          # Pydantic data models
-├── etl/
-│   ├── fetcher.py          # Downloads chart JSON via billboard.py
-│   ├── json_parser.py      # Parses stored JSON files
-│   ├── artist_parser.py    # Splits compound artist credits
-│   ├── loader.py           # Full ETL: JSON → PostgreSQL
-│   ├── stats_builder.py    # Builds song_stats, album_stats, artist_stats
-│   └── updater.py          # Incremental update + gap repair CLI
-└── services/
-    ├── artist_service.py
-    ├── song_service.py
-    ├── album_service.py
-    ├── chart_service.py
-    ├── records_service.py
-    └── data_status_service.py
-```
-
-## Prerequisites
-
-- Python 3.9+
-- PostgreSQL 12+ (with `pg_trgm` extension)
-
-## Setup
-
-1. **Create the database:**
+First, run the development server:
 
 ```bash
-createdb billboard
-psql billboard -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;"
-psql billboard -f billboard_stats/db/schema.sql
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
 ```
 
-2. **Install dependencies:**
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-```bash
-pip install -r requirements.txt
-```
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-3. **Configure database connection** (optional — defaults to `localhost:5432/billboard`):
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
-```bash
-export PGHOST=localhost
-export PGPORT=5432
-export PGDATABASE=billboard
-export PGUSER=postgres
-export PGPASSWORD=yourpassword
-```
+## Learn More
 
-4. **Load chart data:**
+To learn more about Next.js, take a look at the following resources:
 
-```python
-from billboard_stats.etl.loader import load_all
-load_all()  # Fetches and loads all available chart history
-```
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 
-5. **Build stats tables:**
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
 
-```bash
-python3 rebuild_stats.py
-```
+## Deploy on Vercel
 
-## Running
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
-```bash
-streamlit run billboard_stats/app.py
-```
-
-## Updating data
-
-Use the **Data Status** page in the app, or run from the command line:
-
-```bash
-python3 -m billboard_stats.etl.updater
-```
-
-This fetches new weeks since the last loaded date and repairs any gaps.
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
