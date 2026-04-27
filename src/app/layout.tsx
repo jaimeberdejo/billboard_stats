@@ -1,15 +1,18 @@
 import type { Metadata } from "next";
-import { Space_Grotesk } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 
-const spaceGrotesk = Space_Grotesk({
+const spaceGrotesk = localFont({
+  src: "./SpaceGrotesk-Variable.ttf",
   variable: "--font-space-grotesk",
-  subsets: ["latin"],
+  display: "swap",
+  weight: "300 700",
+  fallback: ["Arial", "Helvetica", "sans-serif"],
 });
 
 export const metadata: Metadata = {
   title: "Billboard Stats",
-  description: "Billboard Hot 100 and Billboard 200 history and records",
+  description: "Billboard Hot 100 and Billboard 200 history, movement, and records.",
 };
 
 export default function RootLayout({
@@ -18,11 +21,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html
-      lang="en"
-      className={`${spaceGrotesk.variable} h-full antialiased`}
-    >
-      <body className="min-h-full flex flex-col font-sans tabular-nums text-[13px]">{children}</body>
+    <html lang="en" className={`${spaceGrotesk.variable} h-full antialiased`}>
+      <body className="flex min-h-full flex-col font-sans text-[13px]">
+        {children}
+      </body>
     </html>
   );
 }

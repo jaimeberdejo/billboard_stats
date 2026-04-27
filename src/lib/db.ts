@@ -1,6 +1,11 @@
-import { neon } from '@neondatabase/serverless';
+import { neon } from "@neondatabase/serverless";
 
-// Export the neon connection if the URL exists, otherwise export a dummy connection for build time.
-export const sql = process.env.DATABASE_URL
-    ? neon(process.env.DATABASE_URL)
-    : neon('postgresql://placeholder:placeholder@placeholder.neon.tech/placeholder');
+export function getSql() {
+  const databaseUrl = process.env.DATABASE_URL;
+
+  if (!databaseUrl) {
+    throw new Error("DATABASE_URL is not configured.");
+  }
+
+  return neon(databaseUrl);
+}
