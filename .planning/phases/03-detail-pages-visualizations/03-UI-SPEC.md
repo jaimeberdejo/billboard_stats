@@ -1,10 +1,11 @@
 ---
 phase: 3
 slug: detail-pages-visualizations
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-04-28
+reviewed_at: 2026-04-28
 ---
 
 # Phase 3 — UI Design Contract
@@ -43,8 +44,6 @@ Declared values (must be multiples of 4):
 | 2xl | 48px | Reserved for full-page empty/error states |
 | 3xl | 64px | Reserved for future expanded records or comparison layouts |
 
-Exceptions: `12px` is allowed for compact section-header gaps, mobile page padding, and dense title-to-subtitle rhythm because the existing browse UI and prototype already use that density.
-
 ---
 
 ## Typography
@@ -52,15 +51,15 @@ Exceptions: `12px` is allowed for compact section-header gaps, mobile page paddi
 | Role | Size | Weight | Line Height |
 |------|------|--------|-------------|
 | Body | 12px | 400 | 1.45 |
-| Label | 11px | 600 | 1.3 |
-| Heading | 16px | 700 | 1.2 |
-| Display | 22px desktop / 18px mobile | 700 | 1.2 |
+| Label | 10px | 600 | 1.3 |
+| Heading | 16px | 600 | 1.2 |
+| Display | 22px desktop / 16px mobile | 600 | 1.2 |
 
 Additional type rules:
 - Stats labels use `10px`, uppercase, `0.07em` tracking, muted gray.
 - Table headers use `10px`, weight `600`, uppercase, `0.08em` tracking.
-- Back link, visualization toggle, and artist pills use `11px` weight `600`.
-- Large numeric stats use `18px` weight `700`; date-valued stats may step down to `13px` to avoid overflow.
+- Back link, visualization toggle, and artist pills use `12px` weight `600`.
+- Large numeric stats use `16px` weight `600`; date-valued stats use `12px` weight `400` to avoid overflow.
 - All numeric fields, ranks, weeks, and axis labels must preserve tabular numerals.
 
 ---
@@ -153,11 +152,11 @@ Safety evidence:
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** approved 2026-04-28
