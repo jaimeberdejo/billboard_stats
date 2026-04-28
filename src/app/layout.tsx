@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+import { SiteShell } from "@/components/shell/site-shell";
 import "./globals.css";
 
 const spaceGrotesk = localFont({
@@ -23,7 +24,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${spaceGrotesk.variable} h-full antialiased`}>
       <body className="flex min-h-full flex-col font-sans text-[13px]">
-        {children}
+        <SiteShell>{children}</SiteShell>
       </body>
     </html>
   );
