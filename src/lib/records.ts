@@ -97,6 +97,7 @@ export interface CustomRecordsInput {
   chart: ChartType;
   rankBy: CustomRankBy;
   rankByParam: number;
+  sortDir?: "asc" | "desc";
   limit?: number;
   peakMin?: number | null;
   peakMax?: number | null;
@@ -437,6 +438,7 @@ export async function getCustomRecords(
     chart,
     rankBy,
     rankByParam,
+    sortDir = "desc",
     limit = 50,
     peakMin,
     peakMax,
@@ -454,6 +456,7 @@ export async function getCustomRecords(
   const idCol = isHot100 ? "song_id" : "album_id";
   const validWeeksCte = isHot100 ? VALID_HOT100_WEEKS_CTE : VALID_B200_WEEKS_CTE;
   const validWeeksTable = isHot100 ? "valid_hot100_weeks" : "valid_b200_weeks";
+  const orderDir = sortDir === "asc" ? "ASC" : "DESC";
 
   const params: Array<string | number> = [];
   const filters: string[] = [];
@@ -502,7 +505,7 @@ export async function getCustomRecords(
        FROM ${statsTable} st
        JOIN ${itemTable} i ON st.${idCol} = i.id
        WHERE 1=1${valueFilter}${filterSql}
-       ORDER BY st.${valueCol} DESC, i.title
+       ORDER BY st.${valueCol} ${orderDir}, i.title
        LIMIT $${params.length}`,
       params,
     );
@@ -524,7 +527,7 @@ export async function getCustomRecords(
        WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})
          AND ${rankFilter}${filterSql}
        GROUP BY i.id, i.title, i.artist_credit
-       ORDER BY value DESC, i.title
+       ORDER BY value ${orderDir}, i.title
        LIMIT $${params.length + 2}`,
       [rankByParam, ...params, limit],
     );

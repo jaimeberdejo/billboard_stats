@@ -111,6 +111,8 @@ export async function GET(request: NextRequest): Promise<Response> {
     const rankByParam =
       parsePositiveInteger(searchParams.get("rankByParam"), 1, maxPosition) ??
       defaultRankByParam;
+    const sortDir =
+      searchParams.get("sortDir") === "asc" ? "asc" : "desc";
     const peakMin = parsePositiveInteger(searchParams.get("peakMin"), 1, maxPosition);
     const peakMax = parsePositiveInteger(searchParams.get("peakMax"), 1, maxPosition);
     const weeksMin = parsePositiveInteger(searchParams.get("weeksMin"), 1, 10000);
@@ -135,6 +137,7 @@ export async function GET(request: NextRequest): Promise<Response> {
         chart,
         rankBy,
         rankByParam,
+        sortDir,
         peakMin,
         peakMax,
         weeksMin,
