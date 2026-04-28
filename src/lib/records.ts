@@ -1,0 +1,643 @@
+import { type ChartType } from "@/lib/charts";
+import { getSql } from "@/lib/db";
+
+const VALID_HOT100_WEEKS_CTE = `
+    phantom_hot100 AS (
+        SELECT e.chart_week_id
+        FROM hot100_entries e
+        GROUP BY e.chart_week_id
+        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
+               >= COUNT(*) * 95 / 100
+    ),
+    first_real_hot100 AS (
+        SELECT MIN(cw.id) AS id
+        FROM phantom_hot100 ph
+        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
+        WHERE cw.chart_type = 'hot-100'
+    ),
+    valid_hot100_weeks AS (
+        SELECT cw.id
+        FROM chart_weeks cw
+        WHERE cw.chart_type = 'hot-100'
+          AND (cw.id NOT IN (SELECT chart_week_id FROM phantom_hot100)
+               OR cw.id = (SELECT id FROM first_real_hot100))
+    )
+`;
+
+const VALID_B200_WEEKS_CTE = `
+    phantom_b200 AS (
+        SELECT e.chart_week_id
+        FROM b200_entries e
+        GROUP BY e.chart_week_id
+        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
+               >= COUNT(*) * 95 / 100
+    ),
+    first_real_b200 AS (
+        SELECT MIN(cw.id) AS id
+        FROM phantom_b200 ph
+        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
+        WHERE cw.chart_type = 'billboard-200'
+    ),
+    valid_b200_weeks AS (
+        SELECT cw.id
+        FROM chart_weeks cw
+        WHERE cw.chart_type = 'billboard-200'
+          AND (cw.id NOT IN (SELECT chart_week_id FROM phantom_b200)
+               OR cw.id = (SELECT id FROM first_real_b200))
+    )
+`;
+
+export type RecordPreset =
+  | "most-weeks-at-number-one"
+  | "longest-chart-runs"
+  | "most-number-one-songs-by-artist"
+  | "most-number-one-albums-by-artist"
+  | "most-entries-by-artist"
+  | "most-simultaneous-entries"
+  | "biggest-debuts"
+  | "fastest-to-number-one";
+
+export type CustomRankBy =
+  | "weeks-at-number-one"
+  | "total-weeks"
+  | "weeks-at-position"
+  | "weeks-in-top-n";
+
+export interface RecordLeaderboardRow {
+  rank: number;
+  title: string;
+  artist_credit: string;
+  value: number;
+  song_id: number | null;
+  album_id: number | null;
+  artist_id: number | null;
+  chart_date: string | null;
+}
+
+export interface RecordDrilldownRow {
+  rank: number;
+  title: string;
+  artist_credit: string;
+  value: number;
+  song_id: number | null;
+  album_id: number | null;
+}
+
+export interface PresetRecordsPayload {
+  mode: "preset";
+  record: RecordPreset;
+  chart: ChartType;
+  valueLabel: string;
+  supportsDrilldown: boolean;
+  unsupportedMessage: string | null;
+  rows: RecordLeaderboardRow[];
+}
+
+export interface CustomRecordsInput {
+  chart: ChartType;
+  rankBy: CustomRankBy;
+  rankByParam: number;
+  limit?: number;
+  peakMin?: number | null;
+  peakMax?: number | null;
+  weeksMin?: number | null;
+  debutPosMin?: number | null;
+  debutPosMax?: number | null;
+  artistNames?: string[] | null;
+}
+
+export interface CustomRecordsPayload {
+  mode: "custom";
+  chart: ChartType;
+  valueLabel: string;
+  rows: RecordLeaderboardRow[];
+}
+
+export interface DrilldownPayload {
+  mode: "drilldown";
+  record: RecordPreset;
+  chart: ChartType;
+  artistId: number;
+  artistName: string | null;
+  valueLabel: string;
+  unsupportedMessage: string | null;
+  rows: RecordDrilldownRow[];
+}
+
+const PRESET_VALUE_LABELS: Record<RecordPreset, string> = {
+  "most-weeks-at-number-one": "Wks #1",
+  "longest-chart-runs": "Total Wks",
+  "most-number-one-songs-by-artist": "#1 Songs",
+  "most-number-one-albums-by-artist": "#1 Albums",
+  "most-entries-by-artist": "Entries",
+  "most-simultaneous-entries": "Simult.",
+  "biggest-debuts": "Debut Pos",
+  "fastest-to-number-one": "Wks to #1",
+};
+
+const DRILLDOWN_VALUE_LABELS: Partial<Record<RecordPreset, string>> = {
+  "most-number-one-songs-by-artist": "Wks #1",
+  "most-number-one-albums-by-artist": "Wks #1",
+  "most-entries-by-artist": "Total Wks",
+  "most-simultaneous-entries": "Position",
+};
+
+function toIsoDate(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10);
+  }
+  return null;
+}
+
+function mapRows(rows: Record<string, unknown>[]): RecordLeaderboardRow[] {
+  return rows.map((row, index) => ({
+    rank: index + 1,
+    title: row.title as string,
+    artist_credit: row.artist_credit as string,
+    value: Number(row.value ?? 0),
+    song_id: (row.song_id as number | null) ?? null,
+    album_id: (row.album_id as number | null) ?? null,
+    artist_id: (row.artist_id as number | null) ?? null,
+    chart_date: toIsoDate(row.chart_date),
+  }));
+}
+
+function mapDrilldownRows(rows: Record<string, unknown>[]): RecordDrilldownRow[] {
+  return rows.map((row, index) => ({
+    rank: index + 1,
+    title: row.title as string,
+    artist_credit: row.artist_credit as string,
+    value: Number(row.value ?? 0),
+    song_id: (row.song_id as number | null) ?? null,
+    album_id: (row.album_id as number | null) ?? null,
+  }));
+}
+
+function getUnsupportedMessage(
+  record: RecordPreset,
+  chart: ChartType,
+): string | null {
+  if (record === "most-simultaneous-entries" && chart === "billboard-200") {
+    return "This record is only tracked for the Hot 100.";
+  }
+  if (record === "most-number-one-songs-by-artist" && chart === "billboard-200") {
+    return "This record is only available for the Hot 100.";
+  }
+  if (record === "most-number-one-albums-by-artist" && chart === "hot-100") {
+    return "This record is only available for the Billboard 200.";
+  }
+  return null;
+}
+
+async function getArtistName(artistId: number): Promise<string | null> {
+  const sql = getSql();
+  const rows = await sql.query(
+    `SELECT name
+     FROM artists
+     WHERE id = $1`,
+    [artistId],
+  );
+  const row = rows[0];
+  return row ? (row.name as string) : null;
+}
+
+export async function getPresetRecords(
+  record: RecordPreset,
+  chart: ChartType,
+  limit = 50,
+): Promise<PresetRecordsPayload> {
+  const unsupportedMessage = getUnsupportedMessage(record, chart);
+  if (unsupportedMessage) {
+    return {
+      mode: "preset",
+      record,
+      chart,
+      valueLabel: PRESET_VALUE_LABELS[record],
+      supportsDrilldown: record in DRILLDOWN_VALUE_LABELS,
+      unsupportedMessage,
+      rows: [],
+    };
+  }
+
+  const sql = getSql();
+  let rows: Record<string, unknown>[] = [];
+
+  switch (record) {
+    case "most-weeks-at-number-one":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `SELECT s.title, s.artist_credit, ss.weeks_at_number_one AS value, s.id AS song_id
+           FROM song_stats ss
+           JOIN songs s ON ss.song_id = s.id
+           WHERE ss.weeks_at_number_one > 0
+           ORDER BY ss.weeks_at_number_one DESC, s.title
+           LIMIT $1`,
+          [limit],
+        );
+      } else {
+        rows = await sql.query(
+          `SELECT a.title, a.artist_credit, als.weeks_at_number_one AS value, a.id AS album_id
+           FROM album_stats als
+           JOIN albums a ON als.album_id = a.id
+           WHERE als.weeks_at_number_one > 0
+           ORDER BY als.weeks_at_number_one DESC, a.title
+           LIMIT $1`,
+          [limit],
+        );
+      }
+      break;
+    case "longest-chart-runs":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `SELECT s.title, s.artist_credit, ss.total_weeks AS value, s.id AS song_id
+           FROM song_stats ss
+           JOIN songs s ON ss.song_id = s.id
+           ORDER BY ss.total_weeks DESC, s.title
+           LIMIT $1`,
+          [limit],
+        );
+      } else {
+        rows = await sql.query(
+          `SELECT a.title, a.artist_credit, als.total_weeks AS value, a.id AS album_id
+           FROM album_stats als
+           JOIN albums a ON als.album_id = a.id
+           ORDER BY als.total_weeks DESC, a.title
+           LIMIT $1`,
+          [limit],
+        );
+      }
+      break;
+    case "most-number-one-songs-by-artist":
+      rows = await sql.query(
+        `SELECT a.name AS title, a.name AS artist_credit,
+                COUNT(DISTINCT ss.song_id) AS value, a.id AS artist_id
+         FROM song_stats ss
+         JOIN song_artists sa ON ss.song_id = sa.song_id
+         JOIN artists a ON sa.artist_id = a.id
+         WHERE ss.weeks_at_number_one > 0
+         GROUP BY a.id, a.name
+         ORDER BY value DESC, a.name
+         LIMIT $1`,
+        [limit],
+      );
+      break;
+    case "most-number-one-albums-by-artist":
+      rows = await sql.query(
+        `SELECT a.name AS title, a.name AS artist_credit,
+                COUNT(DISTINCT als.album_id) AS value, a.id AS artist_id
+         FROM album_stats als
+         JOIN album_artists aa ON als.album_id = aa.album_id
+         JOIN artists a ON aa.artist_id = a.id
+         WHERE als.weeks_at_number_one > 0
+         GROUP BY a.id, a.name
+         ORDER BY value DESC, a.name
+         LIMIT $1`,
+        [limit],
+      );
+      break;
+    case "most-entries-by-artist":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `SELECT a.name AS title, a.name AS artist_credit,
+                  ast.total_hot100_songs AS value, a.id AS artist_id
+           FROM artist_stats ast
+           JOIN artists a ON ast.artist_id = a.id
+           WHERE ast.total_hot100_songs > 0
+           ORDER BY ast.total_hot100_songs DESC, a.name
+           LIMIT $1`,
+          [limit],
+        );
+      } else {
+        rows = await sql.query(
+          `SELECT a.name AS title, a.name AS artist_credit,
+                  ast.total_b200_albums AS value, a.id AS artist_id
+           FROM artist_stats ast
+           JOIN artists a ON ast.artist_id = a.id
+           WHERE ast.total_b200_albums > 0
+           ORDER BY ast.total_b200_albums DESC, a.name
+           LIMIT $1`,
+          [limit],
+        );
+      }
+      break;
+    case "most-simultaneous-entries":
+      rows = await sql.query(
+        `WITH ${VALID_HOT100_WEEKS_CTE},
+         artist_week_counts AS (
+           SELECT sa.artist_id, e.chart_week_id, COUNT(*) AS cnt
+           FROM hot100_entries e
+           JOIN song_artists sa ON e.song_id = sa.song_id
+           WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+           GROUP BY sa.artist_id, e.chart_week_id
+         ),
+         artist_max AS (
+           SELECT artist_id, MAX(cnt) AS max_cnt
+           FROM artist_week_counts
+           GROUP BY artist_id
+         )
+         SELECT a.name AS title, a.name AS artist_credit,
+                awc.cnt AS value, a.id AS artist_id, cw.chart_date::text AS chart_date
+         FROM artist_week_counts awc
+         JOIN artist_max am ON awc.artist_id = am.artist_id AND awc.cnt = am.max_cnt
+         JOIN artists a ON awc.artist_id = a.id
+         JOIN chart_weeks cw ON awc.chart_week_id = cw.id
+         ORDER BY awc.cnt DESC, a.name, cw.chart_date
+         LIMIT $1`,
+        [limit],
+      );
+      break;
+    case "biggest-debuts":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `SELECT s.title, s.artist_credit, ss.debut_position AS value, s.id AS song_id
+           FROM song_stats ss
+           JOIN songs s ON ss.song_id = s.id
+           WHERE ss.debut_position IS NOT NULL
+           ORDER BY ss.debut_position ASC, ss.total_weeks DESC
+           LIMIT $1`,
+          [limit],
+        );
+      } else {
+        rows = await sql.query(
+          `SELECT a.title, a.artist_credit, als.debut_position AS value, a.id AS album_id
+           FROM album_stats als
+           JOIN albums a ON als.album_id = a.id
+           WHERE als.debut_position IS NOT NULL
+           ORDER BY als.debut_position ASC, als.total_weeks DESC
+           LIMIT $1`,
+          [limit],
+        );
+      }
+      break;
+    case "fastest-to-number-one":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `SELECT s.title, s.artist_credit, calc.weeks_to_one AS value, s.id AS song_id
+           FROM (
+             SELECT e.song_id,
+                    MIN(cw.chart_date) FILTER (WHERE e.rank = 1) AS first_no1_date,
+                    MIN(cw.chart_date) AS debut_date
+             FROM hot100_entries e
+             JOIN chart_weeks cw ON e.chart_week_id = cw.id
+             GROUP BY e.song_id
+             HAVING MIN(e.rank) = 1
+           ) sub
+           JOIN songs s ON sub.song_id = s.id
+           CROSS JOIN LATERAL (
+             SELECT ((sub.first_no1_date - sub.debut_date) / 7 + 1) AS weeks_to_one
+           ) calc
+           WHERE calc.weeks_to_one IS NOT NULL
+           ORDER BY calc.weeks_to_one ASC, s.title
+           LIMIT $1`,
+          [limit],
+        );
+      } else {
+        rows = await sql.query(
+          `SELECT a.title, a.artist_credit, calc.weeks_to_one AS value, a.id AS album_id
+           FROM (
+             SELECT e.album_id,
+                    MIN(cw.chart_date) FILTER (WHERE e.rank = 1) AS first_no1_date,
+                    MIN(cw.chart_date) AS debut_date
+             FROM b200_entries e
+             JOIN chart_weeks cw ON e.chart_week_id = cw.id
+             GROUP BY e.album_id
+             HAVING MIN(e.rank) = 1
+           ) sub
+           JOIN albums a ON sub.album_id = a.id
+           CROSS JOIN LATERAL (
+             SELECT ((sub.first_no1_date - sub.debut_date) / 7 + 1) AS weeks_to_one
+           ) calc
+           WHERE calc.weeks_to_one IS NOT NULL
+           ORDER BY calc.weeks_to_one ASC, a.title
+           LIMIT $1`,
+          [limit],
+        );
+      }
+      break;
+  }
+
+  return {
+    mode: "preset",
+    record,
+    chart,
+    valueLabel: PRESET_VALUE_LABELS[record],
+    supportsDrilldown: record in DRILLDOWN_VALUE_LABELS,
+    unsupportedMessage: null,
+    rows: mapRows(rows),
+  };
+}
+
+export async function getCustomRecords(
+  input: CustomRecordsInput,
+): Promise<CustomRecordsPayload> {
+  const {
+    chart,
+    rankBy,
+    rankByParam,
+    limit = 50,
+    peakMin,
+    peakMax,
+    weeksMin,
+    debutPosMin,
+    debutPosMax,
+    artistNames,
+  } = input;
+
+  const sql = getSql();
+  const isHot100 = chart === "hot-100";
+  const entryTable = isHot100 ? "hot100_entries" : "b200_entries";
+  const itemTable = isHot100 ? "songs" : "albums";
+  const statsTable = isHot100 ? "song_stats" : "album_stats";
+  const idCol = isHot100 ? "song_id" : "album_id";
+  const validWeeksCte = isHot100 ? VALID_HOT100_WEEKS_CTE : VALID_B200_WEEKS_CTE;
+  const validWeeksTable = isHot100 ? "valid_hot100_weeks" : "valid_b200_weeks";
+
+  const params: Array<string | number> = [];
+  const filters: string[] = [];
+
+  if (artistNames && artistNames.length > 0) {
+    const artistClause = artistNames.map((_, index) => `i.artist_credit ILIKE $${params.length + index + 1}`);
+    filters.push(`(${artistClause.join(" OR ")})`);
+    params.push(...artistNames.map((name) => `%${name}%`));
+  }
+  if (peakMin != null) {
+    params.push(peakMin);
+    filters.push(`st.peak_position >= $${params.length}`);
+  }
+  if (peakMax != null) {
+    params.push(peakMax);
+    filters.push(`st.peak_position <= $${params.length}`);
+  }
+  if (weeksMin != null) {
+    params.push(weeksMin);
+    filters.push(`st.total_weeks >= $${params.length}`);
+  }
+  if (debutPosMin != null) {
+    params.push(debutPosMin);
+    filters.push(`st.debut_position >= $${params.length}`);
+  }
+  if (debutPosMax != null) {
+    params.push(debutPosMax);
+    filters.push(`st.debut_position <= $${params.length}`);
+  }
+
+  const filterSql = filters.length > 0 ? ` AND ${filters.join(" AND ")}` : "";
+  let rows: Record<string, unknown>[] = [];
+  let valueLabel = "Value";
+
+  if (rankBy === "total-weeks" || rankBy === "weeks-at-number-one") {
+    const valueCol = rankBy === "total-weeks" ? "total_weeks" : "weeks_at_number_one";
+    valueLabel = rankBy === "total-weeks" ? "Total Wks" : "Wks #1";
+    const valueFilter =
+      rankBy === "weeks-at-number-one" ? ` AND st.${valueCol} > 0` : "";
+    params.push(limit);
+    rows = await sql.query(
+      `SELECT i.title,
+              i.artist_credit,
+              st.${valueCol} AS value,
+              i.id AS ${idCol}
+       FROM ${statsTable} st
+       JOIN ${itemTable} i ON st.${idCol} = i.id
+       WHERE 1=1${valueFilter}${filterSql}
+       ORDER BY st.${valueCol} DESC, i.title
+       LIMIT $${params.length}`,
+      params,
+    );
+  } else {
+    const rankFilter =
+      rankBy === "weeks-at-position" ? "e.rank = $1" : "e.rank <= $1";
+    valueLabel =
+      rankBy === "weeks-at-position" ? `Wks @#${rankByParam}` : `Wks Top ${rankByParam}`;
+
+    rows = await sql.query(
+      `WITH ${validWeeksCte}
+       SELECT i.title,
+              i.artist_credit,
+              COUNT(*) AS value,
+              i.id AS ${idCol}
+       FROM ${entryTable} e
+       JOIN ${itemTable} i ON e.${idCol} = i.id
+       JOIN ${statsTable} st ON st.${idCol} = i.id
+       WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})
+         AND ${rankFilter}${filterSql}
+       GROUP BY i.id, i.title, i.artist_credit
+       ORDER BY value DESC, i.title
+       LIMIT $${params.length + 2}`,
+      [rankByParam, ...params, limit],
+    );
+  }
+
+  return {
+    mode: "custom",
+    chart,
+    valueLabel,
+    rows: mapRows(rows).slice(0, 50),
+  };
+}
+
+export async function getArtistRecordDrilldown(
+  record: RecordPreset,
+  chart: ChartType,
+  artistId: number,
+  chartDate?: string,
+): Promise<DrilldownPayload> {
+  const unsupportedMessage = getUnsupportedMessage(record, chart);
+  const artistName = await getArtistName(artistId);
+  if (unsupportedMessage) {
+    return {
+      mode: "drilldown",
+      record,
+      chart,
+      artistId,
+      artistName,
+      valueLabel: DRILLDOWN_VALUE_LABELS[record] ?? "Value",
+      unsupportedMessage,
+      rows: [],
+    };
+  }
+
+  const sql = getSql();
+  let rows: Record<string, unknown>[] = [];
+
+  switch (record) {
+    case "most-number-one-songs-by-artist":
+      rows = await sql.query(
+        `SELECT s.title, s.artist_credit, ss.weeks_at_number_one AS value, s.id AS song_id
+         FROM song_stats ss
+         JOIN songs s ON ss.song_id = s.id
+         JOIN song_artists sa ON s.id = sa.song_id
+         WHERE sa.artist_id = $1 AND ss.weeks_at_number_one > 0
+         ORDER BY ss.weeks_at_number_one DESC, s.title`,
+        [artistId],
+      );
+      break;
+    case "most-number-one-albums-by-artist":
+      rows = await sql.query(
+        `SELECT a.title, a.artist_credit, als.weeks_at_number_one AS value, a.id AS album_id
+         FROM album_stats als
+         JOIN albums a ON als.album_id = a.id
+         JOIN album_artists aa ON a.id = aa.album_id
+         WHERE aa.artist_id = $1 AND als.weeks_at_number_one > 0
+         ORDER BY als.weeks_at_number_one DESC, a.title`,
+        [artistId],
+      );
+      break;
+    case "most-entries-by-artist":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `SELECT s.title, s.artist_credit, ss.total_weeks AS value, s.id AS song_id
+           FROM song_stats ss
+           JOIN songs s ON ss.song_id = s.id
+           JOIN song_artists sa ON s.id = sa.song_id
+           WHERE sa.artist_id = $1
+           ORDER BY ss.total_weeks DESC, s.title`,
+          [artistId],
+        );
+      } else {
+        rows = await sql.query(
+          `SELECT a.title, a.artist_credit, als.total_weeks AS value, a.id AS album_id
+           FROM album_stats als
+           JOIN albums a ON als.album_id = a.id
+           JOIN album_artists aa ON a.id = aa.album_id
+           WHERE aa.artist_id = $1
+           ORDER BY als.total_weeks DESC, a.title`,
+          [artistId],
+        );
+      }
+      break;
+    case "most-simultaneous-entries":
+      if (!chartDate) {
+        throw new Error("chartDate is required for simultaneous entry drilldowns.");
+      }
+      rows = await sql.query(
+        `SELECT s.title, s.artist_credit, e.rank AS value, s.id AS song_id
+         FROM hot100_entries e
+         JOIN songs s ON e.song_id = s.id
+         JOIN song_artists sa ON s.id = sa.song_id
+         JOIN chart_weeks cw ON e.chart_week_id = cw.id
+         WHERE sa.artist_id = $1
+           AND cw.chart_date = $2::date
+           AND cw.chart_type = 'hot-100'
+         ORDER BY e.rank ASC`,
+        [artistId, chartDate],
+      );
+      break;
+    default:
+      rows = [];
+      break;
+  }
+
+  return {
+    mode: "drilldown",
+    record,
+    chart,
+    artistId,
+    artistName,
+    valueLabel: DRILLDOWN_VALUE_LABELS[record] ?? "Value",
+    unsupportedMessage: null,
+    rows: mapDrilldownRows(rows),
+  };
+}
