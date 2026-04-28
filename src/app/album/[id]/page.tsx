@@ -1,5 +1,6 @@
 import { ArtistPills } from "@/components/detail/artist-pills";
 import { ChartHistoryTable } from "@/components/detail/chart-history-table";
+import { ChartRunVisualization } from "@/components/detail/chart-run-visualization";
 import { DetailHeader } from "@/components/detail/detail-header";
 import { StatsBar } from "@/components/detail/stats-bar";
 import { getAlbumDetail, type AlbumDetailPayload } from "@/lib/albums";
@@ -107,6 +108,14 @@ export default async function AlbumDetailPage(props: PageProps<"/album/[id]">) {
       <div className="mt-6">
         <StatsBar items={statsItems} />
       </div>
+
+      {detail.chartRun.length >= 2 ? (
+        <ChartRunVisualization
+          chartType={detail.chartType}
+          points={detail.chartRun}
+          title={`${detail.album.title} chart run`}
+        />
+      ) : null}
 
       <section className="mt-6">
         <div className="mb-3 text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
