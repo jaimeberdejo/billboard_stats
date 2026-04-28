@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { RecordsView } from "@/components/records/records-view";
 
 export const metadata = {
   title: "Records — Billboard Stats",
@@ -15,20 +15,7 @@ export default function RecordsPage() {
           Chart Records &amp; Leaderboards
         </h1>
       </div>
-
-      <div className="mt-6 rounded border border-black/10 bg-[#F5F5F5] px-4 py-5">
-        <p className="text-[12px] font-[600] text-[#0A0A0A]">
-          Available in Phase 4
-        </p>
-        <p className="mt-2 text-[12px] text-[#888888]">
-          Preset leaderboards and custom record queries are planned for Phase 4.
-          In the meantime, browse current chart rankings on{" "}
-          <Link href="/" className="text-[#C8102E] hover:underline">
-            Latest Charts
-          </Link>
-          .
-        </p>
-      </div>
+      <RecordsView />
     </div>
   );
 }
