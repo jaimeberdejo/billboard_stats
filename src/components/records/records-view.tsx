@@ -3,8 +3,18 @@
 import { useEffect, useState, useTransition } from "react";
 
 import { ArtistDrilldown } from "@/components/records/artist-drilldown";
+import {
+  CustomQueryBuilder,
+  type CustomQueryState,
+} from "@/components/records/custom-query-builder";
 import { LeaderboardList } from "@/components/records/leaderboard-list";
-import { type DrilldownPayload, type PresetRecordsPayload, type RecordLeaderboardRow, type RecordPreset } from "@/lib/records";
+import {
+  type CustomRecordsPayload,
+  type DrilldownPayload,
+  type PresetRecordsPayload,
+  type RecordLeaderboardRow,
+  type RecordPreset,
+} from "@/lib/records";
 
 const RECORD_OPTIONS: Array<{ label: string; value: "custom-query" | RecordPreset }> = [
   { label: "Custom Query", value: "custom-query" },
@@ -78,16 +88,68 @@ async function fetchDrilldown(
   return payload;
 }
 
+async function fetchCustomRecords(
+  chart: "hot-100" | "billboard-200",
+  state: CustomQueryState,
+): Promise<CustomRecordsPayload> {
+  const params = new URLSearchParams({
+    mode: "custom",
+    chart,
+    rankBy: state.rankBy,
+    rankByParam: String(state.rankByParam),
+    sortDir: state.sortDir,
+  });
+
+  if (state.artistNames.trim()) {
+    params.set("artistNames", state.artistNames.trim());
+  }
+  if (state.weeksMin.trim()) {
+    params.set("weeksMin", state.weeksMin.trim());
+  }
+  params.set("peakMin", String(state.peakMin));
+  params.set("peakMax", String(state.peakMax));
+  params.set("debutPosMin", String(state.debutPosMin));
+  params.set("debutPosMax", String(state.debutPosMax));
+
+  const response = await fetch(`/api/records?${params.toString()}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  const payload = (await response.json()) as CustomRecordsPayload | { error?: string };
+  if (!response.ok || !("rows" in payload)) {
+    throw new Error(
+      "error" in payload && payload.error
+        ? payload.error
+        : "Could not load custom records. Please try again later.",
+    );
+  }
+
+  return payload;
+}
+
 export function RecordsView() {
   const [recordType, setRecordType] = useState<"custom-query" | RecordPreset>(
     "most-weeks-at-number-one",
   );
   const [chart, setChart] = useState<"hot-100" | "billboard-200">("hot-100");
   const [payload, setPayload] = useState<PresetRecordsPayload | null>(null);
+  const [customPayload, setCustomPayload] = useState<CustomRecordsPayload | null>(null);
   const [drilldown, setDrilldown] = useState<DrilldownPayload | null>(null);
   const [expandedArtistId, setExpandedArtistId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [customState, setCustomState] = useState<CustomQueryState>({
+    sortDir: "desc",
+    rankBy: "weeks-at-number-one",
+    rankByParam: 10,
+    artistNames: "",
+    peakMin: 1,
+    peakMax: 100,
+    weeksMin: "",
+    debutPosMin: 1,
+    debutPosMax: 100,
+  });
 
   const resetExpandedState = () => {
     setExpandedArtistId(null);
@@ -99,6 +161,7 @@ export function RecordsView() {
     resetExpandedState();
     if (nextRecordType === "custom-query") {
       setPayload(null);
+      setCustomPayload(null);
       setError(null);
     }
   };
@@ -106,6 +169,17 @@ export function RecordsView() {
   const handleChartChange = (nextChart: "hot-100" | "billboard-200") => {
     setChart(nextChart);
     resetExpandedState();
+    setCustomState((current) => ({
+      ...current,
+      peakMin: 1,
+      peakMax: nextChart === "hot-100" ? 100 : 200,
+      debutPosMin: 1,
+      debutPosMax: nextChart === "hot-100" ? 100 : 200,
+      rankByParam: Math.min(
+        current.rankByParam,
+        nextChart === "hot-100" ? 100 : 200,
+      ),
+    }));
   };
 
   useEffect(() => {
@@ -138,6 +212,36 @@ export function RecordsView() {
     };
   }, [chart, recordType]);
 
+  useEffect(() => {
+    if (recordType !== "custom-query") {
+      return;
+    }
+
+    let cancelled = false;
+    startTransition(async () => {
+      try {
+        const nextPayload = await fetchCustomRecords(chart, customState);
+        if (!cancelled) {
+          setCustomPayload(nextPayload);
+          setError(null);
+        }
+      } catch (fetchError) {
+        if (!cancelled) {
+          setCustomPayload(null);
+          setError(
+            fetchError instanceof Error
+              ? fetchError.message
+              : "Could not load custom records. Please try again later.",
+          );
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chart, customState, recordType]);
+
   const onRowClick = (row: RecordLeaderboardRow) => {
     if (!payload?.supportsDrilldown || !row.artist_id) {
       return;
@@ -166,7 +270,10 @@ export function RecordsView() {
     });
   };
 
-  const resultCount = payload?.rows.length ?? 0;
+  const resultCount =
+    recordType === "custom-query"
+      ? (customPayload?.rows.length ?? 0)
+      : (payload?.rows.length ?? 0);
 
   return (
     <section className="mt-6 flex flex-col gap-4">
@@ -212,9 +319,11 @@ export function RecordsView() {
       </div>
 
       {recordType === "custom-query" ? (
-        <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
-          Custom Query will be integrated next, on top of this records shell.
-        </div>
+        <CustomQueryBuilder
+          chart={chart}
+          state={customState}
+          onChange={setCustomState}
+        />
       ) : null}
 
       {error ? (
@@ -240,6 +349,21 @@ export function RecordsView() {
             />
             {expandedArtistId ? <ArtistDrilldown payload={drilldown} /> : null}
           </>
+        ) : (
+          <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
+            No records found.
+          </div>
+        )
+      ) : null}
+
+      {recordType === "custom-query" && customPayload ? (
+        customPayload.rows.length > 0 ? (
+          <LeaderboardList
+            rows={customPayload.rows}
+            valueLabel={customPayload.valueLabel}
+            expandedArtistId={null}
+            onRowClick={() => {}}
+          />
         ) : (
           <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
             No records found.

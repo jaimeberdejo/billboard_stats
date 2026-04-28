@@ -1,5 +1,7 @@
 "use client";
 
+import { useRouter } from "next/navigation";
+
 import type { RecordLeaderboardRow } from "@/lib/records";
 
 interface LeaderboardListProps {
@@ -15,6 +17,8 @@ export function LeaderboardList({
   expandedArtistId,
   onRowClick,
 }: LeaderboardListProps) {
+  const router = useRouter();
+
   return (
     <div className="overflow-hidden rounded border border-black/10 bg-white">
       <div className="divide-y divide-black/10">
@@ -25,7 +29,19 @@ export function LeaderboardList({
             <button
               key={`${row.rank}-${row.title}-${row.artist_id ?? row.song_id ?? row.album_id ?? "row"}`}
               type="button"
-              onClick={() => onRowClick(row)}
+              onClick={() => {
+                if (row.artist_id) {
+                  onRowClick(row);
+                  return;
+                }
+                if (row.song_id) {
+                  router.push(`/song/${row.song_id}`);
+                  return;
+                }
+                if (row.album_id) {
+                  router.push(`/album/${row.album_id}`);
+                }
+              }}
               className="flex w-full items-center gap-3 px-3 py-3 text-left transition-colors hover:bg-[#F5F5F5]"
             >
               <div className="w-8 shrink-0 text-[12px] font-[700] leading-[1.1] text-[#888888]">
