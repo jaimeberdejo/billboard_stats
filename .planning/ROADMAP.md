@@ -23,6 +23,12 @@
 ## Phase 3: Detail Pages & Visualizations
 **Goal:** Implement entity detail pages (Song, Album, Artist) and chart run visualizations.
 **Requirements:** DETAILS-01, DETAILS-02, DETAILS-03, DETAILS-04, DETAILS-05
+**Plans:** 4 plans
+Plans:
+- [ ] 03-01-PLAN.md — Build typed detail data helpers and validated internal detail APIs.
+- [ ] 03-02-PLAN.md — Ship shared song/album detail pages with stats bars, history tables, and artist pills.
+- [ ] 03-03-PLAN.md — Implement the artist detail page with aggregate stats and drill-down catalog tables.
+- [ ] 03-04-PLAN.md — Add the collapsible chart-run SVG visualization to song and album pages.
 **Success Criteria:**
 1. Song and Album pages show stats bar and week-by-week chart history table.
 2. SVG chart run visualization renders correctly (collapsible, inverted Y-axis, peak dot).
