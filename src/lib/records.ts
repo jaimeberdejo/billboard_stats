@@ -50,18 +50,22 @@ const VALID_B200_WEEKS_CTE = `
 export type RecordPreset =
   | "most-weeks-at-number-one"
   | "longest-chart-runs"
+  | "most-top-10-weeks"
   | "most-number-one-songs-by-artist"
   | "most-number-one-albums-by-artist"
   | "most-entries-by-artist"
-  | "most-simultaneous-entries"
-  | "biggest-debuts"
-  | "fastest-to-number-one";
+  | "most-total-chart-weeks-by-artist"
+  | "most-simultaneous-entries";
 
 export type CustomRankBy =
   | "weeks-at-number-one"
   | "total-weeks"
   | "weeks-at-position"
-  | "weeks-in-top-n";
+  | "weeks-in-top-n"
+  | "most-entries"
+  | "number-one-entries";
+
+export type CustomEntity = "songs" | "albums" | "artists";
 
 export interface RecordLeaderboardRow {
   rank: number;
@@ -94,6 +98,7 @@ export interface PresetRecordsPayload {
 }
 
 export interface CustomRecordsInput {
+  entity: CustomEntity;
   chart: ChartType;
   rankBy: CustomRankBy;
   rankByParam: number;
@@ -109,6 +114,7 @@ export interface CustomRecordsInput {
 
 export interface CustomRecordsPayload {
   mode: "custom";
+  entity: CustomEntity;
   chart: ChartType;
   valueLabel: string;
   rows: RecordLeaderboardRow[];
@@ -128,18 +134,19 @@ export interface DrilldownPayload {
 const PRESET_VALUE_LABELS: Record<RecordPreset, string> = {
   "most-weeks-at-number-one": "Wks #1",
   "longest-chart-runs": "Total Wks",
+  "most-top-10-weeks": "Top 10 Wks",
   "most-number-one-songs-by-artist": "#1 Songs",
   "most-number-one-albums-by-artist": "#1 Albums",
   "most-entries-by-artist": "Entries",
+  "most-total-chart-weeks-by-artist": "Total Wks",
   "most-simultaneous-entries": "Simult.",
-  "biggest-debuts": "Debut Pos",
-  "fastest-to-number-one": "Wks to #1",
 };
 
 const DRILLDOWN_VALUE_LABELS: Partial<Record<RecordPreset, string>> = {
   "most-number-one-songs-by-artist": "Wks #1",
   "most-number-one-albums-by-artist": "Wks #1",
   "most-entries-by-artist": "Total Wks",
+  "most-total-chart-weeks-by-artist": "Total Wks",
   "most-simultaneous-entries": "Position",
 };
 
@@ -271,6 +278,35 @@ export async function getPresetRecords(
         );
       }
       break;
+    case "most-top-10-weeks":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `WITH ${VALID_HOT100_WEEKS_CTE}
+           SELECT s.title, s.artist_credit, COUNT(*) AS value, s.id AS song_id
+           FROM hot100_entries e
+           JOIN songs s ON e.song_id = s.id
+           WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+             AND e.rank <= 10
+           GROUP BY s.id, s.title, s.artist_credit
+           ORDER BY value DESC, s.title
+           LIMIT $1`,
+          [limit],
+        );
+      } else {
+        rows = await sql.query(
+          `WITH ${VALID_B200_WEEKS_CTE}
+           SELECT a.title, a.artist_credit, COUNT(*) AS value, a.id AS album_id
+           FROM b200_entries e
+           JOIN albums a ON e.album_id = a.id
+           WHERE e.chart_week_id IN (SELECT id FROM valid_b200_weeks)
+             AND e.rank <= 10
+           GROUP BY a.id, a.title, a.artist_credit
+           ORDER BY value DESC, a.title
+           LIMIT $1`,
+          [limit],
+        );
+      }
+      break;
     case "most-number-one-songs-by-artist":
       rows = await sql.query(
         `SELECT a.name AS title, a.name AS artist_credit,
@@ -324,6 +360,31 @@ export async function getPresetRecords(
         );
       }
       break;
+    case "most-total-chart-weeks-by-artist":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `SELECT a.name AS title, a.name AS artist_credit,
+                  ast.total_hot100_weeks AS value, a.id AS artist_id
+           FROM artist_stats ast
+           JOIN artists a ON ast.artist_id = a.id
+           WHERE ast.total_hot100_weeks > 0
+           ORDER BY ast.total_hot100_weeks DESC, a.name
+           LIMIT $1`,
+          [limit],
+        );
+      } else {
+        rows = await sql.query(
+          `SELECT a.name AS title, a.name AS artist_credit,
+                  ast.total_b200_weeks AS value, a.id AS artist_id
+           FROM artist_stats ast
+           JOIN artists a ON ast.artist_id = a.id
+           WHERE ast.total_b200_weeks > 0
+           ORDER BY ast.total_b200_weeks DESC, a.name
+           LIMIT $1`,
+          [limit],
+        );
+      }
+      break;
     case "most-simultaneous-entries":
       rows = await sql.query(
         `WITH ${VALID_HOT100_WEEKS_CTE},
@@ -350,74 +411,6 @@ export async function getPresetRecords(
         [limit],
       );
       break;
-    case "biggest-debuts":
-      if (chart === "hot-100") {
-        rows = await sql.query(
-          `SELECT s.title, s.artist_credit, ss.debut_position AS value, s.id AS song_id
-           FROM song_stats ss
-           JOIN songs s ON ss.song_id = s.id
-           WHERE ss.debut_position IS NOT NULL
-           ORDER BY ss.debut_position ASC, ss.total_weeks DESC
-           LIMIT $1`,
-          [limit],
-        );
-      } else {
-        rows = await sql.query(
-          `SELECT a.title, a.artist_credit, als.debut_position AS value, a.id AS album_id
-           FROM album_stats als
-           JOIN albums a ON als.album_id = a.id
-           WHERE als.debut_position IS NOT NULL
-           ORDER BY als.debut_position ASC, als.total_weeks DESC
-           LIMIT $1`,
-          [limit],
-        );
-      }
-      break;
-    case "fastest-to-number-one":
-      if (chart === "hot-100") {
-        rows = await sql.query(
-          `SELECT s.title, s.artist_credit, calc.weeks_to_one AS value, s.id AS song_id
-           FROM (
-             SELECT e.song_id,
-                    MIN(cw.chart_date) FILTER (WHERE e.rank = 1) AS first_no1_date,
-                    MIN(cw.chart_date) AS debut_date
-             FROM hot100_entries e
-             JOIN chart_weeks cw ON e.chart_week_id = cw.id
-             GROUP BY e.song_id
-             HAVING MIN(e.rank) = 1
-           ) sub
-           JOIN songs s ON sub.song_id = s.id
-           CROSS JOIN LATERAL (
-             SELECT ((sub.first_no1_date - sub.debut_date) / 7 + 1) AS weeks_to_one
-           ) calc
-           WHERE calc.weeks_to_one IS NOT NULL
-           ORDER BY calc.weeks_to_one ASC, s.title
-           LIMIT $1`,
-          [limit],
-        );
-      } else {
-        rows = await sql.query(
-          `SELECT a.title, a.artist_credit, calc.weeks_to_one AS value, a.id AS album_id
-           FROM (
-             SELECT e.album_id,
-                    MIN(cw.chart_date) FILTER (WHERE e.rank = 1) AS first_no1_date,
-                    MIN(cw.chart_date) AS debut_date
-             FROM b200_entries e
-             JOIN chart_weeks cw ON e.chart_week_id = cw.id
-             GROUP BY e.album_id
-             HAVING MIN(e.rank) = 1
-           ) sub
-           JOIN albums a ON sub.album_id = a.id
-           CROSS JOIN LATERAL (
-             SELECT ((sub.first_no1_date - sub.debut_date) / 7 + 1) AS weeks_to_one
-           ) calc
-           WHERE calc.weeks_to_one IS NOT NULL
-           ORDER BY calc.weeks_to_one ASC, a.title
-           LIMIT $1`,
-          [limit],
-        );
-      }
-      break;
   }
 
   return {
@@ -435,6 +428,7 @@ export async function getCustomRecords(
   input: CustomRecordsInput,
 ): Promise<CustomRecordsPayload> {
   const {
+    entity,
     chart,
     rankBy,
     rankByParam,
@@ -458,40 +452,95 @@ export async function getCustomRecords(
   const validWeeksTable = isHot100 ? "valid_hot100_weeks" : "valid_b200_weeks";
   const orderDir = sortDir === "asc" ? "ASC" : "DESC";
 
-  const params: Array<string | number> = [];
-  const filters: string[] = [];
-
-  if (artistNames && artistNames.length > 0) {
-    const artistClause = artistNames.map((_, index) => `i.artist_credit ILIKE $${params.length + index + 1}`);
-    filters.push(`(${artistClause.join(" OR ")})`);
-    params.push(...artistNames.map((name) => `%${name}%`));
-  }
-  if (peakMin != null) {
-    params.push(peakMin);
-    filters.push(`st.peak_position >= $${params.length}`);
-  }
-  if (peakMax != null) {
-    params.push(peakMax);
-    filters.push(`st.peak_position <= $${params.length}`);
-  }
-  if (weeksMin != null) {
-    params.push(weeksMin);
-    filters.push(`st.total_weeks >= $${params.length}`);
-  }
-  if (debutPosMin != null) {
-    params.push(debutPosMin);
-    filters.push(`st.debut_position >= $${params.length}`);
-  }
-  if (debutPosMax != null) {
-    params.push(debutPosMax);
-    filters.push(`st.debut_position <= $${params.length}`);
-  }
-
-  const filterSql = filters.length > 0 ? ` AND ${filters.join(" AND ")}` : "";
   let rows: Record<string, unknown>[] = [];
   let valueLabel = "Value";
 
-  if (rankBy === "total-weeks" || rankBy === "weeks-at-number-one") {
+  const buildFilters = (placeholderOffset = 0) => {
+    const params: Array<string | number> = [];
+    const filters: string[] = [];
+    const placeholder = () => `$${placeholderOffset + params.length + 1}`;
+
+    if (artistNames && artistNames.length > 0) {
+      const artistValues = artistNames.map((name) => `%${name}%`);
+      const artistClause = artistValues.map(() => `i.artist_credit ILIKE ${placeholder()}`);
+      filters.push(`(${artistClause.join(" OR ")})`);
+      params.push(...artistValues);
+    }
+    if (peakMin != null) {
+      filters.push(`st.peak_position >= ${placeholder()}`);
+      params.push(peakMin);
+    }
+    if (peakMax != null) {
+      filters.push(`st.peak_position <= ${placeholder()}`);
+      params.push(peakMax);
+    }
+    if (weeksMin != null) {
+      filters.push(`st.total_weeks >= ${placeholder()}`);
+      params.push(weeksMin);
+    }
+    if (debutPosMin != null) {
+      filters.push(`st.debut_position >= ${placeholder()}`);
+      params.push(debutPosMin);
+    }
+    if (debutPosMax != null) {
+      filters.push(`st.debut_position <= ${placeholder()}`);
+      params.push(debutPosMax);
+    }
+
+    return {
+      params,
+      filterSql: filters.length > 0 ? ` AND ${filters.join(" AND ")}` : "",
+    };
+  };
+
+  if (entity === "artists") {
+    const params: Array<string | number> = [];
+    const filters: string[] = [];
+
+    if (artistNames && artistNames.length > 0) {
+      const artistValues = artistNames.map((name) => `%${name}%`);
+      const artistClause = artistValues.map((_, index) => `a.name ILIKE $${index + 1}`);
+      filters.push(`(${artistClause.join(" OR ")})`);
+      params.push(...artistValues);
+    }
+    if (weeksMin != null) {
+      filters.push(
+        `${isHot100 ? "ast.total_hot100_weeks" : "ast.total_b200_weeks"} >= $${params.length + 1}`,
+      );
+      params.push(weeksMin);
+    }
+
+    let valueSql = "";
+    if (rankBy === "total-weeks") {
+      valueLabel = "Total Wks";
+      valueSql = isHot100 ? "ast.total_hot100_weeks" : "ast.total_b200_weeks";
+      filters.push(`${valueSql} > 0`);
+    } else if (rankBy === "most-entries") {
+      valueLabel = "Entries";
+      valueSql = isHot100 ? "ast.total_hot100_songs" : "ast.total_b200_albums";
+      filters.push(`${valueSql} > 0`);
+    } else {
+      valueLabel = isHot100 ? "#1 Songs" : "#1 Albums";
+      valueSql = isHot100 ? "ast.hot100_number_ones" : "ast.b200_number_ones";
+      filters.push(`${valueSql} > 0`);
+    }
+
+    const filterSql = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
+    params.push(limit);
+    rows = await sql.query(
+      `SELECT a.name AS title,
+              a.name AS artist_credit,
+              ${valueSql} AS value,
+              a.id AS artist_id
+       FROM artist_stats ast
+       JOIN artists a ON ast.artist_id = a.id
+       ${filterSql}
+       ORDER BY ${valueSql} ${orderDir}, a.name
+       LIMIT $${params.length}`,
+      params,
+    );
+  } else if (rankBy === "total-weeks" || rankBy === "weeks-at-number-one") {
+    const { params, filterSql } = buildFilters();
     const valueCol = rankBy === "total-weeks" ? "total_weeks" : "weeks_at_number_one";
     valueLabel = rankBy === "total-weeks" ? "Total Wks" : "Wks #1";
     const valueFilter =
@@ -510,6 +559,7 @@ export async function getCustomRecords(
       params,
     );
   } else {
+    const { params, filterSql } = buildFilters(1);
     const rankFilter =
       rankBy === "weeks-at-position" ? "e.rank = $1" : "e.rank <= $1";
     valueLabel =
@@ -535,6 +585,7 @@ export async function getCustomRecords(
 
   return {
     mode: "custom",
+    entity,
     chart,
     valueLabel,
     rows: mapRows(rows).slice(0, 50),
@@ -589,6 +640,29 @@ export async function getArtistRecordDrilldown(
       );
       break;
     case "most-entries-by-artist":
+      if (chart === "hot-100") {
+        rows = await sql.query(
+          `SELECT s.title, s.artist_credit, ss.total_weeks AS value, s.id AS song_id
+           FROM song_stats ss
+           JOIN songs s ON ss.song_id = s.id
+           JOIN song_artists sa ON s.id = sa.song_id
+           WHERE sa.artist_id = $1
+           ORDER BY ss.total_weeks DESC, s.title`,
+          [artistId],
+        );
+      } else {
+        rows = await sql.query(
+          `SELECT a.title, a.artist_credit, als.total_weeks AS value, a.id AS album_id
+           FROM album_stats als
+           JOIN albums a ON als.album_id = a.id
+           JOIN album_artists aa ON a.id = aa.album_id
+           WHERE aa.artist_id = $1
+           ORDER BY als.total_weeks DESC, a.title`,
+          [artistId],
+        );
+      }
+      break;
+    case "most-total-chart-weeks-by-artist":
       if (chart === "hot-100") {
         rows = await sql.query(
           `SELECT s.title, s.artist_credit, ss.total_weeks AS value, s.id AS song_id
