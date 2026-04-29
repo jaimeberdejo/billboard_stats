@@ -20,7 +20,6 @@ import {
   interpretedQuerySchema,
 } from "./schema.ts";
 import {
-  extractPositiveIntegers,
   normalizeQuestion,
   splitArtistNames,
   tokenizeQuestion,
@@ -50,6 +49,7 @@ const ARTIST_FILTER_RE = /\bby\s+([a-z0-9,&.'\-\s]+)$/i;
 const MIN_WEEKS_RE = /\b(?:at least|min(?:imum)?|over)\s+(\d+)\s+weeks?\b/i;
 const DEBUT_RANGE_RE = /\bdebut(?:ed)?\s+(?:between\s+)?#?(\d+)(?:\s+(?:and|to|-)\s+#?(\d+))?/i;
 const PEAK_RANGE_RE = /\bpeak(?:ed)?\s+(?:between\s+)?#?(\d+)(?:\s+(?:and|to|-)\s+#?(\d+))?/i;
+const YEAR_FILTER_RE = /\b(from|in)\s+(\d{4})\b/i;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -62,6 +62,11 @@ function hasAlias(normalizedQuestion: string, alias: string): boolean {
 }
 
 function detectUnsupportedCue(normalizedQuestion: string): string | null {
+  const yearFilter = normalizedQuestion.match(YEAR_FILTER_RE);
+  if (yearFilter) {
+    return `${yearFilter[1]} ${yearFilter[2]}`;
+  }
+
   return (
     UNSUPPORTED_CUE_WORDS.find((cue) => hasAlias(normalizedQuestion, cue)) ?? null
   );
@@ -129,20 +134,19 @@ function inferMetric(normalizedQuestion: string): {
   rankBy: RecordsCustomInterpretation["rankBy"];
   rankByParam?: number;
 } | null {
-  const [firstInteger] = extractPositiveIntegers(normalizedQuestion);
   const topMatch = normalizedQuestion.match(/\btop\s+(\d+)\b/);
-  if (topMatch && firstInteger) {
+  if (topMatch) {
     return {
       rankBy: "weeks-in-top-n",
-      rankByParam: firstInteger,
+      rankByParam: Number(topMatch[1]),
     };
   }
 
   const positionMatch = normalizedQuestion.match(/\bposition\s+#?(\d+)\b/);
-  if (positionMatch && firstInteger) {
+  if (positionMatch) {
     return {
       rankBy: "weeks-at-position",
-      rankByParam: firstInteger,
+      rankByParam: Number(positionMatch[1]),
     };
   }
 
