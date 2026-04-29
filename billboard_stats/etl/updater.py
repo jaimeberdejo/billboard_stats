@@ -59,8 +59,11 @@ def update_charts(conn, data_dir: str = None):
     if hot100_latest:
         start = (hot100_latest + datetime.timedelta(days=1)).isoformat()
         end = latest_valid_week.isoformat()
-        logger.info(f"Hot 100: fetching from {start} to {end}")
-        download_hot100(start, end, data_dir)
+        if hot100_latest < latest_valid_week:
+            logger.info(f"Hot 100: fetching from {start} to {end}")
+            download_hot100(start, end, data_dir)
+        else:
+            logger.info("Hot 100: already current through the latest valid chart week.")
 
         # Determine which new dates to load
         hot100_dir = os.path.join(data_dir, "hot100")
@@ -81,8 +84,11 @@ def update_charts(conn, data_dir: str = None):
     if b200_latest:
         start = (b200_latest + datetime.timedelta(days=1)).isoformat()
         end = latest_valid_week.isoformat()
-        logger.info(f"Billboard 200: fetching from {start} to {end}")
-        download_b200(data_dir=data_dir, start_date=start, end_date=end)
+        if b200_latest < latest_valid_week:
+            logger.info(f"Billboard 200: fetching from {start} to {end}")
+            download_b200(data_dir=data_dir, start_date=start, end_date=end)
+        else:
+            logger.info("Billboard 200: already current through the latest valid chart week.")
 
         b200_dir = os.path.join(data_dir, "b200")
         for fname in sorted(os.listdir(b200_dir)):
