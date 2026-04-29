@@ -41,19 +41,6 @@ async function fetchSnapshot(chartType: ChartType, date?: string): Promise<Chart
   return payload;
 }
 
-function formatDate(value: string): string {
-  if (!value) {
-    return "Unavailable";
-  }
-
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(`${value}T00:00:00Z`));
-}
-
 export function LatestChartsView({
   initialSnapshot,
   initialError,
@@ -80,22 +67,6 @@ export function LatestChartsView({
 
   return (
     <section className="flex flex-1 flex-col gap-4">
-      <div className="border-b border-black/10 pb-3">
-        <div className="flex flex-wrap items-end justify-between gap-3">
-          <div>
-            <p className="text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
-              Latest Charts
-            </p>
-            <h1 className="mt-1 text-[16px] font-[700] leading-[1.2] text-[#0A0A0A]">
-              {snapshot.chartType === "billboard-200" ? "Billboard 200" : "Hot 100"}
-            </h1>
-          </div>
-          <p className="text-[11px] text-[#888888]">
-            Week ending {formatDate(snapshot.selectedDate || snapshot.latestDate)}
-          </p>
-        </div>
-      </div>
-
       <ChartControls
         availableDates={snapshot.availableDates}
         chartType={snapshot.chartType}

@@ -24,10 +24,18 @@ export function PrimaryNav() {
           <Link
             key={href}
             href={href}
+            style={
+              isActive
+                ? {
+                    backgroundColor: "#0A0A0A",
+                    color: "#FFFFFF",
+                  }
+                : undefined
+            }
             className={[
               "rounded px-3 py-1.5 text-[12px] font-[500] tracking-tight transition-colors",
               isActive
-                ? "bg-[#0A0A0A] text-white"
+                ? ""
                 : "text-[#888888] hover:bg-[#F5F5F5] hover:text-[#0A0A0A]",
             ].join(" ")}
           >
