@@ -11,7 +11,6 @@ type RecordPreset = RecordsPresetInterpretation["record"];
 export const CHART_ALIASES: Record<string, ChartType> = {
   "hot 100": "hot-100",
   hot100: "hot-100",
-  hot: "hot-100",
   "billboard 200": "billboard-200",
   b200: "billboard-200",
   "billboard200": "billboard-200",
@@ -51,6 +50,10 @@ export const METRIC_ALIASES: Record<
   "number one": { rankBy: "weeks-at-number-one" },
   "weeks at #1": { rankBy: "weeks-at-number-one" },
   "weeks at number one": { rankBy: "weeks-at-number-one" },
+  "most weeks": { rankBy: "total-weeks" },
+  "least weeks": { rankBy: "total-weeks" },
+  "most chart weeks": { rankBy: "total-weeks" },
+  "least chart weeks": { rankBy: "total-weeks" },
   "total weeks": { rankBy: "total-weeks" },
   "weeks on chart": { rankBy: "total-weeks" },
   "specific position": { rankBy: "weeks-at-position" },
@@ -67,7 +70,6 @@ export const METRIC_ALIASES: Record<
 
 export const UNSUPPORTED_CUE_WORDS = [
   "since",
-  "between",
   "before",
   "after",
   "year",

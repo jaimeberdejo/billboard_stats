@@ -51,9 +51,19 @@ const MIN_WEEKS_RE = /\b(?:at least|min(?:imum)?|over)\s+(\d+)\s+weeks?\b/i;
 const DEBUT_RANGE_RE = /\bdebut(?:ed)?\s+(?:between\s+)?#?(\d+)(?:\s+(?:and|to|-)\s+#?(\d+))?/i;
 const PEAK_RANGE_RE = /\bpeak(?:ed)?\s+(?:between\s+)?#?(\d+)(?:\s+(?:and|to|-)\s+#?(\d+))?/i;
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasAlias(normalizedQuestion: string, alias: string): boolean {
+  return new RegExp(`(^|\\s)${escapeRegExp(alias)}(\\s|$)`).test(
+    normalizedQuestion,
+  );
+}
+
 function detectUnsupportedCue(normalizedQuestion: string): string | null {
   return (
-    UNSUPPORTED_CUE_WORDS.find((cue) => normalizedQuestion.includes(cue)) ?? null
+    UNSUPPORTED_CUE_WORDS.find((cue) => hasAlias(normalizedQuestion, cue)) ?? null
   );
 }
 
@@ -62,7 +72,7 @@ function findLongestAlias<T extends string>(
   aliases: Record<string, T>,
 ): T | null {
   const matched = Object.entries(aliases)
-    .filter(([alias]) => normalizedQuestion.includes(alias))
+    .filter(([alias]) => hasAlias(normalizedQuestion, alias))
     .sort((left, right) => right[0].length - left[0].length)[0];
 
   return matched?.[1] ?? null;
@@ -73,7 +83,7 @@ function findLongestAliasEntry<T extends string>(
   aliases: Record<string, T>,
 ): [string, T] | null {
   const matched = Object.entries(aliases)
-    .filter(([alias]) => normalizedQuestion.includes(alias))
+    .filter(([alias]) => hasAlias(normalizedQuestion, alias))
     .sort((left, right) => right[0].length - left[0].length)[0];
 
   return matched ?? null;
@@ -91,7 +101,7 @@ function stripChartPhrases(normalizedQuestion: string): string {
   let stripped = normalizedQuestion;
 
   for (const alias of Object.keys(CHART_ALIASES).sort((left, right) => right.length - left.length)) {
-    stripped = stripped.replaceAll(alias, " ");
+    stripped = stripped.replace(new RegExp(`(^|\\s)${escapeRegExp(alias)}(\\s|$)`, "g"), " ");
   }
 
   return stripped.replace(/\b(on|for)\b/g, " ").replace(/\s+/g, " ").trim();
@@ -119,13 +129,6 @@ function inferMetric(normalizedQuestion: string): {
   rankBy: RecordsCustomInterpretation["rankBy"];
   rankByParam?: number;
 } | null {
-  const matchedEntry = Object.entries(METRIC_ALIASES)
-    .filter(([alias]) => normalizedQuestion.includes(alias))
-    .sort((left, right) => right[0].length - left[0].length)[0];
-  if (matchedEntry) {
-    return matchedEntry[1];
-  }
-
   const [firstInteger] = extractPositiveIntegers(normalizedQuestion);
   const topMatch = normalizedQuestion.match(/\btop\s+(\d+)\b/);
   if (topMatch && firstInteger) {
@@ -141,6 +144,13 @@ function inferMetric(normalizedQuestion: string): {
       rankBy: "weeks-at-position",
       rankByParam: firstInteger,
     };
+  }
+
+  const matchedEntry = Object.entries(METRIC_ALIASES)
+    .filter(([alias]) => hasAlias(normalizedQuestion, alias))
+    .sort((left, right) => right[0].length - left[0].length)[0];
+  if (matchedEntry) {
+    return matchedEntry[1];
   }
 
   return null;
@@ -316,10 +326,6 @@ function chartMax(chart: ChartType): number {
 
 function buildCustomInterpretation(normalizedQuestion: string): InterpretationDraft | null {
   const metric = inferMetric(normalizedQuestion);
-  if (!metric) {
-    return null;
-  }
-
   const explicitChart = inferChart(normalizedQuestion);
   const entity = inferEntity(normalizedQuestion);
   const artistEntity = entity === "mixed" ? null : entity;
@@ -327,6 +333,31 @@ function buildCustomInterpretation(normalizedQuestion: string): InterpretationDr
   const weeksMin = inferWeeksMin(normalizedQuestion);
   const peakRange = inferRange(normalizedQuestion, PEAK_RANGE_RE);
   const debutRange = inferRange(normalizedQuestion, DEBUT_RANGE_RE);
+  const recordsCuePresent =
+    explicitChart !== null ||
+    artistEntity !== null ||
+    artistNames !== null ||
+    weeksMin !== null ||
+    peakRange.min !== null ||
+    debutRange.min !== null ||
+    /\b(entries|weeks|peak|debut|position|top\s+\d+)\b/.test(normalizedQuestion);
+
+  if (!metric) {
+    if (!recordsCuePresent) {
+      return null;
+    }
+
+    return {
+      status: "needs_clarification",
+      intent: "clarify",
+      search: null,
+      recordsPreset: null,
+      recordsCustom: null,
+      ambiguityHints: [
+        "This records-style question needs a supported ranking metric before it can be interpreted.",
+      ],
+    };
+  }
 
   let resolvedEntity = artistEntity;
   if (!resolvedEntity) {
