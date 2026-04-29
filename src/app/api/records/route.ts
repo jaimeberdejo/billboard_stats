@@ -2,6 +2,7 @@ import { type NextRequest } from "next/server";
 
 import { parseChartType, type ChartType } from "@/lib/charts";
 import {
+  type CustomEntity,
   getArtistRecordDrilldown,
   getCustomRecords,
   getPresetRecords,
@@ -12,12 +13,12 @@ import {
 const PRESET_ALLOWLIST = new Set<RecordPreset>([
   "most-weeks-at-number-one",
   "longest-chart-runs",
+  "most-top-10-weeks",
   "most-number-one-songs-by-artist",
   "most-number-one-albums-by-artist",
   "most-entries-by-artist",
+  "most-total-chart-weeks-by-artist",
   "most-simultaneous-entries",
-  "biggest-debuts",
-  "fastest-to-number-one",
 ]);
 
 const CUSTOM_RANK_BY_ALLOWLIST = new Set<CustomRankBy>([
@@ -25,6 +26,14 @@ const CUSTOM_RANK_BY_ALLOWLIST = new Set<CustomRankBy>([
   "total-weeks",
   "weeks-at-position",
   "weeks-in-top-n",
+  "most-entries",
+  "number-one-entries",
+]);
+
+const CUSTOM_ENTITY_ALLOWLIST = new Set<CustomEntity>([
+  "songs",
+  "albums",
+  "artists",
 ]);
 
 function parsePositiveInteger(
@@ -48,6 +57,10 @@ function isValidRecordPreset(value: string | null): value is RecordPreset {
 
 function isValidCustomRankBy(value: string | null): value is CustomRankBy {
   return value !== null && CUSTOM_RANK_BY_ALLOWLIST.has(value as CustomRankBy);
+}
+
+function isValidCustomEntity(value: string | null): value is CustomEntity {
+  return value !== null && CUSTOM_ENTITY_ALLOWLIST.has(value as CustomEntity);
 }
 
 function parseArtistNames(value: string | null): string[] | null {
@@ -88,7 +101,9 @@ export async function GET(request: NextRequest): Promise<Response> {
 
     try {
       const payload = await getPresetRecords(record, chart);
-      return Response.json(payload);
+      return Response.json(payload, {
+        headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
+      });
     } catch {
       return Response.json(
         { error: "Failed to load preset records. Please try again later." },
@@ -98,6 +113,14 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 
   if (mode === "custom") {
+    const entity = searchParams.get("entity");
+    if (!isValidCustomEntity(entity)) {
+      return Response.json(
+        { error: 'Invalid or missing "entity" parameter for custom mode.' },
+        { status: 400 },
+      );
+    }
+
     const rankBy = searchParams.get("rankBy");
     if (!isValidCustomRankBy(rankBy)) {
       return Response.json(
@@ -134,6 +157,7 @@ export async function GET(request: NextRequest): Promise<Response> {
 
     try {
       const payload = await getCustomRecords({
+        entity,
         chart,
         rankBy,
         rankByParam,
@@ -145,7 +169,9 @@ export async function GET(request: NextRequest): Promise<Response> {
         debutPosMax,
         artistNames: parseArtistNames(searchParams.get("artistNames")),
       });
-      return Response.json(payload);
+      return Response.json(payload, {
+        headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
+      });
     } catch {
       return Response.json(
         { error: "Failed to load custom records. Please try again later." },
@@ -175,7 +201,9 @@ export async function GET(request: NextRequest): Promise<Response> {
 
     try {
       const payload = await getArtistRecordDrilldown(record, chart, artistId, chartDate);
-      return Response.json(payload);
+      return Response.json(payload, {
+        headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
+      });
     } catch {
       return Response.json(
         { error: "Failed to load record drilldown data. Please try again later." },

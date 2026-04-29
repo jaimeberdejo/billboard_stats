@@ -52,13 +52,21 @@ export async function GET(request: NextRequest): Promise<Response> {
       rawDate ?? undefined,
     );
 
-    return Response.json({
-      chartType: snapshot.chartType,
-      selectedDate: snapshot.selectedDate,
-      latestDate: snapshot.latestDate,
-      availableDates: snapshot.availableDates,
-      entries: snapshot.entries,
-    });
+    // Historical dates are immutable; latest chart changes weekly.
+    const cacheControl = rawDate
+      ? "public, s-maxage=31536000, immutable"
+      : "public, s-maxage=3600, stale-while-revalidate=86400";
+
+    return Response.json(
+      {
+        chartType: snapshot.chartType,
+        selectedDate: snapshot.selectedDate,
+        latestDate: snapshot.latestDate,
+        availableDates: snapshot.availableDates,
+        entries: snapshot.entries,
+      },
+      { headers: { "Cache-Control": cacheControl } },
+    );
   } catch {
     return Response.json(
       { error: "Failed to load chart data. Please try again later." },
