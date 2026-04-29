@@ -6,7 +6,7 @@
  *   date   - ISO date YYYY-MM-DD (optional; defaults to latest available)
  *
  * Response shape:
- *   200: { chartType, selectedDate, latestDate, availableDates, entries }
+ *   200: { chartType, selectedDate, latestDate, availableDates, previousDate, nextDate, entries }
  *   400: { error: string }
  *   500: { error: string }
  *
@@ -63,6 +63,8 @@ export async function GET(request: NextRequest): Promise<Response> {
         selectedDate: snapshot.selectedDate,
         latestDate: snapshot.latestDate,
         availableDates: snapshot.availableDates,
+        previousDate: snapshot.previousDate,
+        nextDate: snapshot.nextDate,
         entries: snapshot.entries,
       },
       { headers: { "Cache-Control": cacheControl } },

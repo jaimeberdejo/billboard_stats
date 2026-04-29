@@ -43,6 +43,8 @@ export interface ChartSnapshot {
   selectedDate: string;
   latestDate: string;
   availableDates: string[];
+  previousDate: string | null;
+  nextDate: string | null;
   entries: ChartEntry[];
 }
 
@@ -274,6 +276,8 @@ export async function getChartSnapshot(
       selectedDate: "",
       latestDate: "",
       availableDates: [],
+      previousDate: null,
+      nextDate: null,
       entries: [],
     };
   }
@@ -283,6 +287,7 @@ export async function getChartSnapshot(
     requestedDate && availableDates.includes(requestedDate)
       ? requestedDate
       : latestDate;
+  const selectedIndex = availableDates.indexOf(selectedDate);
 
   const entries = await getWeeklyChart(chartType, selectedDate);
 
@@ -291,6 +296,11 @@ export async function getChartSnapshot(
     selectedDate,
     latestDate,
     availableDates,
+    previousDate:
+      selectedIndex >= 0 && selectedIndex < availableDates.length - 1
+        ? availableDates[selectedIndex + 1]
+        : null,
+    nextDate: selectedIndex > 0 ? availableDates[selectedIndex - 1] : null,
     entries,
   };
 }

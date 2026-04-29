@@ -94,6 +94,7 @@ export default async function SongDetailPage(props: PageProps<"/song/[id]">) {
     { label: "Weeks at Peak", value: String(stats?.weeks_at_peak ?? 0) },
     { label: "Debut Position", value: formatPeak(stats?.debut_position ?? null) },
     { label: "Debut Date", value: formatDate(stats?.debut_date ?? null) },
+    { label: "Last Week", value: formatDate(stats?.last_date ?? null) },
   ];
 
   return (

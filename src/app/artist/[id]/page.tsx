@@ -138,6 +138,7 @@ export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">)
                 total_weeks: song.total_weeks,
                 weeks_at_peak: song.weeks_at_peak,
                 debut_date: song.debut_date,
+                last_date: song.last_date,
                 href: `/song/${song.id}`,
               }))}
             />
@@ -153,6 +154,7 @@ export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">)
                 total_weeks: album.total_weeks,
                 weeks_at_peak: album.weeks_at_peak,
                 debut_date: album.debut_date,
+                last_date: album.last_date,
                 href: `/album/${album.id}`,
               }))}
             />
