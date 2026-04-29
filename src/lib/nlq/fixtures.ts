@@ -66,6 +66,15 @@ export const GOLDEN_QUERY_FIXTURES: GoldenQueryFixture[] = [
     expectedExplanationIncludes: ["Hot 100 songs records query", "top 10"],
   },
   {
+    name: "custom-records-query-with-extra-year-number",
+    question: "songs from 1990 with most weeks in the top 10",
+    expectedStatus: "unsupported",
+    expectedIntent: "unsupported",
+    expectedRecordsCustom: null,
+    expectedExplanationIncludes: ["outside the supported Billboard search and records vocabulary"],
+    expectedAmbiguityIncludes: ["from 1990"],
+  },
+  {
     name: "unsupported-out-of-scope",
     question: "best female artists since 2010",
     expectedStatus: "unsupported",

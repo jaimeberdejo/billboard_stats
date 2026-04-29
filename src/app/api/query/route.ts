@@ -2,8 +2,12 @@ import { type NextRequest } from "next/server";
 
 import { interpretQuery } from "@/lib/nlq/interpret";
 
-function parseQuestion(value: string | null | undefined): string | null {
-  const normalized = value?.trim() ?? "";
+function parseQuestion(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
 }
 
@@ -41,7 +45,7 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   const question =
     payload && typeof payload === "object" && "question" in payload
-      ? parseQuestion((payload as { question?: string | null }).question)
+      ? parseQuestion((payload as { question?: unknown }).question)
       : null;
 
   if (!question) {
