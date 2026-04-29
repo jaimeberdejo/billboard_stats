@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { getCanonicalArtistName } from "@/lib/artist-identity";
+
 interface ArtistPillLink {
   id: number;
   name: string;
@@ -10,9 +12,18 @@ interface ArtistPillsProps {
 }
 
 export function ArtistPills({ artists }: ArtistPillsProps) {
+  const canonicalArtists = new Map<string, ArtistPillLink>();
+
+  for (const artist of artists) {
+    const canonicalName = getCanonicalArtistName(artist.name);
+    if (!canonicalArtists.has(canonicalName) || artist.name === canonicalName) {
+      canonicalArtists.set(canonicalName, { id: artist.id, name: canonicalName });
+    }
+  }
+
   return (
     <div className="flex flex-wrap gap-2">
-      {artists.map((artist) => (
+      {[...canonicalArtists.values()].map((artist) => (
         <Link
           key={artist.id}
           href={`/artist/${artist.id}`}

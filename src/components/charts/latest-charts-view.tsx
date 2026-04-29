@@ -15,8 +15,37 @@ const EMPTY_SNAPSHOT: ChartSnapshot = {
   selectedDate: "",
   latestDate: "",
   availableDates: [],
+  previousDate: null,
+  nextDate: null,
   entries: [],
 };
+
+function resolveChartDateInput(input: string, availableDates: string[]): string | null {
+  const normalized = input.trim();
+  if (!normalized || availableDates.length === 0) {
+    return null;
+  }
+
+  if (/^\d{4}$/.test(normalized)) {
+    return availableDates.find((date) => date.startsWith(`${normalized}-`)) ?? null;
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return null;
+  }
+
+  if (availableDates.includes(normalized)) {
+    return normalized;
+  }
+
+  for (const date of availableDates) {
+    if (date <= normalized) {
+      return date;
+    }
+  }
+
+  return availableDates[availableDates.length - 1] ?? null;
+}
 
 async function fetchSnapshot(chartType: ChartType, date?: string): Promise<ChartSnapshot> {
   const params = new URLSearchParams({ chart: chartType });
@@ -72,9 +101,21 @@ export function LatestChartsView({
         chartType={snapshot.chartType}
         entryCount={snapshot.entries.length}
         isPending={isPending}
+        latestDate={snapshot.latestDate}
+        nextDate={snapshot.nextDate}
+        previousDate={snapshot.previousDate}
         selectedDate={snapshot.selectedDate}
         onChartTypeChange={(chartType) => runFetch(chartType)}
         onDateChange={(date) => runFetch(snapshot.chartType, date)}
+        onDateSearch={(value) => {
+          const resolvedDate = resolveChartDateInput(value, snapshot.availableDates);
+          if (!resolvedDate) {
+            setError("Enter a year like 1990 or a chart date like 1990-05-12.");
+            return;
+          }
+
+          runFetch(snapshot.chartType, resolvedDate);
+        }}
       />
 
       {error ? (

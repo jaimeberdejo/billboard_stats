@@ -7,6 +7,7 @@ interface ArtistCatalogTableRow {
   total_weeks: number;
   weeks_at_peak: number;
   debut_date: string | null;
+  last_date: string | null;
   href: string;
 }
 
@@ -39,7 +40,7 @@ export function ArtistCatalogTable({ title, rows }: ArtistCatalogTableProps) {
           <table className="min-w-full border-collapse text-left">
             <thead>
               <tr className="border-b border-black/10 bg-white">
-                {["TITLE", "PK", "WKS", "WKS@PK", "DEBUT"].map((heading) => (
+                {["TITLE", "PK", "WKS", "WKS@PK", "DEBUT", "LAST"].map((heading) => (
                   <th
                     key={heading}
                     className="px-3 py-2 text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]"
@@ -75,6 +76,9 @@ export function ArtistCatalogTable({ title, rows }: ArtistCatalogTableProps) {
                   <td className="px-3 py-2 text-[12px] text-[#0A0A0A]">{row.weeks_at_peak}</td>
                   <td className="px-3 py-2 text-[12px] text-[#888888]">
                     {formatDate(row.debut_date)}
+                  </td>
+                  <td className="px-3 py-2 text-[12px] text-[#888888]">
+                    {formatDate(row.last_date)}
                   </td>
                 </tr>
               ))}

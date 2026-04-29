@@ -1,3 +1,4 @@
+import { getCanonicalArtistName } from "@/lib/artist-identity";
 import { getSql } from "@/lib/db";
 
 export interface SearchSongRow {
@@ -95,10 +96,46 @@ export async function searchAll(query: string): Promise<SearchResultsPayload> {
        LEFT JOIN artist_stats ast ON a.id = ast.artist_id
        WHERE a.name % $1
        ORDER BY sim DESC, a.name ASC
-       LIMIT $2`,
+      LIMIT $2`,
       [normalized, SEARCH_LIMIT],
     ),
   ]);
+
+  const mergedArtists = new Map<string, SearchArtistRow & { sim: number }>();
+
+  for (const row of artistRows) {
+    const rawName = row.name as string;
+    const canonicalName = getCanonicalArtistName(rawName);
+    const similarity = (row.sim as number) ?? 0;
+    const existing = mergedArtists.get(canonicalName);
+
+    if (!existing) {
+      mergedArtists.set(canonicalName, {
+        id: row.id as number,
+        name: canonicalName,
+        total_hot100_songs: (row.total_hot100_songs as number) ?? 0,
+        total_b200_albums: (row.total_b200_albums as number) ?? 0,
+        hot100_number_ones: (row.hot100_number_ones as number) ?? 0,
+        b200_number_ones: (row.b200_number_ones as number) ?? 0,
+        sim: similarity,
+      });
+      continue;
+    }
+
+    mergedArtists.set(canonicalName, {
+      id: rawName === canonicalName ? (row.id as number) : existing.id,
+      name: canonicalName,
+      total_hot100_songs:
+        existing.total_hot100_songs + ((row.total_hot100_songs as number) ?? 0),
+      total_b200_albums:
+        existing.total_b200_albums + ((row.total_b200_albums as number) ?? 0),
+      hot100_number_ones:
+        existing.hot100_number_ones + ((row.hot100_number_ones as number) ?? 0),
+      b200_number_ones:
+        existing.b200_number_ones + ((row.b200_number_ones as number) ?? 0),
+      sim: Math.max(existing.sim, similarity),
+    });
+  }
 
   return {
     query: normalized,
@@ -118,13 +155,15 @@ export async function searchAll(query: string): Promise<SearchResultsPayload> {
       total_weeks: (row.total_weeks as number) ?? 0,
       weeks_at_peak: (row.weeks_at_peak as number) ?? 0,
     })),
-    artists: artistRows.map((row) => ({
-      id: row.id as number,
-      name: row.name as string,
-      total_hot100_songs: (row.total_hot100_songs as number) ?? 0,
-      total_b200_albums: (row.total_b200_albums as number) ?? 0,
-      hot100_number_ones: (row.hot100_number_ones as number) ?? 0,
-      b200_number_ones: (row.b200_number_ones as number) ?? 0,
-    })),
+    artists: [...mergedArtists.values()]
+      .sort((left, right) => right.sim - left.sim || left.name.localeCompare(right.name))
+      .map((artist) => ({
+        id: artist.id,
+        name: artist.name,
+        total_hot100_songs: artist.total_hot100_songs,
+        total_b200_albums: artist.total_b200_albums,
+        hot100_number_ones: artist.hot100_number_ones,
+        b200_number_ones: artist.b200_number_ones,
+      })),
   };
 }

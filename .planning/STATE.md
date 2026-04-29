@@ -4,9 +4,9 @@ milestone: v1.0
 milestone_name: milestone
 status: in_progress
 last_updated: "2026-04-29T10:25:37.548Z"
-last_activity: 2026-04-29 -- Phase 06 complete; weekly ETL automation verified in GitHub Actions
+last_activity: 2026-04-29 -- Reformulated natural-language query work into phases 07-09
 progress:
-  total_phases: 6
+  total_phases: 9
   completed_phases: 6
   total_plans: 18
   completed_plans: 18
@@ -15,10 +15,10 @@ progress:
 
 ## Current Position
 
-Phase: 06
-Plan: Complete
-Status: Phase complete
-Last activity: 2026-04-29 -- Phase 06 complete; weekly ETL automation verified in GitHub Actions
+Phase: 07
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-04-29 -- Reformulated natural-language query work into phases 07-09
 
 ## Accumulated Context
 
@@ -32,3 +32,13 @@ Last activity: 2026-04-29 -- Phase 06 complete; weekly ETL automation verified i
 
 - Phase 5 added: configure Neon and deploy the app in Vercel
 - Phase 6 added: update the missing data, last uploaded week is feb 14, configure the ETL to work automatically every week
+- Phase 7 added: constrained natural-language query layer for records/search
+- Phase 7 reformulated: natural-language query interpretation
+- Phase 8 added: safe query execution for records and search
+- Phase 9 added: query assistant UI for records and search
+
+## Quick Tasks Completed
+
+| Date | Quick Task | Summary |
+| --- | --- | --- |
+| 2026-04-30 | `260430-2cv-implement-all-this-date-input-year-searc` | Added direct chart week jump input, previous/next week buttons, last-week chart fields, and Janet alias merging in artist reads/search. |
