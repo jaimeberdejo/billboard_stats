@@ -24,6 +24,8 @@ export interface ChartEntry {
   rank: number;
   title: string;
   artist_credit: string;
+  /** Populated with the first primary normalized artist for detail-page linking when available. */
+  artist_id: number | null;
   image_url: string | null;
   peak_pos: number | null;
   last_pos: number | null;
@@ -171,6 +173,7 @@ async function getWeeklyChart(
        SELECT e.rank,
               s.title,
               s.artist_credit,
+              pa.artist_id,
               s.image_url,
               e.peak_pos,
               e.last_pos,
@@ -180,6 +183,13 @@ async function getWeeklyChart(
        FROM hot100_entries e
        JOIN chart_weeks cw ON e.chart_week_id = cw.id
        JOIN songs s ON e.song_id = s.id
+       LEFT JOIN LATERAL (
+         SELECT sa.artist_id
+         FROM song_artists sa
+         WHERE sa.song_id = s.id
+         ORDER BY CASE WHEN sa.role = 'primary' THEN 0 ELSE 1 END, sa.artist_id
+         LIMIT 1
+       ) pa ON true
        WHERE cw.chart_date = $1::date
          AND cw.chart_type = 'hot-100'
          AND cw.id IN (SELECT id FROM valid_hot100_weeks)
@@ -190,6 +200,7 @@ async function getWeeklyChart(
       rank: r.rank as number,
       title: r.title as string,
       artist_credit: r.artist_credit as string,
+      artist_id: (r.artist_id as number | null) ?? null,
       image_url: (r.image_url as string | null) ?? null,
       peak_pos: (r.peak_pos as number | null) ?? null,
       last_pos: (r.last_pos as number | null) ?? null,
@@ -204,6 +215,7 @@ async function getWeeklyChart(
        SELECT e.rank,
               a.title,
               a.artist_credit,
+              pa.artist_id,
               a.image_url,
               e.peak_pos,
               e.last_pos,
@@ -213,6 +225,13 @@ async function getWeeklyChart(
        FROM b200_entries e
        JOIN chart_weeks cw ON e.chart_week_id = cw.id
        JOIN albums a ON e.album_id = a.id
+       LEFT JOIN LATERAL (
+         SELECT aa.artist_id
+         FROM album_artists aa
+         WHERE aa.album_id = a.id
+         ORDER BY CASE WHEN aa.role = 'primary' THEN 0 ELSE 1 END, aa.artist_id
+         LIMIT 1
+       ) pa ON true
        WHERE cw.chart_date = $1::date
          AND cw.chart_type = 'billboard-200'
          AND cw.id IN (SELECT id FROM valid_b200_weeks)
@@ -223,6 +242,7 @@ async function getWeeklyChart(
       rank: r.rank as number,
       title: r.title as string,
       artist_credit: r.artist_credit as string,
+      artist_id: (r.artist_id as number | null) ?? null,
       image_url: (r.image_url as string | null) ?? null,
       peak_pos: (r.peak_pos as number | null) ?? null,
       last_pos: (r.last_pos as number | null) ?? null,

@@ -27,10 +27,18 @@ export function MobileBottomNav() {
           <Link
             key={href}
             href={href}
+            style={
+              isActive
+                ? {
+                    backgroundColor: "#0A0A0A",
+                    color: "#FFFFFF",
+                  }
+                : undefined
+            }
             className={[
               "flex flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-[600] tracking-tight transition-colors",
               isActive
-                ? "bg-[#0A0A0A] text-white"
+                ? ""
                 : "text-[#888888] hover:bg-[#F5F5F5] hover:text-[#0A0A0A]",
             ].join(" ")}
           >

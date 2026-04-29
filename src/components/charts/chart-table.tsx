@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { ChartEntry } from "@/lib/charts";
 
 interface ChartTableProps {
@@ -54,8 +55,8 @@ function lastWeekLabel(entry: ChartEntry): string {
 
 export function ChartTable({ chartType, entries }: ChartTableProps) {
   return (
-    <div className="overflow-hidden rounded border border-black/10 bg-white">
-      <div className="max-h-[calc(100vh-14rem)] overflow-auto">
+    <div className="bg-white">
+      <div>
         <table className="min-w-full border-collapse text-left">
           <thead>
             <tr className="border-b border-black/10 bg-white">
@@ -63,7 +64,7 @@ export function ChartTable({ chartType, entries }: ChartTableProps) {
                 <th
                   key={heading}
                   className={[
-                    "sticky top-0 z-10 bg-white px-3 py-2 text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888] sm:top-11",
+                    "bg-white px-3 py-2 text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]",
                     index > 2 ? "text-right" : "",
                   ].join(" ")}
                 >
@@ -104,10 +105,24 @@ export function ChartTable({ chartType, entries }: ChartTableProps) {
                   </td>
                   <td className="px-3 py-2">
                     <div className="text-[12px] font-[600] leading-[1.3] text-[#0A0A0A]">
-                      {entry.title}
+                      <Link
+                        href={entry.song_id ? `/song/${entry.song_id}` : `/album/${entry.album_id}`}
+                        className="transition-colors hover:text-[#C8102E] hover:underline"
+                      >
+                        {entry.title}
+                      </Link>
                     </div>
                     <div className="mt-0.5 text-[12px] leading-[1.45] text-[#888888]">
-                      {entry.artist_credit}
+                      {entry.artist_id ? (
+                        <Link
+                          href={`/artist/${entry.artist_id}`}
+                          className="transition-colors hover:text-[#C8102E] hover:underline"
+                        >
+                          {entry.artist_credit}
+                        </Link>
+                      ) : (
+                        entry.artist_credit
+                      )}
                     </div>
                   </td>
                   <td className="px-3 py-2 text-right text-[12px] text-[#0A0A0A]">

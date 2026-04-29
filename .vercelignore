@@ -1,0 +1,16 @@
+.git
+.next
+.planning
+.venv
+node_modules
+coverage
+build
+out
+.DS_Store
+.env*
+billboard.dump
+billboard_stats
+BillboardStats.html
+rebuild_stats.py
+requirements.txt
+CLAUDE.md

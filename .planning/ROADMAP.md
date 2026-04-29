@@ -50,6 +50,18 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 05-01-PLAN.md — Neon project creation and full data migration from localhost (pg_dump/pg_restore, row count verification)
-- [ ] 05-02-PLAN.md — Vercel deployment: DATABASE_URL env vars (3 scopes), GitHub integration, and production deploy
-- [ ] 05-03-PLAN.md — Post-deploy smoke tests, Python ETL cutover to Neon, and .env.example update
+- [x] 05-01-PLAN.md — Neon project creation and full data migration from localhost (pg_dump/pg_restore, row count verification)
+- [x] 05-02-PLAN.md — Vercel deployment: DATABASE_URL env vars (3 scopes), GitHub integration, and production deploy
+- [x] 05-03-PLAN.md — Post-deploy smoke tests, Python ETL cutover to Neon, and .env.example update
+
+### Phase 6: update the missing data, last uploaded week is feb 14, configure the ETL to work automatically every week
+
+**Goal:** Backfill the missing production chart data after 2026-02-14, harden freshness logic against invalid future weeks, and automate the existing Python ETL on a weekly schedule.
+**Requirements**: CORE-02, BROWSE-05
+**Depends on:** Phase 5
+**Plans:** 3 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — Harden ETL chronology and freshness rules so future-dated rows/files cannot masquerade as the latest chart data
+- [ ] 06-02-PLAN.md — Backfill the missing Neon data, add a manual ETL runner, and document the operator runbook
+- [ ] 06-03-PLAN.md — Automate the weekly ETL with GitHub Actions and validate manual workflow dispatch
