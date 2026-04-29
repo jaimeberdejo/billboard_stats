@@ -1,9 +1,12 @@
-import type { ChartType } from "@/lib/charts";
 import type {
-  CustomEntity,
-  CustomRankBy,
-  RecordPreset,
-} from "@/lib/records";
+  RecordsCustomInterpretation,
+  RecordsPresetInterpretation,
+} from "./schema.ts";
+
+type ChartType = RecordsCustomInterpretation["chart"];
+type CustomEntity = RecordsCustomInterpretation["entity"];
+type CustomRankBy = RecordsCustomInterpretation["rankBy"];
+type RecordPreset = RecordsPresetInterpretation["record"];
 
 export const CHART_ALIASES: Record<string, ChartType> = {
   "hot 100": "hot-100",

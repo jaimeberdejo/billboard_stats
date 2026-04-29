@@ -1,16 +1,15 @@
-import { type ChartType } from "@/lib/charts";
 import {
   CHART_ALIASES,
   ENTITY_ALIASES,
   METRIC_ALIASES,
   PRESET_ALIASES,
   UNSUPPORTED_CUE_WORDS,
-} from "@/lib/nlq/catalog";
+} from "./catalog.ts";
 import {
   buildInterpretationAmbiguityReasons,
   buildInterpretationExplanation,
   buildInterpretationWarnings,
-} from "@/lib/nlq/explain";
+} from "./explain.ts";
 import {
   type InterpretationIntent,
   type InterpretationStatus,
@@ -19,13 +18,15 @@ import {
   type RecordsPresetInterpretation,
   type SearchInterpretation,
   interpretedQuerySchema,
-} from "@/lib/nlq/schema";
+} from "./schema.ts";
 import {
   extractPositiveIntegers,
   normalizeQuestion,
   splitArtistNames,
   tokenizeQuestion,
-} from "@/lib/nlq/normalize";
+} from "./normalize.ts";
+
+type ChartType = RecordsCustomInterpretation["chart"];
 
 interface InterpretationDraft {
   status: InterpretationStatus;
@@ -67,6 +68,17 @@ function findLongestAlias<T extends string>(
   return matched?.[1] ?? null;
 }
 
+function findLongestAliasEntry<T extends string>(
+  normalizedQuestion: string,
+  aliases: Record<string, T>,
+): [string, T] | null {
+  const matched = Object.entries(aliases)
+    .filter(([alias]) => normalizedQuestion.includes(alias))
+    .sort((left, right) => right[0].length - left[0].length)[0];
+
+  return matched ?? null;
+}
+
 function inferChart(normalizedQuestion: string): ChartType | null {
   return findLongestAlias(normalizedQuestion, CHART_ALIASES);
 }
@@ -75,8 +87,32 @@ function inferEntity(normalizedQuestion: string): "songs" | "albums" | "artists"
   return findLongestAlias(normalizedQuestion, ENTITY_ALIASES);
 }
 
-function inferPreset(normalizedQuestion: string): RecordsPresetInterpretation["record"] | null {
-  return findLongestAlias(normalizedQuestion, PRESET_ALIASES);
+function stripChartPhrases(normalizedQuestion: string): string {
+  let stripped = normalizedQuestion;
+
+  for (const alias of Object.keys(CHART_ALIASES).sort((left, right) => right.length - left.length)) {
+    stripped = stripped.replaceAll(alias, " ");
+  }
+
+  return stripped.replace(/\b(on|for)\b/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function isStandalonePresetQuestion(
+  normalizedQuestion: string,
+  presetAlias: string,
+): boolean {
+  let cleaned = stripChartPhrases(normalizedQuestion);
+
+  for (const prefix of SEARCH_COMMAND_PREFIXES) {
+    if (cleaned.startsWith(`${prefix} `)) {
+      cleaned = cleaned.slice(prefix.length).trim();
+      break;
+    }
+  }
+
+  cleaned = cleaned.replace(/^the\s+/, "").trim();
+
+  return cleaned === presetAlias;
 }
 
 function inferMetric(normalizedQuestion: string): {
@@ -177,8 +213,13 @@ function validatePresetChart(
 }
 
 function buildPresetInterpretation(normalizedQuestion: string): InterpretationDraft | null {
-  const record = inferPreset(normalizedQuestion);
-  if (!record) {
+  const presetEntry = findLongestAliasEntry(normalizedQuestion, PRESET_ALIASES);
+  if (!presetEntry) {
+    return null;
+  }
+  const [presetAlias, record] = presetEntry;
+
+  if (!isStandalonePresetQuestion(normalizedQuestion, presetAlias)) {
     return null;
   }
 

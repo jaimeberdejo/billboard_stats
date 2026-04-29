@@ -3,7 +3,7 @@ import type {
   RecordsCustomInterpretation,
   RecordsPresetInterpretation,
   SearchInterpretation,
-} from "@/lib/nlq/schema";
+} from "./schema.ts";
 
 type ExplanationSubject = Pick<
   InterpretedQuery,
