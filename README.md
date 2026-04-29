@@ -1,36 +1,180 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Billboard Stats
 
-## Getting Started
+Billboard Stats is a read-only music chart explorer built on Next.js and Neon PostgreSQL. It surfaces Billboard Hot 100 and Billboard 200 data with latest-chart browsing, search, records, and detail pages for songs, albums, and artists.
 
-First, run the development server:
+The repository also contains the legacy Python ETL and support code used to fetch chart JSON, load it into PostgreSQL, and rebuild aggregate stats.
+
+## What’s in the repo
+
+- `src/` — the production Next.js app
+- `src/app/` — App Router pages and API routes
+- `src/lib/` — database-backed query helpers for charts, search, records, details, and data status
+- `billboard_stats/` — Python ETL, database schema, legacy Streamlit app, and Telegram bot code
+- `.planning/` — GSD planning and execution artifacts
+
+## App features
+
+- Latest charts for Hot 100 and Billboard 200
+- Detail pages for songs, albums, and artists
+- Search across songs, albums, and artists
+- Records / leaderboards views
+- Data status view showing row counts and latest chart dates
+
+## Web routes
+
+- `/` — latest charts
+- `/search` — search
+- `/records` — records and leaderboards
+- `/status` — data status
+- `/song/[id]` — song detail
+- `/album/[id]` — album detail
+- `/artist/[id]` — artist detail
+
+## API routes
+
+- `/api/charts`
+- `/api/search`
+- `/api/records`
+- `/api/data-status`
+- `/api/health`
+
+## Tech stack
+
+- Next.js 16
+- React 19
+- TypeScript
+- Tailwind CSS 4
+- Neon PostgreSQL via `@neondatabase/serverless`
+- Python ETL with `psycopg2`, `billboard.py`, `pydantic`, `streamlit`
+
+## Requirements
+
+- Node.js 20+
+- npm
+- Python 3.11+ recommended
+- A Neon PostgreSQL database
+
+## Environment variables
+
+The repo already documents the expected env vars in [.env.example](./.env.example).
+
+### Next.js app
+
+The web app requires:
+
+```bash
+DATABASE_URL=postgresql://user:password@ep-pooler-name-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require
+```
+
+This should be a pooled Neon connection string.
+
+### Python ETL
+
+The ETL uses direct PostgreSQL connection settings:
+
+```bash
+PGHOST=ep-<id>.us-east-1.aws.neon.tech
+PGPORT=5432
+PGDATABASE=neondb
+PGUSER=<neon-user>
+PGPASSWORD=<neon-password>
+PGSSLMODE=require
+```
+
+The repo currently expects these to be available through `billboard_stats/.env` or exported in the shell.
+
+## Local development
+
+Install JavaScript dependencies:
+
+```bash
+npm install
+```
+
+Start the Next.js dev server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Build for production:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run build
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Run lint:
 
-## Learn More
+```bash
+npm run lint
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Python setup
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Install Python dependencies:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-## Deploy on Vercel
+## ETL and data refresh
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The canonical updater entrypoint is:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+python -m billboard_stats.etl.updater
+```
+
+Other supported modes:
+
+```bash
+python -m billboard_stats.etl.updater --repair
+python -m billboard_stats.etl.updater --update
+```
+
+What it does:
+
+- repairs missing recent chart files
+- downloads newer chart data
+- loads new rows into PostgreSQL
+- rebuilds aggregate stats tables
+
+## Database notes
+
+- Database access for the web app is centralized in `src/lib/db.ts`
+- SQL schema lives in `billboard_stats/db/schema.sql`
+- The dataset includes normalized artist join tables for songs and albums
+- The app is read-only; write-side data maintenance currently happens through the Python ETL
+
+## Deployment
+
+The app is designed for:
+
+- Neon PostgreSQL for data storage
+- Vercel for web deployment
+
+The current deployment flow expects:
+
+- `DATABASE_URL` set in Vercel
+- GitHub connected to Vercel
+- production deploys from the main branch
+
+## Project status
+
+The core web app is live and usable. Current planning artifacts in `.planning/` also cover:
+
+- deployment and Neon cutover
+- chart data freshness backfill
+- weekly ETL automation planning
+
+## Legacy code
+
+The `billboard_stats/` package still contains:
+
+- the original Streamlit app
+- ETL loaders and fetchers
+- Telegram bot code
+
+Those pieces are still relevant operationally for data loading, even though the primary user-facing app is now the Next.js frontend in `src/`.
