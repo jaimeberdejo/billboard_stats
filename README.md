@@ -141,6 +141,46 @@ What it does:
 - loads new rows into PostgreSQL
 - rebuilds aggregate stats tables
 
+## Phase 6 ETL operations
+
+Use the committed shell wrapper for manual backfills and weekly maintenance:
+
+```bash
+chmod +x scripts/run_weekly_etl.sh
+./scripts/run_weekly_etl.sh
+```
+
+Useful modes:
+
+```bash
+./scripts/run_weekly_etl.sh --repair
+./scripts/run_weekly_etl.sh --update
+```
+
+The script:
+
+- loads ETL credentials from `billboard_stats/.env` when present
+- falls back to already-exported `PG*` variables for CI or shell-driven runs
+- runs the same `python -m billboard_stats.etl.updater` entrypoint used for weekly automation
+
+### Post-run verification
+
+After a backfill or weekly update, verify the public app freshness:
+
+```bash
+curl -s https://billboard-stats.vercel.app/api/data-status
+curl -s "https://billboard-stats.vercel.app/api/charts?chart=hot-100" | head -c 200
+curl -s "https://billboard-stats.vercel.app/api/charts?chart=billboard-200" | head -c 200
+```
+
+Expected:
+
+- `/api/data-status` reports non-future latest dates
+- Hot 100 latest date advances beyond stale checkpoints when new data exists
+- both chart endpoints return real JSON payloads
+
+The ETL and data-status layers now treat only non-future Saturday chart dates as valid latest weeks, so invalid future rows/files should no longer masquerade as current data.
+
 ## Database notes
 
 - Database access for the web app is centralized in `src/lib/db.ts`

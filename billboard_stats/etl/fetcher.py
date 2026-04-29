@@ -21,10 +21,18 @@ DATA_DIR = str(Path(__file__).resolve().parent.parent / "data")
 MIN_FILE_SIZE = 100  # bytes — files smaller than this are considered failed
 
 
+def get_latest_publishable_chart_week(as_of: datetime.date | None = None) -> datetime.date:
+    """Return the most recent Saturday that is valid for chart maintenance."""
+    current_date = as_of or datetime.date.today()
+    return current_date - datetime.timedelta(days=(current_date.weekday() - 5) % 7)
+
+
 def get_saturdays_between(start_date: str, end_date: str) -> list[str]:
     """Get all Saturday date strings between two dates (inclusive)."""
     start = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
     end = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+    if end < start:
+        return []
 
     d = start
     d += datetime.timedelta(days=(5 - d.weekday() + 7) % 7)
@@ -105,8 +113,9 @@ def download_hot100(start_date: str, end_date: str, data_dir: str = None,
     print(f"\nHot 100 done: {success} downloaded, {failed} failed.")
 
 
-def download_b200(start_year: int, end_year: int, data_dir: str = None,
-                  overwrite: bool = False, delay: float = 1.5):
+def download_b200(start_year: int = None, end_year: int = None, data_dir: str = None,
+                  overwrite: bool = False, delay: float = 1.5,
+                  start_date: str = None, end_date: str = None):
     """Download Billboard 200 chart data for all Saturdays in the year range.
 
     Args:
@@ -124,44 +133,57 @@ def download_b200(start_year: int, end_year: int, data_dir: str = None,
     folder = os.path.join(data_dir, "b200")
     os.makedirs(folder, exist_ok=True)
 
-    print(f"Downloading Billboard 200: {start_year} to {end_year}")
+    if start_date is not None or end_date is not None:
+        if not start_date or not end_date:
+            raise ValueError("download_b200 requires both start_date and end_date when date-bounded")
+        dates = get_saturdays_between(start_date, end_date)
+        print(f"Downloading Billboard 200: {len(dates)} weeks ({start_date} to {end_date})")
+    else:
+        if start_year is None or end_year is None:
+            raise ValueError("download_b200 requires start_year/end_year or start_date/end_date")
+        print(f"Downloading Billboard 200: {start_year} to {end_year}")
+        dates = []
+        for year in range(start_year, end_year + 1):
+            dates.extend(get_saturdays_for_year(year))
 
     success, failed = 0, 0
-    for year in range(start_year, end_year + 1):
-        dates = get_saturdays_for_year(year)
-        for date_str in dates:
-            filepath = os.path.join(folder, f"{date_str}.json")
-            if not overwrite and os.path.exists(filepath) and os.path.getsize(filepath) >= MIN_FILE_SIZE:
-                continue
+    current_year = None
+    for date_str in dates:
+        filepath = os.path.join(folder, f"{date_str}.json")
+        if not overwrite and os.path.exists(filepath) and os.path.getsize(filepath) >= MIN_FILE_SIZE:
+            continue
 
-            sys.stdout.write(f"\r  Downloading {date_str}...")
-            sys.stdout.flush()
+        year = int(date_str[:4])
+        if start_date is None and current_year != year:
+            current_year = year
+            print(f"\n  Year {year}")
 
-            try:
-                chart = billboard.ChartData("billboard-200", date=date_str, timeout=20)
-                data = [
-                    {
-                        "rank": entry.rank,
-                        "album": entry.title,
-                        "artist": entry.artist,
-                        "peakPos": entry.peakPos,
-                        "lastPos": entry.lastPos,
-                        "weeks": entry.weeks,
-                        "isNew": entry.isNew,
-                        "image": entry.image,
-                    }
-                    for entry in chart
-                ]
-                with open(filepath, "w", encoding="utf-8") as f:
-                    json.dump(data, f)
-                success += 1
-                time.sleep(delay)
-            except Exception as e:
-                sys.stdout.write(f" FAILED ({e})\n")
-                failed += 1
-                time.sleep(delay * 1.5)
+        sys.stdout.write(f"\r  Downloading {date_str}...")
+        sys.stdout.flush()
 
-        print(f"\n  Year {year} complete.")
+        try:
+            chart = billboard.ChartData("billboard-200", date=date_str, timeout=20)
+            data = [
+                {
+                    "rank": entry.rank,
+                    "album": entry.title,
+                    "artist": entry.artist,
+                    "peakPos": entry.peakPos,
+                    "lastPos": entry.lastPos,
+                    "weeks": entry.weeks,
+                    "isNew": entry.isNew,
+                    "image": entry.image,
+                }
+                for entry in chart
+            ]
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            success += 1
+            time.sleep(delay)
+        except Exception as e:
+            sys.stdout.write(f" FAILED ({e})\n")
+            failed += 1
+            time.sleep(delay * 1.5)
 
     print(f"Billboard 200 done: {success} downloaded, {failed} failed.")
 

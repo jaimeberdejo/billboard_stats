@@ -106,6 +106,8 @@ export async function getLatestChartDates(): Promise<LatestDates> {
     SELECT chart_type,
            MAX(chart_date)::text AS latest_date
     FROM chart_weeks
+    WHERE chart_date <= CURRENT_DATE
+      AND EXTRACT(DOW FROM chart_date) = 6
     GROUP BY chart_type
   `;
 
