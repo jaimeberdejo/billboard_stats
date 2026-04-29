@@ -64,4 +64,4 @@ Plans:
 Plans:
 - [x] 06-01-PLAN.md — Harden ETL chronology and freshness rules so future-dated rows/files cannot masquerade as the latest chart data
 - [x] 06-02-PLAN.md — Backfill the missing Neon data, add a manual ETL runner, and document the operator runbook
-- [ ] 06-03-PLAN.md — Automate the weekly ETL with GitHub Actions and validate manual workflow dispatch
+- [x] 06-03-PLAN.md — Automate the weekly ETL with GitHub Actions and validate manual workflow dispatch
