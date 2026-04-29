@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import { ArtistDrilldown } from "@/components/records/artist-drilldown";
@@ -20,12 +21,12 @@ const RECORD_OPTIONS: Array<{ label: string; value: "custom-query" | RecordPrese
   { label: "Custom Query", value: "custom-query" },
   { label: "Most Weeks at #1", value: "most-weeks-at-number-one" },
   { label: "Longest Chart Runs", value: "longest-chart-runs" },
+  { label: "Most Top 10 Weeks", value: "most-top-10-weeks" },
   { label: "Most #1 Songs (by Artist)", value: "most-number-one-songs-by-artist" },
   { label: "Most #1 Albums (by Artist)", value: "most-number-one-albums-by-artist" },
   { label: "Most Entries by Artist", value: "most-entries-by-artist" },
+  { label: "Most Total Chart Weeks by Artist", value: "most-total-chart-weeks-by-artist" },
   { label: "Most Simultaneous Entries", value: "most-simultaneous-entries" },
-  { label: "Biggest Debuts", value: "biggest-debuts" },
-  { label: "Fastest to #1", value: "fastest-to-number-one" },
 ];
 
 async function fetchPreset(
@@ -89,11 +90,17 @@ async function fetchDrilldown(
 }
 
 async function fetchCustomRecords(
-  chart: "hot-100" | "billboard-200",
   state: CustomQueryState,
 ): Promise<CustomRecordsPayload> {
+  const chart: "hot-100" | "billboard-200" =
+    state.entity === "songs"
+      ? "hot-100"
+      : state.entity === "albums"
+        ? "billboard-200"
+        : state.chartContext;
   const params = new URLSearchParams({
     mode: "custom",
+    entity: state.entity,
     chart,
     rankBy: state.rankBy,
     rankByParam: String(state.rankByParam),
@@ -129,6 +136,7 @@ async function fetchCustomRecords(
 }
 
 export function RecordsView() {
+  const router = useRouter();
   const [recordType, setRecordType] = useState<"custom-query" | RecordPreset>(
     "most-weeks-at-number-one",
   );
@@ -140,6 +148,8 @@ export function RecordsView() {
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [customState, setCustomState] = useState<CustomQueryState>({
+    entity: "songs",
+    chartContext: "hot-100",
     sortDir: "desc",
     rankBy: "weeks-at-number-one",
     rankByParam: 10,
@@ -171,6 +181,7 @@ export function RecordsView() {
     resetExpandedState();
     setCustomState((current) => ({
       ...current,
+      chartContext: nextChart,
       peakMin: 1,
       peakMax: nextChart === "hot-100" ? 100 : 200,
       debutPosMin: 1,
@@ -220,7 +231,7 @@ export function RecordsView() {
     let cancelled = false;
     startTransition(async () => {
       try {
-        const nextPayload = await fetchCustomRecords(chart, customState);
+        const nextPayload = await fetchCustomRecords(customState);
         if (!cancelled) {
           setCustomPayload(nextPayload);
           setError(null);
@@ -240,7 +251,7 @@ export function RecordsView() {
     return () => {
       cancelled = true;
     };
-  }, [chart, customState, recordType]);
+  }, [customState, recordType]);
 
   const onRowClick = (row: RecordLeaderboardRow) => {
     if (!payload?.supportsDrilldown || !row.artist_id) {
@@ -292,26 +303,28 @@ export function RecordsView() {
           ))}
         </select>
 
-        <div className="inline-flex overflow-hidden rounded border border-black/10 bg-[#F5F5F5]">
-          {([
-            { value: "hot-100", label: "HOT 100" },
-            { value: "billboard-200", label: "B200" },
-          ] as const).map((option) => (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => handleChartChange(option.value)}
-              className={[
-                "min-w-[78px] border-r border-black/10 px-3 py-1.5 text-[11px] font-[600] tracking-[0.08em] transition-colors last:border-r-0",
-                chart === option.value
-                  ? "bg-[#C8102E] text-white"
-                  : "bg-transparent text-[#0A0A0A] hover:bg-white",
-              ].join(" ")}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        {recordType !== "custom-query" ? (
+          <div className="inline-flex overflow-hidden rounded border border-black/10 bg-[#F5F5F5]">
+            {([
+              { value: "hot-100", label: "HOT 100" },
+              { value: "billboard-200", label: "B200" },
+            ] as const).map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => handleChartChange(option.value)}
+                className={[
+                  "min-w-[78px] border-r border-black/10 px-3 py-1.5 text-[11px] font-[600] tracking-[0.08em] transition-colors last:border-r-0",
+                  chart === option.value
+                    ? "bg-[#C8102E] text-white"
+                    : "bg-transparent text-[#0A0A0A] hover:bg-white",
+                ].join(" ")}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <span className="ml-auto text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
           {isPending ? "Loading..." : `${resultCount} results`}
@@ -320,7 +333,6 @@ export function RecordsView() {
 
       {recordType === "custom-query" ? (
         <CustomQueryBuilder
-          chart={chart}
           state={customState}
           onChange={setCustomState}
         />
@@ -362,7 +374,11 @@ export function RecordsView() {
             rows={customPayload.rows}
             valueLabel={customPayload.valueLabel}
             expandedArtistId={null}
-            onRowClick={() => {}}
+            onRowClick={(row) => {
+              if (customPayload.entity === "artists" && row.artist_id) {
+                router.push(`/artist/${row.artist_id}`);
+              }
+            }}
           />
         ) : (
           <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
