@@ -514,17 +514,19 @@ vercel logs --environment production --level error --since 5m
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Billboard DB local owner/user for pg_dump**
    - What we know: Tables are owned by `postgres` user; local DB accessible as `postgres`.
    - What's unclear: Whether local PostgreSQL requires password for `postgres` user.
    - Recommendation: Plan should include `pg_dump -U postgres ...` and note that password prompt may appear. Alternatively use `-U $(whoami)` if that user also has access (confirmed in bash probe it does).
+   - RESOLVED: 05-01 Task 2 uses `pg_dump -d "postgresql://postgres@localhost/billboard"` with a note that a password prompt may appear. If it does, the user can set PGPASSWORD env var or use the local trust auth (confirmed accessible via Bash probe).
 
 2. **Vercel account status**
    - What we know: CONTEXT.md references GitHub remote as deployment target.
    - What's unclear: Whether a Vercel account is already linked to the GitHub account.
    - Recommendation: Plan Wave 0 should check `vercel whoami`; if unauthenticated, run `vercel login`.
+   - RESOLVED: 05-02 Task 1 begins with `vercel login` (opens browser OAuth) followed by `vercel whoami` to confirm authentication. If already logged in, `vercel login` is a no-op.
 
 ---
 
