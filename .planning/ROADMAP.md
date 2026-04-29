@@ -41,3 +41,15 @@ Plans:
 1. Search bar triggers fuzzy DB search (min 2 chars) and displays tabbed results with counts.
 2. Records page lists preset leaderboards accurately.
 3. Custom Query Builder works, returning top-50 results based on selected filters and sort.
+
+### Phase 5: I want to configure neon and deploy the app in vercel
+
+**Goal:** Provision a Neon PostgreSQL project with the full Billboard dataset, wire DATABASE_URL into Vercel, deploy the app to production, and cut over the Python ETL pipeline to write to Neon.
+**Requirements:** CORE-02, CORE-03
+**Depends on:** Phase 4
+**Plans:** 3 plans
+
+Plans:
+- [ ] 05-01-PLAN.md — Neon project creation and full data migration from localhost (pg_dump/pg_restore, row count verification)
+- [ ] 05-02-PLAN.md — Vercel deployment: DATABASE_URL env vars (3 scopes), GitHub integration, and production deploy
+- [ ] 05-03-PLAN.md — Post-deploy smoke tests, Python ETL cutover to Neon, and .env.example update
