@@ -14,7 +14,9 @@ export async function GET(request: NextRequest): Promise<Response> {
 
   try {
     const payload = await searchAll(query);
-    return Response.json(payload);
+    return Response.json(payload, {
+      headers: { "Cache-Control": "public, s-maxage=300, stale-while-revalidate=3600" },
+    });
   } catch {
     return Response.json(
       { error: "Failed to load search results. Please try again later." },
