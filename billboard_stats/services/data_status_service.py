@@ -21,10 +21,13 @@ def get_table_counts() -> dict:
 
 
 def get_latest_chart_dates() -> dict:
-    """Latest chart_date per chart_type."""
+    """Latest non-future Saturday chart_date per chart_type."""
     rows = execute_query(
         "SELECT chart_type, MAX(chart_date) AS latest_date "
-        "FROM chart_weeks GROUP BY chart_type;"
+        "FROM chart_weeks "
+        "WHERE chart_date <= CURRENT_DATE "
+        "AND EXTRACT(DOW FROM chart_date) = 6 "
+        "GROUP BY chart_type;"
     )
     return {r["chart_type"]: r["latest_date"] for r in rows}
 
