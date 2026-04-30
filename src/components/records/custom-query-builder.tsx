@@ -17,6 +17,8 @@ export interface CustomQueryState {
   weeksMin: string;
   debutPosMin: number;
   debutPosMax: number;
+  startYear: string;
+  endYear: string;
 }
 
 interface CustomQueryBuilderProps {
@@ -39,6 +41,7 @@ export function CustomQueryBuilder({
   const showRankParam =
     state.rankBy === "weeks-at-position" || state.rankBy === "weeks-in-top-n";
   const showPositionFilters = state.entity !== "artists";
+  const hasAdvancedFilters = true;
   const entityLabel = state.entity;
 
   const entityOptions: Array<{ label: string; value: CustomEntity }> = [
@@ -189,22 +192,26 @@ export function CustomQueryBuilder({
           </label>
 
           <label className="min-w-[148px]">
-            <span className="mb-1 block text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
-              Min. chart weeks
-            </span>
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={state.weeksMin}
-              onChange={(event) => update("weeksMin", event.target.value)}
-              placeholder="any"
-              inputMode="numeric"
-              className="w-full rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
-            />
+            {state.entity !== "artists" ? (
+              <>
+                <span className="mb-1 block text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+                  Min. chart weeks
+                </span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={state.weeksMin}
+                  onChange={(event) => update("weeksMin", event.target.value)}
+                  placeholder="any"
+                  inputMode="numeric"
+                  className="w-full rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
+                />
+              </>
+            ) : null}
           </label>
 
-          {showPositionFilters ? (
+          {hasAdvancedFilters ? (
             <div>
               <span className="mb-1 block text-[11px] font-[600] uppercase tracking-[0.08em] text-transparent">
                 Filters
@@ -220,73 +227,111 @@ export function CustomQueryBuilder({
           ) : null}
         </div>
 
-        {filtersOpen && showPositionFilters ? (
+        {filtersOpen && hasAdvancedFilters ? (
           <div className="mt-4 flex flex-wrap gap-6 border-t border-black/10 pt-4">
-            <div className="min-w-[240px] flex-1">
-              <div className="mb-2 text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
-                Best peak — between #{state.peakMin} and #{state.peakMax}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="min-w-[12px] text-[10px] text-[#AAAAAA]">1</span>
-                <input
-                  type="range"
-                  min={1}
-                  max={chartMax}
-                  value={state.peakMin}
-                  onChange={(event) =>
-                    update("peakMin", Math.min(clamp(Number(event.target.value) || 1), state.peakMax))
-                  }
-                  className="flex-1 accent-[#C8102E]"
-                />
-                <input
-                  type="range"
-                  min={1}
-                  max={chartMax}
-                  value={state.peakMax}
-                  onChange={(event) =>
-                    update("peakMax", Math.max(clamp(Number(event.target.value) || chartMax), state.peakMin))
-                  }
-                  className="flex-1 accent-[#C8102E]"
-                />
-                <span className="min-w-[20px] text-[10px] text-[#AAAAAA]">{chartMax}</span>
-              </div>
-            </div>
+            <label className="min-w-[140px]">
+              <span className="mb-1 block text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+                Start year
+              </span>
+              <input
+                type="number"
+                min={1950}
+                max={2100}
+                step={1}
+                value={state.startYear}
+                onChange={(event) => update("startYear", event.target.value)}
+                placeholder="any"
+                inputMode="numeric"
+                className="w-full rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
+              />
+            </label>
 
-            <div className="min-w-[240px] flex-1">
-              <div className="mb-2 text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
-                Debut position — between #{state.debutPosMin} and #{state.debutPosMax}
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="min-w-[12px] text-[10px] text-[#AAAAAA]">1</span>
-                <input
-                  type="range"
-                  min={1}
-                  max={chartMax}
-                  value={state.debutPosMin}
-                  onChange={(event) =>
-                    update(
-                      "debutPosMin",
-                      Math.min(clamp(Number(event.target.value) || 1), state.debutPosMax),
-                    )
-                  }
-                  className="flex-1 accent-[#C8102E]"
-                />
-                <input
-                  type="range"
-                  min={1}
-                  max={chartMax}
-                  value={state.debutPosMax}
-                  onChange={(event) =>
-                    update(
-                      "debutPosMax",
-                      Math.max(clamp(Number(event.target.value) || chartMax), state.debutPosMin),
-                    )
-                  }
-                  className="flex-1 accent-[#C8102E]"
-                />
-                <span className="min-w-[20px] text-[10px] text-[#AAAAAA]">{chartMax}</span>
-              </div>
-            </div>
+            <label className="min-w-[140px]">
+              <span className="mb-1 block text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+                End year
+              </span>
+              <input
+                type="number"
+                min={1950}
+                max={2100}
+                step={1}
+                value={state.endYear}
+                onChange={(event) => update("endYear", event.target.value)}
+                placeholder="any"
+                inputMode="numeric"
+                className="w-full rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
+              />
+            </label>
+
+            {showPositionFilters ? (
+              <>
+                <div className="min-w-[240px] flex-1">
+                  <div className="mb-2 text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+                    Best peak — between #{state.peakMin} and #{state.peakMax}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-[12px] text-[10px] text-[#AAAAAA]">1</span>
+                    <input
+                      type="range"
+                      min={1}
+                      max={chartMax}
+                      value={state.peakMin}
+                      onChange={(event) =>
+                        update("peakMin", Math.min(clamp(Number(event.target.value) || 1), state.peakMax))
+                      }
+                      className="flex-1 accent-[#C8102E]"
+                    />
+                    <input
+                      type="range"
+                      min={1}
+                      max={chartMax}
+                      value={state.peakMax}
+                      onChange={(event) =>
+                        update("peakMax", Math.max(clamp(Number(event.target.value) || chartMax), state.peakMin))
+                      }
+                      className="flex-1 accent-[#C8102E]"
+                    />
+                    <span className="min-w-[20px] text-[10px] text-[#AAAAAA]">{chartMax}</span>
+                  </div>
+                </div>
+
+                <div className="min-w-[240px] flex-1">
+                  <div className="mb-2 text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+                    Debut position — between #{state.debutPosMin} and #{state.debutPosMax}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-[12px] text-[10px] text-[#AAAAAA]">1</span>
+                    <input
+                      type="range"
+                      min={1}
+                      max={chartMax}
+                      value={state.debutPosMin}
+                      onChange={(event) =>
+                        update(
+                          "debutPosMin",
+                          Math.min(clamp(Number(event.target.value) || 1), state.debutPosMax),
+                        )
+                      }
+                      className="flex-1 accent-[#C8102E]"
+                    />
+                    <input
+                      type="range"
+                      min={1}
+                      max={chartMax}
+                      value={state.debutPosMax}
+                      onChange={(event) =>
+                        update(
+                          "debutPosMax",
+                          Math.max(clamp(Number(event.target.value) || chartMax), state.debutPosMin),
+                        )
+                      }
+                      className="flex-1 accent-[#C8102E]"
+                    />
+                    <span className="min-w-[20px] text-[10px] text-[#AAAAAA]">{chartMax}</span>
+                  </div>
+                </div>
+              </>
+            ) : null}
           </div>
         ) : null}
       </div>

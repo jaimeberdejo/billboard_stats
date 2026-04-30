@@ -1,4 +1,6 @@
-import Link from "next/link";
+"use client";
+
+import { useRouter } from "next/navigation";
 
 interface DetailHeaderProps {
   backHref: string;
@@ -13,14 +15,23 @@ export function DetailHeader({
   subtitle,
   quoteTitle = false,
 }: DetailHeaderProps) {
+  const router = useRouter();
+
   return (
     <header className="border-b border-black/10 pb-4">
-      <Link
-        href={backHref}
+      <button
+        type="button"
+        onClick={() => {
+          if (typeof window !== "undefined" && window.history.length > 1) {
+            router.back();
+            return;
+          }
+          router.push(backHref);
+        }}
         className="inline-flex text-[12px] font-[600] leading-[1.45] text-[#888888] transition-colors hover:text-[#C8102E]"
       >
         ← Back
-      </Link>
+      </button>
       <div className="mt-3">
         <h1 className="text-[16px] font-[600] leading-[1.2] text-[#0A0A0A] sm:text-[22px]">
           {quoteTitle ? `"${title}"` : title}
