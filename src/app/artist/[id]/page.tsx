@@ -1,7 +1,13 @@
+import Link from "next/link";
+
 import { ArtistCatalogTable } from "@/components/artist/artist-catalog-table";
 import { DetailHeader } from "@/components/detail/detail-header";
 import { StatsBar } from "@/components/detail/stats-bar";
-import { getArtistDetail, type ArtistDetailPayload } from "@/lib/artists";
+import {
+  getArtistDetail,
+  type ArtistCreditScope,
+  type ArtistDetailPayload,
+} from "@/lib/artists";
 
 export const dynamic = "force-dynamic";
 
@@ -45,13 +51,14 @@ function formatRange(start: string | null, end: string | null): string {
 
 async function loadArtistDetail(
   artistId: number | null,
+  creditScope: ArtistCreditScope,
 ): Promise<{ detail: ArtistDetailPayload | null; error: string | null }> {
   if (!artistId) {
     return { detail: null, error: null };
   }
 
   try {
-    const detail = await getArtistDetail(artistId);
+    const detail = await getArtistDetail(artistId, creditScope);
     return { detail, error: null };
   } catch {
     return {
@@ -61,10 +68,20 @@ async function loadArtistDetail(
   }
 }
 
+function parseCreditScope(value: string | string[] | undefined): ArtistCreditScope {
+  if (value === "lead") {
+    return "lead";
+  }
+
+  return "all";
+}
+
 export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">) {
   const { id } = await props.params;
+  const searchParams = await props.searchParams;
   const artistId = parseId(id);
-  const { detail, error } = await loadArtistDetail(artistId);
+  const creditScope = parseCreditScope(searchParams?.credits);
+  const { detail, error } = await loadArtistDetail(artistId, creditScope);
 
   if (error) {
     return (
@@ -121,6 +138,33 @@ export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">)
         title={detail.artist.name}
         subtitle={formatRange(stats?.first_chart_date ?? null, stats?.latest_chart_date ?? null)}
       />
+
+      <div className="mt-6 w-fit inline-flex self-start overflow-hidden rounded border border-black/10 bg-[#F5F5F5]">
+        {([
+          { value: "all", label: "All Credits" },
+          { value: "lead", label: "As Lead Artist" },
+        ] as const).map((option) => {
+          const href =
+            option.value === "all"
+              ? `/artist/${detail.artist.id}`
+              : `/artist/${detail.artist.id}?credits=lead`;
+
+          return (
+            <Link
+              key={option.value}
+              href={href}
+              className={[
+                "border-r border-black/10 px-4 py-2 text-center text-[11px] font-[600] uppercase tracking-[0.08em] last:border-r-0",
+                creditScope === option.value
+                  ? "bg-[#C8102E] !text-white visited:!text-white focus:!text-white"
+                  : "bg-white text-[#0A0A0A] hover:bg-[#F5F5F5]",
+              ].join(" ")}
+            >
+              {option.label}
+            </Link>
+          );
+        })}
+      </div>
 
       <div className="mt-6">
         <StatsBar items={statsItems} />
