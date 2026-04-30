@@ -95,6 +95,7 @@ export function CustomQueryBuilder({
                   onClick={() =>
                     onChange((() => {
                       const nextChartMax = option.value === "albums" ? 200 : 100;
+                      const isEntitySwitch = option.value !== state.entity;
                       return {
                         ...state,
                         entity: option.value,
@@ -106,10 +107,11 @@ export function CustomQueryBuilder({
                           option.value === "artists"
                             ? 10
                             : Math.min(state.rankByParam, nextChartMax),
-                        peakMin: Math.min(state.peakMin, nextChartMax),
-                        peakMax: Math.min(state.peakMax, nextChartMax),
-                        debutPosMin: Math.min(state.debutPosMin, nextChartMax),
-                        debutPosMax: Math.min(state.debutPosMax, nextChartMax),
+                        peakMin: isEntitySwitch ? 1 : Math.min(state.peakMin, nextChartMax),
+                        peakMax: isEntitySwitch ? nextChartMax : Math.min(state.peakMax, nextChartMax),
+                        debutPosMin: isEntitySwitch ? 1 : Math.min(state.debutPosMin, nextChartMax),
+                        debutPosMax:
+                          isEntitySwitch ? nextChartMax : Math.min(state.debutPosMax, nextChartMax),
                       };
                     })())
                   }
