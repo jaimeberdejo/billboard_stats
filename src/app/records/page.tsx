@@ -1,3 +1,5 @@
+import { Suspense } from "react";
+
 import { RecordsView } from "@/components/records/records-view";
 
 export const metadata = {
@@ -15,7 +17,9 @@ export default function RecordsPage() {
           Chart Records &amp; Leaderboards
         </h1>
       </div>
-      <RecordsView />
+      <Suspense fallback={null}>
+        <RecordsView />
+      </Suspense>
     </div>
   );
 }
