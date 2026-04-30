@@ -87,6 +87,12 @@ export interface RecordDrilldownRow {
   album_id: number | null;
 }
 
+export interface SimultaneousDrilldownWeek {
+  chart_date: string;
+  value: number;
+  rows: RecordDrilldownRow[];
+}
+
 export interface PresetRecordsPayload {
   mode: "preset";
   record: RecordPreset;
@@ -126,9 +132,11 @@ export interface DrilldownPayload {
   chart: ChartType;
   artistId: number;
   artistName: string | null;
+  chartDate?: string | null;
   valueLabel: string;
   unsupportedMessage: string | null;
   rows: RecordDrilldownRow[];
+  weeks?: SimultaneousDrilldownWeek[];
 }
 
 const PRESET_VALUE_LABELS: Record<RecordPreset, string> = {
@@ -181,6 +189,55 @@ function mapDrilldownRows(rows: Record<string, unknown>[]): RecordDrilldownRow[]
     value: Number(row.value ?? 0),
     song_id: (row.song_id as number | null) ?? null,
     album_id: (row.album_id as number | null) ?? null,
+  }));
+}
+
+function mapSimultaneousWeeks(
+  rows: Record<string, unknown>[],
+): SimultaneousDrilldownWeek[] {
+  const grouped = new Map<
+    string,
+    {
+      chart_date: string;
+      value: number;
+      rows: RecordDrilldownRow[];
+    }
+  >();
+
+  for (const row of rows) {
+    const chartDate = toIsoDate(row.chart_date);
+    if (!chartDate) {
+      continue;
+    }
+
+    const existing = grouped.get(chartDate);
+    const nextEntry: RecordDrilldownRow = {
+      rank: Number(row.entry_rank ?? 0),
+      title: row.title as string,
+      artist_credit: row.artist_credit as string,
+      value: Number(row.entry_rank ?? 0),
+      song_id: (row.song_id as number | null) ?? null,
+      album_id: (row.album_id as number | null) ?? null,
+    };
+
+    if (!existing) {
+      grouped.set(chartDate, {
+        chart_date: chartDate,
+        value: Number(row.week_value ?? 0),
+        rows: [nextEntry],
+      });
+      continue;
+    }
+
+    existing.rows.push(nextEntry);
+  }
+
+  return [...grouped.values()].map((week) => ({
+    chart_date: week.chart_date,
+    value: week.value,
+    rows: week.rows
+      .sort((left, right) => left.rank - right.rank)
+      .map((row, index) => ({ ...row, rank: index + 1 })),
   }));
 }
 
@@ -394,19 +451,13 @@ export async function getPresetRecords(
            JOIN song_artists sa ON e.song_id = sa.song_id
            WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
            GROUP BY sa.artist_id, e.chart_week_id
-         ),
-         artist_max AS (
-           SELECT artist_id, MAX(cnt) AS max_cnt
-           FROM artist_week_counts
-           GROUP BY artist_id
          )
          SELECT a.name AS title, a.name AS artist_credit,
                 awc.cnt AS value, a.id AS artist_id, cw.chart_date::text AS chart_date
          FROM artist_week_counts awc
-         JOIN artist_max am ON awc.artist_id = am.artist_id AND awc.cnt = am.max_cnt
          JOIN artists a ON awc.artist_id = a.id
          JOIN chart_weeks cw ON awc.chart_week_id = cw.id
-         ORDER BY awc.cnt DESC, a.name, cw.chart_date
+         ORDER BY awc.cnt DESC, cw.chart_date DESC, a.name
          LIMIT $1`,
         [limit],
       );
@@ -588,7 +639,7 @@ export async function getCustomRecords(
     entity,
     chart,
     valueLabel,
-    rows: mapRows(rows).slice(0, 50),
+    rows: mapRows(rows),
   };
 }
 
@@ -607,9 +658,11 @@ export async function getArtistRecordDrilldown(
       chart,
       artistId,
       artistName,
+      chartDate: chartDate ?? null,
       valueLabel: DRILLDOWN_VALUE_LABELS[record] ?? "Value",
       unsupportedMessage,
       rows: [],
+      weeks: [],
     };
   }
 
@@ -686,20 +739,31 @@ export async function getArtistRecordDrilldown(
       }
       break;
     case "most-simultaneous-entries":
-      if (!chartDate) {
-        throw new Error("chartDate is required for simultaneous entry drilldowns.");
-      }
       rows = await sql.query(
-        `SELECT s.title, s.artist_credit, e.rank AS value, s.id AS song_id
-         FROM hot100_entries e
+        `WITH ${VALID_HOT100_WEEKS_CTE},
+         week_counts AS (
+           SELECT e.chart_week_id, COUNT(*) AS cnt
+           FROM hot100_entries e
+           JOIN song_artists sa ON e.song_id = sa.song_id
+           WHERE sa.artist_id = $1
+             AND e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+           GROUP BY e.chart_week_id
+         )
+         SELECT cw.chart_date::text AS chart_date,
+                week_counts.cnt AS week_value,
+                s.title,
+                s.artist_credit,
+                e.rank AS entry_rank,
+                s.id AS song_id
+         FROM week_counts
+         JOIN chart_weeks cw ON week_counts.chart_week_id = cw.id
+         JOIN hot100_entries e ON e.chart_week_id = week_counts.chart_week_id
          JOIN songs s ON e.song_id = s.id
          JOIN song_artists sa ON s.id = sa.song_id
-         JOIN chart_weeks cw ON e.chart_week_id = cw.id
          WHERE sa.artist_id = $1
-           AND cw.chart_date = $2::date
-           AND cw.chart_type = 'hot-100'
-         ORDER BY e.rank ASC`,
-        [artistId, chartDate],
+           AND ($2::date IS NULL OR cw.chart_date = $2::date)
+         ORDER BY week_counts.cnt DESC, cw.chart_date DESC, e.rank ASC`,
+        [artistId, chartDate ?? null],
       );
       break;
     default:
@@ -713,8 +777,12 @@ export async function getArtistRecordDrilldown(
     chart,
     artistId,
     artistName,
+    chartDate: chartDate ?? null,
     valueLabel: DRILLDOWN_VALUE_LABELS[record] ?? "Value",
     unsupportedMessage: null,
-    rows: mapDrilldownRows(rows),
+    rows:
+      record === "most-simultaneous-entries" ? [] : mapDrilldownRows(rows),
+    weeks:
+      record === "most-simultaneous-entries" ? mapSimultaneousWeeks(rows) : [],
   };
 }

@@ -23,15 +23,6 @@ interface CustomQueryBuilderProps {
   onChange: (nextState: CustomQueryState) => void;
 }
 
-const TOP_RANGE_OPTIONS = [3, 5, 10, 40] as const;
-const MIN_WEEKS_OPTIONS = [
-  { label: "any", value: "" },
-  { label: "10+", value: "10" },
-  { label: "20+", value: "20" },
-  { label: "40+", value: "40" },
-  { label: "52+", value: "52" },
-] as const;
-
 export function CustomQueryBuilder({
   state,
   onChange,
@@ -171,21 +162,20 @@ export function CustomQueryBuilder({
             />
           </label>
 
-          <label className="min-w-[100px]">
+          <label className="min-w-[148px]">
             <span className="mb-1 block text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
               Min. chart weeks
             </span>
-            <select
+            <input
+              type="number"
+              min={1}
+              step={1}
               value={state.weeksMin}
               onChange={(event) => update("weeksMin", event.target.value)}
-              className="w-[92px] rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
-            >
-              {MIN_WEEKS_OPTIONS.map((option) => (
-                <option key={option.label} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+              placeholder="any"
+              inputMode="numeric"
+              className="w-full rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
+            />
           </label>
 
           {showPositionFilters ? (
@@ -306,19 +296,18 @@ export function CustomQueryBuilder({
                 {state.rankBy === "weeks-at-position" ? "position #" : "top"}
               </span>
               {state.rankBy === "weeks-in-top-n" ? (
-                <select
-                  value={String(state.rankByParam)}
+                <input
+                  type="number"
+                  min={1}
+                  max={chartMax}
+                  step={1}
+                  value={state.rankByParam}
                   onChange={(event) =>
                     update("rankByParam", clamp(Number(event.target.value) || 10))
                   }
-                  className="rounded border border-[#C8102E] bg-[#FFF0F0] px-2 py-1 text-[12px] font-[700] text-[#C8102E] outline-none"
-                >
-                  {TOP_RANGE_OPTIONS.filter((option) => option <= chartMax).map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
+                  inputMode="numeric"
+                  className="w-16 rounded border border-[#C8102E] bg-[#FFF0F0] px-2 py-1 text-center text-[12px] font-[700] text-[#C8102E] outline-none"
+                />
               ) : (
                 <input
                   type="number"

@@ -3,7 +3,6 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
-import { ArtistDrilldown } from "@/components/records/artist-drilldown";
 import {
   CustomQueryBuilder,
   type CustomQueryState,
@@ -32,11 +31,13 @@ const RECORD_OPTIONS: Array<{ label: string; value: "custom-query" | RecordPrese
 async function fetchPreset(
   chart: "hot-100" | "billboard-200",
   record: RecordPreset,
+  limit: number,
 ): Promise<PresetRecordsPayload> {
   const params = new URLSearchParams({
     mode: "preset",
     chart,
     record,
+    limit: String(limit),
   });
 
   const response = await fetch(`/api/records?${params.toString()}`, {
@@ -91,6 +92,7 @@ async function fetchDrilldown(
 
 async function fetchCustomRecords(
   state: CustomQueryState,
+  limit: number,
 ): Promise<CustomRecordsPayload> {
   const chart: "hot-100" | "billboard-200" =
     state.entity === "songs"
@@ -105,6 +107,7 @@ async function fetchCustomRecords(
     rankBy: state.rankBy,
     rankByParam: String(state.rankByParam),
     sortDir: state.sortDir,
+    limit: String(limit),
   });
 
   if (state.artistNames.trim()) {
@@ -144,9 +147,10 @@ export function RecordsView() {
   const [payload, setPayload] = useState<PresetRecordsPayload | null>(null);
   const [customPayload, setCustomPayload] = useState<CustomRecordsPayload | null>(null);
   const [drilldown, setDrilldown] = useState<DrilldownPayload | null>(null);
-  const [expandedArtistId, setExpandedArtistId] = useState<number | null>(null);
+  const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [requestedLimit, setRequestedLimit] = useState("50");
   const [customState, setCustomState] = useState<CustomQueryState>({
     entity: "songs",
     chartContext: "hot-100",
@@ -162,9 +166,20 @@ export function RecordsView() {
   });
 
   const resetExpandedState = () => {
-    setExpandedArtistId(null);
+    setExpandedRowKey(null);
     setDrilldown(null);
   };
+
+  const getRowKey = (row: RecordLeaderboardRow) =>
+    `${row.artist_id ?? "row"}:${row.chart_date ?? "none"}`;
+
+  const resolvedLimit = (() => {
+    const parsed = Number(requestedLimit);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      return 1;
+    }
+    return Math.min(parsed, 1000);
+  })();
 
   const handleRecordTypeChange = (nextRecordType: "custom-query" | RecordPreset) => {
     setRecordType(nextRecordType);
@@ -201,7 +216,7 @@ export function RecordsView() {
     let cancelled = false;
     startTransition(async () => {
       try {
-        const nextPayload = await fetchPreset(chart, recordType);
+        const nextPayload = await fetchPreset(chart, recordType, resolvedLimit);
         if (!cancelled) {
           setPayload(nextPayload);
           setError(null);
@@ -221,7 +236,7 @@ export function RecordsView() {
     return () => {
       cancelled = true;
     };
-  }, [chart, recordType]);
+  }, [chart, recordType, resolvedLimit]);
 
   useEffect(() => {
     if (recordType !== "custom-query") {
@@ -231,7 +246,7 @@ export function RecordsView() {
     let cancelled = false;
     startTransition(async () => {
       try {
-        const nextPayload = await fetchCustomRecords(customState);
+        const nextPayload = await fetchCustomRecords(customState, resolvedLimit);
         if (!cancelled) {
           setCustomPayload(nextPayload);
           setError(null);
@@ -251,20 +266,21 @@ export function RecordsView() {
     return () => {
       cancelled = true;
     };
-  }, [customState, recordType]);
+  }, [customState, recordType, resolvedLimit]);
 
   const onRowClick = (row: RecordLeaderboardRow) => {
     if (!payload?.supportsDrilldown || !row.artist_id) {
       return;
     }
 
-    if (expandedArtistId === row.artist_id) {
-      setExpandedArtistId(null);
+    const rowKey = getRowKey(row);
+    if (expandedRowKey === rowKey) {
+      setExpandedRowKey(null);
       setDrilldown(null);
       return;
     }
 
-    setExpandedArtistId(row.artist_id);
+    setExpandedRowKey(rowKey);
     startTransition(async () => {
       try {
         const nextDrilldown = await fetchDrilldown(chart, payload.record, row);
@@ -326,9 +342,24 @@ export function RecordsView() {
           </div>
         ) : null}
 
-        <span className="ml-auto text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
-          {isPending ? "Loading..." : `${resultCount} results`}
-        </span>
+        <label className="ml-auto flex items-center gap-2">
+          <span className="text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+            Results
+          </span>
+          <input
+            type="number"
+            min={1}
+            max={1000}
+            step={1}
+            value={requestedLimit}
+            onChange={(event) => setRequestedLimit(event.target.value)}
+            inputMode="numeric"
+            className="w-[92px] rounded border border-black/10 bg-white px-2 py-1.5 text-right text-[11px] font-[600] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
+          />
+          <span className="text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+            {isPending ? "Loading..." : `${resultCount} shown`}
+          </span>
+        </label>
       </div>
 
       {recordType === "custom-query" ? (
@@ -356,10 +387,10 @@ export function RecordsView() {
             <LeaderboardList
               rows={payload.rows}
               valueLabel={payload.valueLabel}
-              expandedArtistId={expandedArtistId}
+              expandedRowKey={expandedRowKey}
+              drilldownPayload={drilldown}
               onRowClick={onRowClick}
             />
-            {expandedArtistId ? <ArtistDrilldown payload={drilldown} /> : null}
           </>
         ) : (
           <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
@@ -373,7 +404,7 @@ export function RecordsView() {
           <LeaderboardList
             rows={customPayload.rows}
             valueLabel={customPayload.valueLabel}
-            expandedArtistId={null}
+            expandedRowKey={null}
             onRowClick={(row) => {
               if (customPayload.entity === "artists" && row.artist_id) {
                 router.push(`/artist/${row.artist_id}`);
