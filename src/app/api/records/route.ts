@@ -2,6 +2,7 @@ import { type NextRequest } from "next/server";
 
 import { parseChartType, type ChartType } from "@/lib/charts";
 import {
+  type CustomCreditScope,
   type CustomEntity,
   getArtistRecordDrilldown,
   getCustomRecords,
@@ -36,6 +37,8 @@ const CUSTOM_ENTITY_ALLOWLIST = new Set<CustomEntity>([
   "artists",
 ]);
 
+const CUSTOM_CREDIT_SCOPE_ALLOWLIST = new Set<CustomCreditScope>(["all", "lead"]);
+
 function parsePositiveInteger(
   value: string | null,
   minimum = 1,
@@ -61,6 +64,12 @@ function isValidCustomRankBy(value: string | null): value is CustomRankBy {
 
 function isValidCustomEntity(value: string | null): value is CustomEntity {
   return value !== null && CUSTOM_ENTITY_ALLOWLIST.has(value as CustomEntity);
+}
+
+function parseCustomCreditScope(value: string | null): CustomCreditScope {
+  return value !== null && CUSTOM_CREDIT_SCOPE_ALLOWLIST.has(value as CustomCreditScope)
+    ? (value as CustomCreditScope)
+    : "all";
 }
 
 function parseArtistNames(value: string | null): string[] | null {
@@ -162,6 +171,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       const payload = await getCustomRecords({
         entity,
         chart,
+        creditScope: parseCustomCreditScope(searchParams.get("creditScope")),
         rankBy,
         rankByParam,
         sortDir,

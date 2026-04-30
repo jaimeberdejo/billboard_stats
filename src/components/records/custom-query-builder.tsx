@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 
-import type { CustomEntity, CustomRankBy } from "@/lib/records";
+import type { CustomCreditScope, CustomEntity, CustomRankBy } from "@/lib/records";
 
 export interface CustomQueryState {
   entity: CustomEntity;
   chartContext: "hot-100" | "billboard-200";
+  creditScope: CustomCreditScope;
   sortDir: "asc" | "desc";
   rankBy: CustomRankBy;
   rankByParam: number;
@@ -154,12 +155,37 @@ export function CustomQueryBuilder({
             <span className="mb-1 block text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
               {state.entity === "artists" ? "Artist name" : "Artist"}
             </span>
-            <input
-              value={state.artistNames}
-              onChange={(event) => update("artistNames", event.target.value)}
-              placeholder="e.g. Drake, Taylor Swift"
-              className="w-full rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
-            />
+            <div className="flex flex-wrap items-center gap-3">
+              <input
+                value={state.artistNames}
+                onChange={(event) => update("artistNames", event.target.value)}
+                placeholder="e.g. Drake, Taylor Swift"
+                className="min-w-[220px] flex-1 rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
+              />
+
+              {state.entity === "artists" && state.chartContext === "hot-100" ? (
+                <div className="inline-flex overflow-hidden rounded border border-black/10 bg-white">
+                  {([
+                    { value: "all", label: "All Credits" },
+                    { value: "lead", label: "Lead Artist" },
+                  ] as const).map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => update("creditScope", option.value)}
+                      className={[
+                        "border-r border-black/10 px-3 py-2 text-[11px] font-[600] uppercase tracking-[0.08em] last:border-r-0",
+                        state.creditScope === option.value
+                          ? "bg-[#C8102E] text-white"
+                          : "bg-transparent text-[#0A0A0A] hover:bg-[#F5F5F5]",
+                      ].join(" ")}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </label>
 
           <label className="min-w-[148px]">

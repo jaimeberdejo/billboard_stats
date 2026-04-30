@@ -66,6 +66,7 @@ export type CustomRankBy =
   | "number-one-entries";
 
 export type CustomEntity = "songs" | "albums" | "artists";
+export type CustomCreditScope = "all" | "lead";
 
 export interface RecordLeaderboardRow {
   rank: number;
@@ -106,6 +107,7 @@ export interface PresetRecordsPayload {
 export interface CustomRecordsInput {
   entity: CustomEntity;
   chart: ChartType;
+  creditScope?: CustomCreditScope;
   rankBy: CustomRankBy;
   rankByParam: number;
   sortDir?: "asc" | "desc";
@@ -481,6 +483,7 @@ export async function getCustomRecords(
   const {
     entity,
     chart,
+    creditScope = "all",
     rankBy,
     rankByParam,
     sortDir = "desc",
@@ -545,50 +548,72 @@ export async function getCustomRecords(
   };
 
   if (entity === "artists") {
+    const roleFilter = creditScope === "lead" ? "AND role = 'primary'" : "";
     const params: Array<string | number> = [];
     const filters: string[] = [];
+    const placeholder = () => `$${params.length + 2}`;
 
     if (artistNames && artistNames.length > 0) {
       const artistValues = artistNames.map((name) => `%${name}%`);
-      const artistClause = artistValues.map((_, index) => `a.name ILIKE $${index + 1}`);
+      const artistClause = artistValues.map((_, index) => `a.name ILIKE $${index + 2}`);
       filters.push(`(${artistClause.join(" OR ")})`);
       params.push(...artistValues);
     }
     if (weeksMin != null) {
-      filters.push(
-        `${isHot100 ? "ast.total_hot100_weeks" : "ast.total_b200_weeks"} >= $${params.length + 1}`,
-      );
+      filters.push(`aggregated.total_weeks >= ${placeholder()}`);
       params.push(weeksMin);
     }
 
     let valueSql = "";
     if (rankBy === "total-weeks") {
       valueLabel = "Total Wks";
-      valueSql = isHot100 ? "ast.total_hot100_weeks" : "ast.total_b200_weeks";
+      valueSql = "aggregated.total_weeks";
       filters.push(`${valueSql} > 0`);
     } else if (rankBy === "most-entries") {
       valueLabel = "Entries";
-      valueSql = isHot100 ? "ast.total_hot100_songs" : "ast.total_b200_albums";
+      valueSql = "aggregated.entry_count";
       filters.push(`${valueSql} > 0`);
     } else {
       valueLabel = isHot100 ? "#1 Songs" : "#1 Albums";
-      valueSql = isHot100 ? "ast.hot100_number_ones" : "ast.b200_number_ones";
+      valueSql = "aggregated.number_one_count";
       filters.push(`${valueSql} > 0`);
     }
 
     const filterSql = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
     params.push(limit);
     rows = await sql.query(
-      `SELECT a.name AS title,
+      `WITH selected_entries AS (
+         SELECT sa.artist_id,
+                sa.song_id AS item_id
+         FROM song_artists sa
+         WHERE $1 = 'hot-100'
+           ${roleFilter}
+         UNION ALL
+         SELECT aa.artist_id,
+                aa.album_id AS item_id
+         FROM album_artists aa
+         WHERE $1 = 'billboard-200'
+           ${roleFilter}
+       ),
+       aggregated AS (
+         SELECT se.artist_id,
+                COUNT(DISTINCT se.item_id)::int AS entry_count,
+                COALESCE(SUM(st.total_weeks), 0)::int AS total_weeks,
+                COUNT(*) FILTER (WHERE COALESCE(st.weeks_at_number_one, 0) > 0)::int AS number_one_count
+         FROM selected_entries se
+         JOIN ${statsTable} st ON st.${idCol} = se.item_id
+         GROUP BY se.artist_id
+       )
+       SELECT a.name AS title,
               a.name AS artist_credit,
               ${valueSql} AS value,
               a.id AS artist_id
-       FROM artist_stats ast
-       JOIN artists a ON ast.artist_id = a.id
+       FROM aggregated
+       JOIN artists a ON aggregated.artist_id = a.id
        ${filterSql}
        ORDER BY ${valueSql} ${orderDir}, a.name
-       LIMIT $${params.length}`,
-      params,
+       LIMIT $${params.length + 1}`,
+      [chart, ...params],
     );
   } else if (rankBy === "total-weeks" || rankBy === "weeks-at-number-one") {
     const { params, filterSql } = buildFilters();

@@ -51,6 +51,8 @@ export interface ArtistDetailPayload {
   albums: ArtistCatalogAlbumRow[];
 }
 
+export type ArtistCreditScope = "all" | "lead";
+
 interface ArtistRow {
   id: number;
   name: string;
@@ -113,6 +115,7 @@ async function resolveArtistGroup(
 
 export async function getArtistDetail(
   artistId: number,
+  creditScope: ArtistCreditScope = "all",
 ): Promise<ArtistDetailPayload | null> {
   if (!isPositiveInteger(artistId)) {
     return null;
@@ -124,6 +127,11 @@ export async function getArtistDetail(
     return null;
   }
 
+  const songRoleFilter =
+    creditScope === "lead" ? "AND sa.role = 'primary'" : "";
+  const albumRoleFilter =
+    creditScope === "lead" ? "AND aa.role = 'primary'" : "";
+
   const [artistRows, statsRows, songRows, albumRows] = await Promise.all([
     Promise.resolve([
       {
@@ -133,20 +141,98 @@ export async function getArtistDetail(
       },
     ]),
     sql.query(
-      `SELECT COUNT(*)::int AS stats_count,
-              COALESCE(SUM(total_hot100_songs), 0)::int AS total_hot100_songs,
-              COALESCE(SUM(total_b200_albums), 0)::int AS total_b200_albums,
-              COALESCE(SUM(total_hot100_weeks), 0)::int AS total_hot100_weeks,
-              COALESCE(SUM(total_b200_weeks), 0)::int AS total_b200_weeks,
-              COALESCE(SUM(hot100_number_ones), 0)::int AS hot100_number_ones,
-              COALESCE(SUM(b200_number_ones), 0)::int AS b200_number_ones,
-              MIN(best_hot100_peak) AS best_hot100_peak,
-              MIN(best_b200_peak) AS best_b200_peak,
-              MIN(first_chart_date)::text AS first_chart_date,
-              MAX(latest_chart_date)::text AS latest_chart_date,
-              COALESCE(MAX(max_simultaneous_hot100), 0)::int AS max_simultaneous_hot100
-       FROM artist_stats
-       WHERE artist_id = ANY($1::int[])`,
+      `WITH selected_song_ids AS (
+         SELECT DISTINCT sa.song_id
+         FROM song_artists sa
+         WHERE sa.artist_id = ANY($1::int[])
+         ${songRoleFilter}
+       ),
+       selected_album_ids AS (
+         SELECT DISTINCT aa.album_id
+         FROM album_artists aa
+         WHERE aa.artist_id = ANY($1::int[])
+         ${albumRoleFilter}
+       ),
+       selected_song_stats AS (
+         SELECT ss.*
+         FROM song_stats ss
+         JOIN selected_song_ids ssi ON ssi.song_id = ss.song_id
+       ),
+       selected_album_stats AS (
+         SELECT als.*
+         FROM album_stats als
+         JOIN selected_album_ids sai ON sai.album_id = als.album_id
+       ),
+       selected_chart_dates AS (
+         SELECT debut_date AS chart_date FROM selected_song_stats
+         UNION ALL
+         SELECT last_date AS chart_date FROM selected_song_stats
+         UNION ALL
+         SELECT debut_date AS chart_date FROM selected_album_stats
+         UNION ALL
+         SELECT last_date AS chart_date FROM selected_album_stats
+       ),
+       selected_simultaneous_hot100 AS (
+         SELECT COUNT(DISTINCT e.song_id)::int AS cnt
+         FROM hot100_entries e
+         JOIN selected_song_ids ssi ON ssi.song_id = e.song_id
+         GROUP BY e.chart_week_id
+       )
+       SELECT (
+                SELECT COUNT(*)::int
+                FROM selected_song_ids
+              ) + (
+                SELECT COUNT(*)::int
+                FROM selected_album_ids
+              ) AS stats_count,
+              COALESCE((
+                SELECT COUNT(*)::int
+                FROM selected_song_ids
+              ), 0) AS total_hot100_songs,
+              COALESCE((
+                SELECT COUNT(*)::int
+                FROM selected_album_ids
+              ), 0) AS total_b200_albums,
+              COALESCE((
+                SELECT SUM(total_weeks)::int
+                FROM selected_song_stats
+              ), 0) AS total_hot100_weeks,
+              COALESCE((
+                SELECT SUM(total_weeks)::int
+                FROM selected_album_stats
+              ), 0) AS total_b200_weeks,
+              COALESCE((
+                SELECT COUNT(*)::int
+                FROM selected_song_stats
+                WHERE weeks_at_number_one > 0
+              ), 0) AS hot100_number_ones,
+              COALESCE((
+                SELECT COUNT(*)::int
+                FROM selected_album_stats
+                WHERE weeks_at_number_one > 0
+              ), 0) AS b200_number_ones,
+              (
+                SELECT MIN(peak_position)
+                FROM selected_song_stats
+              ) AS best_hot100_peak,
+              (
+                SELECT MIN(peak_position)
+                FROM selected_album_stats
+              ) AS best_b200_peak,
+              (
+                SELECT MIN(chart_date)::text
+                FROM selected_chart_dates
+                WHERE chart_date IS NOT NULL
+              ) AS first_chart_date,
+              (
+                SELECT MAX(chart_date)::text
+                FROM selected_chart_dates
+                WHERE chart_date IS NOT NULL
+              ) AS latest_chart_date,
+              COALESCE((
+                SELECT MAX(cnt)::int
+                FROM selected_simultaneous_hot100
+              ), 0) AS max_simultaneous_hot100`,
       [artistGroup.artistIds],
     ),
     sql.query(
@@ -167,6 +253,7 @@ export async function getArtistDetail(
          JOIN songs s ON sa.song_id = s.id
          LEFT JOIN song_stats ss ON s.id = ss.song_id
          WHERE sa.artist_id = ANY($1::int[])
+         ${songRoleFilter}
          ORDER BY s.id, CASE WHEN sa.role = 'primary' THEN 0 ELSE 1 END, sa.artist_id
        ) songs_for_artist
        ORDER BY debut_date ASC NULLS LAST, title ASC`,
@@ -190,6 +277,7 @@ export async function getArtistDetail(
          JOIN albums a ON aa.album_id = a.id
          LEFT JOIN album_stats als ON a.id = als.album_id
          WHERE aa.artist_id = ANY($1::int[])
+         ${albumRoleFilter}
          ORDER BY a.id, CASE WHEN aa.role = 'primary' THEN 0 ELSE 1 END, aa.artist_id
        ) albums_for_artist
        ORDER BY debut_date ASC NULLS LAST, title ASC`,

@@ -104,6 +104,7 @@ async function fetchCustomRecords(
     mode: "custom",
     entity: state.entity,
     chart,
+    creditScope: state.creditScope,
     rankBy: state.rankBy,
     rankByParam: String(state.rankByParam),
     sortDir: state.sortDir,
@@ -154,6 +155,7 @@ export function RecordsView() {
   const [customState, setCustomState] = useState<CustomQueryState>({
     entity: "songs",
     chartContext: "hot-100",
+    creditScope: "all",
     sortDir: "desc",
     rankBy: "weeks-at-number-one",
     rankByParam: 10,
