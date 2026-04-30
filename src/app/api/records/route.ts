@@ -99,8 +99,10 @@ export async function GET(request: NextRequest): Promise<Response> {
       );
     }
 
+    const limit = parsePositiveInteger(searchParams.get("limit"), 1, 1000) ?? 50;
+
     try {
-      const payload = await getPresetRecords(record, chart);
+      const payload = await getPresetRecords(record, chart, limit);
       return Response.json(payload, {
         headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
       });
@@ -141,6 +143,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     const weeksMin = parsePositiveInteger(searchParams.get("weeksMin"), 1, 10000);
     const debutPosMin = parsePositiveInteger(searchParams.get("debutPosMin"), 1, maxPosition);
     const debutPosMax = parsePositiveInteger(searchParams.get("debutPosMax"), 1, maxPosition);
+    const limit = parsePositiveInteger(searchParams.get("limit"), 1, 1000) ?? 50;
 
     if (peakMin && peakMax && peakMin > peakMax) {
       return Response.json(
@@ -167,6 +170,7 @@ export async function GET(request: NextRequest): Promise<Response> {
         weeksMin,
         debutPosMin,
         debutPosMax,
+        limit,
         artistNames: parseArtistNames(searchParams.get("artistNames")),
       });
       return Response.json(payload, {
