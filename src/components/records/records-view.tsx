@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 
 import {
@@ -27,6 +27,65 @@ const RECORD_OPTIONS: Array<{ label: string; value: "custom-query" | RecordPrese
   { label: "Most Total Chart Weeks by Artist", value: "most-total-chart-weeks-by-artist" },
   { label: "Most Simultaneous Entries", value: "most-simultaneous-entries" },
 ];
+
+function parseRecordType(value: string | null): "custom-query" | RecordPreset {
+  if (value === "custom-query") {
+    return value;
+  }
+
+  return RECORD_OPTIONS.some((option) => option.value === value)
+    ? (value as RecordPreset)
+    : "most-weeks-at-number-one";
+}
+
+function parseChart(value: string | null): "hot-100" | "billboard-200" {
+  return value === "billboard-200" ? "billboard-200" : "hot-100";
+}
+
+function parsePositiveNumber(value: string | null, fallback: number): number {
+  if (!value || !/^\d+$/.test(value)) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function buildInitialCustomState(searchParams: URLSearchParams): CustomQueryState {
+  const entity = (() => {
+    const raw = searchParams.get("entity");
+    return raw === "albums" || raw === "artists" ? raw : "songs";
+  })();
+  const chartContext = parseChart(searchParams.get("chartContext"));
+  const chartMax =
+    entity === "albums" ? 200 : entity === "artists" ? (chartContext === "billboard-200" ? 200 : 100) : 100;
+
+  return {
+    entity,
+    chartContext,
+    creditScope: searchParams.get("creditScope") === "lead" ? "lead" : "all",
+    sortDir: searchParams.get("sortDir") === "asc" ? "asc" : "desc",
+    rankBy: (() => {
+      const raw = searchParams.get("rankBy");
+      return raw === "total-weeks" ||
+        raw === "weeks-at-position" ||
+        raw === "weeks-in-top-n" ||
+        raw === "most-entries" ||
+        raw === "number-one-entries"
+        ? raw
+        : "weeks-at-number-one";
+    })(),
+    rankByParam: Math.min(parsePositiveNumber(searchParams.get("rankByParam"), 10), chartMax),
+    artistNames: searchParams.get("artistNames") ?? "",
+    peakMin: Math.min(parsePositiveNumber(searchParams.get("peakMin"), 1), chartMax),
+    peakMax: Math.min(parsePositiveNumber(searchParams.get("peakMax"), chartMax), chartMax),
+    weeksMin: searchParams.get("weeksMin") ?? "",
+    debutPosMin: Math.min(parsePositiveNumber(searchParams.get("debutPosMin"), 1), chartMax),
+    debutPosMax: Math.min(parsePositiveNumber(searchParams.get("debutPosMax"), chartMax), chartMax),
+    startYear: searchParams.get("startYear") ?? "",
+    endYear: searchParams.get("endYear") ?? "",
+  };
+}
 
 async function fetchPreset(
   chart: "hot-100" | "billboard-200",
@@ -117,6 +176,12 @@ async function fetchCustomRecords(
   if (state.weeksMin.trim()) {
     params.set("weeksMin", state.weeksMin.trim());
   }
+  if (state.startYear.trim()) {
+    params.set("startYear", state.startYear.trim());
+  }
+  if (state.endYear.trim()) {
+    params.set("endYear", state.endYear.trim());
+  }
   params.set("peakMin", String(state.peakMin));
   params.set("peakMax", String(state.peakMax));
   params.set("debutPosMin", String(state.debutPosMin));
@@ -140,32 +205,25 @@ async function fetchCustomRecords(
 }
 
 export function RecordsView() {
+  const searchParams = useSearchParams();
   const router = useRouter();
-  const [recordType, setRecordType] = useState<"custom-query" | RecordPreset>(
-    "most-weeks-at-number-one",
+  const pathname = usePathname();
+  const [recordType, setRecordType] = useState<"custom-query" | RecordPreset>(() =>
+    parseRecordType(searchParams.get("recordType")),
   );
-  const [chart, setChart] = useState<"hot-100" | "billboard-200">("hot-100");
+  const [chart, setChart] = useState<"hot-100" | "billboard-200">(() =>
+    parseChart(searchParams.get("chart")),
+  );
   const [payload, setPayload] = useState<PresetRecordsPayload | null>(null);
   const [customPayload, setCustomPayload] = useState<CustomRecordsPayload | null>(null);
   const [drilldown, setDrilldown] = useState<DrilldownPayload | null>(null);
   const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const [requestedLimit, setRequestedLimit] = useState("50");
-  const [customState, setCustomState] = useState<CustomQueryState>({
-    entity: "songs",
-    chartContext: "hot-100",
-    creditScope: "all",
-    sortDir: "desc",
-    rankBy: "weeks-at-number-one",
-    rankByParam: 10,
-    artistNames: "",
-    peakMin: 1,
-    peakMax: 100,
-    weeksMin: "",
-    debutPosMin: 1,
-    debutPosMax: 100,
-  });
+  const [requestedLimit, setRequestedLimit] = useState(() => searchParams.get("limit") ?? "50");
+  const [customState, setCustomState] = useState<CustomQueryState>(() =>
+    buildInitialCustomState(searchParams),
+  );
 
   const resetExpandedState = () => {
     setExpandedRowKey(null);
@@ -182,6 +240,44 @@ export function RecordsView() {
     }
     return Math.min(parsed, 1000);
   })();
+
+  useEffect(() => {
+    const params = new URLSearchParams();
+    params.set("recordType", recordType);
+    params.set("chart", chart);
+    params.set("limit", requestedLimit);
+
+    if (recordType === "custom-query") {
+      params.set("entity", customState.entity);
+      params.set("chartContext", customState.chartContext);
+      params.set("creditScope", customState.creditScope);
+      params.set("sortDir", customState.sortDir);
+      params.set("rankBy", customState.rankBy);
+      params.set("rankByParam", String(customState.rankByParam));
+      params.set("peakMin", String(customState.peakMin));
+      params.set("peakMax", String(customState.peakMax));
+      params.set("debutPosMin", String(customState.debutPosMin));
+      params.set("debutPosMax", String(customState.debutPosMax));
+
+      if (customState.artistNames.trim()) {
+        params.set("artistNames", customState.artistNames.trim());
+      }
+      if (customState.weeksMin.trim()) {
+        params.set("weeksMin", customState.weeksMin.trim());
+      }
+      if (customState.startYear.trim()) {
+        params.set("startYear", customState.startYear.trim());
+      }
+      if (customState.endYear.trim()) {
+        params.set("endYear", customState.endYear.trim());
+      }
+    }
+
+    const nextUrl = `${pathname}?${params.toString()}`;
+    if (`${pathname}?${searchParams.toString()}` !== nextUrl) {
+      router.replace(nextUrl, { scroll: false });
+    }
+  }, [chart, customState, pathname, recordType, requestedLimit, router, searchParams]);
 
   const handleRecordTypeChange = (nextRecordType: "custom-query" | RecordPreset) => {
     setRecordType(nextRecordType);

@@ -152,6 +152,8 @@ export async function GET(request: NextRequest): Promise<Response> {
     const weeksMin = parsePositiveInteger(searchParams.get("weeksMin"), 1, 10000);
     const debutPosMin = parsePositiveInteger(searchParams.get("debutPosMin"), 1, maxPosition);
     const debutPosMax = parsePositiveInteger(searchParams.get("debutPosMax"), 1, maxPosition);
+    const startYear = parsePositiveInteger(searchParams.get("startYear"), 1950, 2100);
+    const endYear = parsePositiveInteger(searchParams.get("endYear"), 1950, 2100);
     const limit = parsePositiveInteger(searchParams.get("limit"), 1, 1000) ?? 50;
 
     if (peakMin && peakMax && peakMin > peakMax) {
@@ -163,6 +165,12 @@ export async function GET(request: NextRequest): Promise<Response> {
     if (debutPosMin && debutPosMax && debutPosMin > debutPosMax) {
       return Response.json(
         { error: 'Custom mode received an invalid debut range: minimum exceeds maximum.' },
+        { status: 400 },
+      );
+    }
+    if (startYear && endYear && startYear > endYear) {
+      return Response.json(
+        { error: 'Custom mode received an invalid year range: start year exceeds end year.' },
         { status: 400 },
       );
     }
@@ -180,6 +188,8 @@ export async function GET(request: NextRequest): Promise<Response> {
         weeksMin,
         debutPosMin,
         debutPosMax,
+        startYear,
+        endYear,
         limit,
         artistNames: parseArtistNames(searchParams.get("artistNames")),
       });

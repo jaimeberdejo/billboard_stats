@@ -117,6 +117,8 @@ export interface CustomRecordsInput {
   weeksMin?: number | null;
   debutPosMin?: number | null;
   debutPosMax?: number | null;
+  startYear?: number | null;
+  endYear?: number | null;
   artistNames?: string[] | null;
 }
 
@@ -493,6 +495,8 @@ export async function getCustomRecords(
     weeksMin,
     debutPosMin,
     debutPosMax,
+    startYear,
+    endYear,
     artistNames,
   } = input;
 
@@ -505,39 +509,66 @@ export async function getCustomRecords(
   const validWeeksCte = isHot100 ? VALID_HOT100_WEEKS_CTE : VALID_B200_WEEKS_CTE;
   const validWeeksTable = isHot100 ? "valid_hot100_weeks" : "valid_b200_weeks";
   const orderDir = sortDir === "asc" ? "ASC" : "DESC";
+  const hasYearFilter = startYear != null || endYear != null;
+  const artistLinkTable = isHot100 ? "song_artists" : "album_artists";
+  const artistLinkIdCol = isHot100 ? "song_id" : "album_id";
 
   let rows: Record<string, unknown>[] = [];
   let valueLabel = "Value";
 
-  const buildFilters = (placeholderOffset = 0) => {
+  const buildYearFilter = (placeholderOffset = 0, dateExpr = "cw.chart_date") => {
+    const params: Array<string | number> = [];
+    const filters: string[] = [];
+    const placeholder = () => `$${placeholderOffset + params.length + 1}`;
+
+    if (startYear != null) {
+      filters.push(`${dateExpr} >= ${placeholder()}`);
+      params.push(`${startYear}-01-01`);
+    }
+    if (endYear != null) {
+      filters.push(`${dateExpr} <= ${placeholder()}`);
+      params.push(`${endYear}-12-31`);
+    }
+
+    return {
+      params,
+      filterSql: filters.length > 0 ? ` AND ${filters.join(" AND ")}` : "",
+    };
+  };
+
+  const buildFilters = (
+    placeholderOffset = 0,
+    artistExpr = "i.artist_credit",
+    statsExpr = "st",
+  ) => {
     const params: Array<string | number> = [];
     const filters: string[] = [];
     const placeholder = () => `$${placeholderOffset + params.length + 1}`;
 
     if (artistNames && artistNames.length > 0) {
       const artistValues = artistNames.map((name) => `%${name}%`);
-      const artistClause = artistValues.map(() => `i.artist_credit ILIKE ${placeholder()}`);
+      const artistClause = artistValues.map(() => `${artistExpr} ILIKE ${placeholder()}`);
       filters.push(`(${artistClause.join(" OR ")})`);
       params.push(...artistValues);
     }
     if (peakMin != null) {
-      filters.push(`st.peak_position >= ${placeholder()}`);
+      filters.push(`${statsExpr}.peak_position >= ${placeholder()}`);
       params.push(peakMin);
     }
     if (peakMax != null) {
-      filters.push(`st.peak_position <= ${placeholder()}`);
+      filters.push(`${statsExpr}.peak_position <= ${placeholder()}`);
       params.push(peakMax);
     }
     if (weeksMin != null) {
-      filters.push(`st.total_weeks >= ${placeholder()}`);
+      filters.push(`${statsExpr}.total_weeks >= ${placeholder()}`);
       params.push(weeksMin);
     }
     if (debutPosMin != null) {
-      filters.push(`st.debut_position >= ${placeholder()}`);
+      filters.push(`${statsExpr}.debut_position >= ${placeholder()}`);
       params.push(debutPosMin);
     }
     if (debutPosMax != null) {
-      filters.push(`st.debut_position <= ${placeholder()}`);
+      filters.push(`${statsExpr}.debut_position <= ${placeholder()}`);
       params.push(debutPosMax);
     }
 
@@ -547,7 +578,7 @@ export async function getCustomRecords(
     };
   };
 
-  if (entity === "artists") {
+  if (entity === "artists" && !hasYearFilter) {
     const roleFilter = creditScope === "lead" ? "AND role = 'primary'" : "";
     const params: Array<string | number> = [];
     const filters: string[] = [];
@@ -615,7 +646,91 @@ export async function getCustomRecords(
        LIMIT $${params.length + 1}`,
       [chart, ...params],
     );
-  } else if (rankBy === "total-weeks" || rankBy === "weeks-at-number-one") {
+  } else if (entity === "artists" && hasYearFilter) {
+    const roleFilter = creditScope === "lead" ? "WHERE link.role = 'primary'" : "";
+    const yearFilter = buildYearFilter();
+    const params: Array<string | number> = [...yearFilter.params];
+    const filters: string[] = [];
+    const placeholder = () => `$${params.length + 1}`;
+
+    if (artistNames && artistNames.length > 0) {
+      const artistValues = artistNames.map((name) => `%${name}%`);
+      const artistClause = artistValues.map(() => `a.name ILIKE ${placeholder()}`);
+      filters.push(`(${artistClause.join(" OR ")})`);
+      params.push(...artistValues);
+    }
+    if (weeksMin != null) {
+      filters.push(`aggregated.total_weeks >= ${placeholder()}`);
+      params.push(weeksMin);
+    }
+
+    let valueSql = "";
+    if (rankBy === "total-weeks") {
+      valueLabel = "Total Wks";
+      valueSql = "aggregated.total_weeks";
+      filters.push(`${valueSql} > 0`);
+    } else if (rankBy === "most-entries") {
+      valueLabel = "Entries";
+      valueSql = "aggregated.entry_count";
+      filters.push(`${valueSql} > 0`);
+    } else {
+      valueLabel = isHot100 ? "#1 Songs" : "#1 Albums";
+      valueSql = "aggregated.number_one_count";
+      filters.push(`${valueSql} > 0`);
+    }
+
+    const filterSql = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
+    params.push(limit);
+
+    rows = await sql.query(
+      `WITH ${validWeeksCte},
+       filtered_entries AS (
+         SELECT e.${idCol} AS item_id,
+                e.rank,
+                cw.chart_date
+         FROM ${entryTable} e
+         JOIN chart_weeks cw ON cw.id = e.chart_week_id
+         WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
+       ),
+       item_stats AS (
+         SELECT fe.item_id,
+                COUNT(*)::int AS total_weeks,
+                MIN(fe.rank)::int AS peak_position,
+                COUNT(*) FILTER (
+                  WHERE fe.rank = (
+                    SELECT MIN(fe2.rank)
+                    FROM filtered_entries fe2
+                    WHERE fe2.item_id = fe.item_id
+                  )
+                )::int AS weeks_at_peak,
+                COUNT(*) FILTER (WHERE fe.rank = 1)::int AS weeks_at_number_one,
+                MIN(fe.chart_date)::date AS debut_date,
+                (ARRAY_AGG(fe.rank ORDER BY fe.chart_date ASC))[1]::int AS debut_position
+         FROM filtered_entries fe
+         GROUP BY fe.item_id
+       ),
+       aggregated AS (
+         SELECT link.artist_id,
+                COUNT(DISTINCT stats.item_id)::int AS entry_count,
+                COALESCE(SUM(stats.total_weeks), 0)::int AS total_weeks,
+                COUNT(*) FILTER (WHERE COALESCE(stats.weeks_at_number_one, 0) > 0)::int AS number_one_count
+         FROM ${artistLinkTable} link
+         JOIN item_stats stats ON stats.item_id = link.${artistLinkIdCol}
+         ${roleFilter}
+         GROUP BY link.artist_id
+       )
+       SELECT a.name AS title,
+              a.name AS artist_credit,
+              ${valueSql} AS value,
+              a.id AS artist_id
+       FROM aggregated
+       JOIN artists a ON aggregated.artist_id = a.id
+       ${filterSql}
+       ORDER BY ${valueSql} ${orderDir}, a.name
+       LIMIT $${params.length}`,
+      params,
+    );
+  } else if (!hasYearFilter && (rankBy === "total-weeks" || rankBy === "weeks-at-number-one")) {
     const { params, filterSql } = buildFilters();
     const valueCol = rankBy === "total-weeks" ? "total_weeks" : "weeks_at_number_one";
     valueLabel = rankBy === "total-weeks" ? "Total Wks" : "Wks #1";
@@ -634,7 +749,7 @@ export async function getCustomRecords(
        LIMIT $${params.length}`,
       params,
     );
-  } else {
+  } else if (!hasYearFilter) {
     const { params, filterSql } = buildFilters(1);
     const rankFilter =
       rankBy === "weeks-at-position" ? "e.rank = $1" : "e.rank <= $1";
@@ -656,6 +771,104 @@ export async function getCustomRecords(
        ORDER BY value ${orderDir}, i.title
        LIMIT $${params.length + 2}`,
       [rankByParam, ...params, limit],
+    );
+  } else if (rankBy === "total-weeks" || rankBy === "weeks-at-number-one") {
+    const yearFilter = buildYearFilter();
+    const { params: filterParams, filterSql } = buildFilters(yearFilter.params.length);
+    const valueCol = rankBy === "total-weeks" ? "total_weeks" : "weeks_at_number_one";
+    valueLabel = rankBy === "total-weeks" ? "Total Wks" : "Wks #1";
+    const valueFilter =
+      rankBy === "weeks-at-number-one" ? ` AND st.${valueCol} > 0` : "";
+    const params = [...yearFilter.params, ...filterParams, limit];
+
+    rows = await sql.query(
+      `WITH ${validWeeksCte},
+       filtered_entries AS (
+         SELECT e.${idCol} AS item_id,
+                e.rank,
+                cw.chart_date
+         FROM ${entryTable} e
+         JOIN chart_weeks cw ON cw.id = e.chart_week_id
+         WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
+       ),
+       item_stats AS (
+         SELECT fe.item_id,
+                COUNT(*)::int AS total_weeks,
+                MIN(fe.rank)::int AS peak_position,
+                COUNT(*) FILTER (
+                  WHERE fe.rank = (
+                    SELECT MIN(fe2.rank)
+                    FROM filtered_entries fe2
+                    WHERE fe2.item_id = fe.item_id
+                  )
+                )::int AS weeks_at_peak,
+                COUNT(*) FILTER (WHERE fe.rank = 1)::int AS weeks_at_number_one,
+                MIN(fe.chart_date)::date AS debut_date,
+                (ARRAY_AGG(fe.rank ORDER BY fe.chart_date ASC))[1]::int AS debut_position
+         FROM filtered_entries fe
+         GROUP BY fe.item_id
+       )
+       SELECT i.title,
+              i.artist_credit,
+              st.${valueCol} AS value,
+              i.id AS ${idCol}
+       FROM item_stats st
+       JOIN ${itemTable} i ON st.item_id = i.id
+       WHERE 1=1${valueFilter}${filterSql}
+       ORDER BY st.${valueCol} ${orderDir}, i.title
+       LIMIT $${params.length}`,
+      params,
+    );
+  } else {
+    const yearFilter = buildYearFilter(1);
+    const { params: filterParams, filterSql } = buildFilters(
+      yearFilter.params.length + 1,
+    );
+    const rankFilter =
+      rankBy === "weeks-at-position" ? "fe.rank = $1" : "fe.rank <= $1";
+    valueLabel =
+      rankBy === "weeks-at-position" ? `Wks @#${rankByParam}` : `Wks Top ${rankByParam}`;
+    const params = [rankByParam, ...yearFilter.params, ...filterParams, limit];
+
+    rows = await sql.query(
+      `WITH ${validWeeksCte},
+       filtered_entries AS (
+         SELECT e.${idCol} AS item_id,
+                e.rank,
+                cw.chart_date
+         FROM ${entryTable} e
+         JOIN chart_weeks cw ON cw.id = e.chart_week_id
+         WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
+       ),
+       item_stats AS (
+         SELECT fe.item_id,
+                COUNT(*)::int AS total_weeks,
+                MIN(fe.rank)::int AS peak_position,
+                COUNT(*) FILTER (
+                  WHERE fe.rank = (
+                    SELECT MIN(fe2.rank)
+                    FROM filtered_entries fe2
+                    WHERE fe2.item_id = fe.item_id
+                  )
+                )::int AS weeks_at_peak,
+                COUNT(*) FILTER (WHERE fe.rank = 1)::int AS weeks_at_number_one,
+                MIN(fe.chart_date)::date AS debut_date,
+                (ARRAY_AGG(fe.rank ORDER BY fe.chart_date ASC))[1]::int AS debut_position
+         FROM filtered_entries fe
+         GROUP BY fe.item_id
+       )
+       SELECT i.title,
+              i.artist_credit,
+              COUNT(*) AS value,
+              i.id AS ${idCol}
+       FROM filtered_entries fe
+       JOIN ${itemTable} i ON fe.item_id = i.id
+       JOIN item_stats st ON st.item_id = i.id
+       WHERE ${rankFilter}${filterSql}
+       GROUP BY i.id, i.title, i.artist_credit
+       ORDER BY value ${orderDir}, i.title
+       LIMIT $${params.length}`,
+      params,
     );
   }
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState, useTransition } from "react";
 import { ChartControls } from "@/components/charts/chart-controls";
 import { ChartTable } from "@/components/charts/chart-table";
 import type { ChartSnapshot, ChartType } from "@/lib/charts";
@@ -74,6 +75,9 @@ export function LatestChartsView({
   initialSnapshot,
   initialError,
 }: LatestChartsViewProps) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [snapshot, setSnapshot] = useState<ChartSnapshot>(initialSnapshot ?? EMPTY_SNAPSHOT);
   const [error, setError] = useState<string | null>(initialError);
   const [isPending, startTransition] = useTransition();
@@ -93,6 +97,21 @@ export function LatestChartsView({
       }
     });
   };
+
+  useEffect(() => {
+    if (!snapshot.chartType || !snapshot.selectedDate) {
+      return;
+    }
+
+    const params = new URLSearchParams();
+    params.set("chart", snapshot.chartType);
+    params.set("date", snapshot.selectedDate);
+    const nextUrl = `${pathname}?${params.toString()}`;
+
+    if (`${pathname}?${searchParams.toString()}` !== nextUrl) {
+      router.replace(nextUrl, { scroll: false });
+    }
+  }, [pathname, router, searchParams, snapshot.chartType, snapshot.selectedDate]);
 
   return (
     <section className="flex flex-1 flex-col gap-4">
@@ -125,7 +144,10 @@ export function LatestChartsView({
       ) : null}
 
       {snapshot.entries.length > 0 ? (
-        <ChartTable chartType={snapshot.chartType} entries={snapshot.entries} />
+        <ChartTable
+          chartType={snapshot.chartType}
+          entries={snapshot.entries}
+        />
       ) : (
         <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-8 text-center">
           <p className="text-[12px] font-[600] uppercase tracking-[0.08em] text-[#0A0A0A]">
