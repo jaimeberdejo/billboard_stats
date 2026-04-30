@@ -25,11 +25,102 @@ _FEAT_PATTERNS = [
 # Separators within a group of artists (e.g. "Drake, Lil Wayne & Rick Ross")
 _GROUP_SPLIT = re.compile(r"\s*,\s*|\s+&\s+|\s+[Xx]\s+|\s+[Aa]nd\s+")
 
+# Known act names where `&` is part of the act identity and should not be
+# treated as a collaboration separator. This is intentionally curated and can
+# be extended as additional false splits are discovered in the historical data.
+_PROTECTED_AMPERSAND_ACTS = (
+    "Aly & AJ",
+    "Archie Bell & The Drells",
+    "Ashford & Simpson",
+    "BeBe & CeCe Winans",
+    "Big & Rich",
+    "Blood, Sweat & Tears",
+    "Bob Seger & The Silver Bullet Band",
+    "Booker T. & The MG's",
+    "Brooks & Dunn",
+    "Bruce Hornsby & The Range",
+    "Captain & Tennille",
+    "Chad & Jeremy",
+    "Cheech & Chong",
+    "Commander Cody & His Lost Planet Airmen",
+    "Country Joe & The Fish",
+    "Crosby, Stills & Nash",
+    "Crosby, Stills, Nash & Young",
+    "D.J. Jazzy Jeff & The Fresh Prince",
+    "Derek & The Dominos",
+    "Diana Ross & The Supremes",
+    "Dion & The Belmonts",
+    "Earth, Wind & Fire",
+    "Edie Brickell & New Bohemians",
+    "Emerson, Lake & Palmer",
+    "England Dan & John Ford Coley",
+    "Ferrante & Teicher",
+    "George Thorogood & The Destroyers",
+    "Gloria Estefan & Miami Sound Machine",
+    "Hall & Oates",
+    "Hamilton, Joe Frank & Reynolds",
+    "Heavy D & The Boyz",
+    "Herb Alpert & The Tijuana Brass",
+    "Hootie & The Blowfish",
+    "Huey Lewis & The News",
+    "Ike & Tina Turner",
+    "Jan & Dean",
+    "Jay & The Americans",
+    "Joan Jett & The Blackhearts",
+    "John Cafferty & The Beaver Brown Band",
+    "Jr. Walker & The All Stars",
+    "K-Ci & JoJo",
+    "Kool & The Gang",
+    "Lil Jon & The East Side Boyz",
+    "Loggins & Messina",
+    "Macklemore & Ryan Lewis",
+    "Marky Mark & The Funky Bunch",
+    "Marilyn McCoo & Billy Davis Jr.",
+    "Marvin Gaye & Tammi Terrell",
+    "Martha & The Vandellas",
+    "Mumford & Sons",
+    "Paul Revere & The Raiders",
+    "Peaches & Herb",
+    "Peter, Paul & Mary",
+    "R. Kelly & Public Announcement",
+    "Ray Parker Jr. & Raydio",
+    "Rene & Angela",
+    "Sam & Dave",
+    "Seals & Crofts",
+    "Selena Gomez & The Scene",
+    "Simon & Garfunkel",
+    "Sly & The Family Stone",
+    "Smokey Robinson & The Miracles",
+    "Sonny & Cher",
+    "Southside Johnny & The Asbury Jukes",
+    "The Mamas & The Papas",
+    "Tony Orlando & Dawn",
+    "Wisin & Yandel",
+)
+
+
+def _protect_known_ampersand_acts(text: str) -> tuple[str, dict[str, str]]:
+    """Temporarily replace protected act names with opaque tokens."""
+    protected: dict[str, str] = {}
+    masked = text
+
+    for index, act_name in enumerate(
+        sorted(_PROTECTED_AMPERSAND_ACTS, key=len, reverse=True)
+    ):
+        token = f"__PROTECTED_ARTIST_{index}__"
+        pattern = re.compile(re.escape(act_name), re.IGNORECASE)
+        if pattern.search(masked):
+            masked = pattern.sub(token, masked)
+            protected[token] = act_name
+
+    return masked, protected
+
 
 def _split_group(text: str) -> List[str]:
     """Split a group of artists by commas, ampersands, 'X', or 'and'."""
-    parts = _GROUP_SPLIT.split(text.strip())
-    return [p.strip() for p in parts if p.strip()]
+    masked, protected = _protect_known_ampersand_acts(text.strip())
+    parts = _GROUP_SPLIT.split(masked)
+    return [protected.get(p.strip(), p.strip()) for p in parts if p.strip()]
 
 
 def parse_artist_credit(credit: str) -> List[Tuple[str, str]]:

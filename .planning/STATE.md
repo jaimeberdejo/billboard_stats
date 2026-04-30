@@ -42,3 +42,7 @@ Last activity: 2026-04-29 -- Reformulated natural-language query work into phase
 | Date | Quick Task | Summary |
 | --- | --- | --- |
 | 2026-04-30 | `260430-2cv-implement-all-this-date-input-year-searc` | Added direct chart week jump input, previous/next week buttons, last-week chart fields, and Janet alias merging in artist reads/search. |
+| 2026-04-30 | `260430-2zo-investigate-this-some-bands-have-in-thei` | Confirmed the ETL currently splits many valid `&` band names as separate artists; documented concrete examples and the recommended allowlist-based fix. |
+| 2026-04-30 | `260430-3c0-fix-ampersand-artist-parsing-so-band-nam` | Added protected `&` act-name parsing in the ETL and unit tests so known band/duo names are preserved while real collaborations still split. |
+| 2026-04-30 | `260430-e13-add-customizable-results-count-box-on-re` | Added a 1–1000 results input to the records-page top bar and threaded the requested limit through the API and records queries. |
+| 2026-04-30 | `260430-e69-inline-simultaneous-entries-expansion-un` | Moved artist drilldowns inline under leaderboard rows and changed simultaneous-entry drilldowns to show every chart week for the artist, grouped inline by week. |

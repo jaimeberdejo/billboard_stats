@@ -322,17 +322,21 @@ function classifyQuestion(question: string) {
 | A2 | Examples like “Taylor Swift” versus “Taylor Swift songs with most weeks at #1” reflect the dominant user intent split the app should support. | Architecture Patterns | If false, the parser may need a richer clarification policy earlier than planned. |
 | A3 | Billboard users will frequently ask ambiguous phrases such as “best Drake songs” that need clarification instead of forced execution. | Common Pitfalls | If false, clarification handling can be simpler; if true and omitted, trust in the assistant will degrade. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **What is the minimum accepted v1 phrase set?**
    - What we know: The executor vocabulary is already narrow and maps cleanly to search, preset records, and custom records. [VERIFIED: `src/lib/search.ts`; `src/lib/records.ts`]
-   - What's unclear: Whether Phase 7 should cover only direct paraphrases of the current query builder or also looser natural phrasing like “songs that debuted highest but lasted 20 weeks.” [VERIFIED: `src/components/records/custom-query-builder.tsx`; user prompt]
-   - Recommendation: Lock a golden-query fixture list before implementation so Phase 7 scope stays finite and Phase 8 inherits predictable inputs. [ASSUMED]
+   - **Resolved scope:** Phase 7 v1 must support two bounded phrase families only:
+     - direct search asks that map to the existing grouped fuzzy-search contract, including short noun phrases and entity-qualified asks such as artist, song, and album lookups
+     - direct records asks that map to the existing preset-record slugs and custom-query-builder vocabulary, including chart aliases, metric aliases, `top N`, `#1`, `number one`, peak/debut filters, minimum weeks, and artist filters
+   - **Explicitly out of scope for v1:** date filters, year/since queries, genre/demographic filters, explanatory questions, comparative prose, and any domain not representable by the current `searchAll` or `CustomRecordsInput` contracts
+   - **Execution consequence:** Anything outside that bounded phrase set must return `needs_clarification` or `unsupported`, and the golden fixture corpus must lock these outcomes before Phase 8 inherits the contract. [VERIFIED: `src/lib/search.ts`; `src/lib/records.ts`; `src/components/records/custom-query-builder.tsx`; user prompt]
 
 2. **Should Phase 7 expose a dedicated API route immediately?**
    - What we know: The repo already uses Route Handlers for search and records and Phase 9 will need a client-callable interpretation surface. [VERIFIED: `src/app/api/search/route.ts`; `src/app/api/records/route.ts`; `.planning/ROADMAP.md`]
-   - What's unclear: Whether planning should treat the route as part of Phase 7 or leave it as an internal lib only until Phase 9. [VERIFIED: `.planning/ROADMAP.md`]
-   - Recommendation: Plan for the route in Phase 7 but keep it execution-free so later phases can reuse it without rewiring. [ASSUMED]
+   - **Resolved decision:** Yes. Phase 7 should ship a dedicated `/api/query` interpretation route now, but it must remain execution-free and return only the structured interpretation object.
+   - **Why now:** Shipping the route in Phase 7 gives Phase 8 and Phase 9 one stable backend-owned contract instead of forcing later rewiring from an internal-only helper. [VERIFIED: `.planning/ROADMAP.md`; `src/app/api/search/route.ts`; `src/app/api/records/route.ts`]
+   - **Boundary:** The route must not import `searchAll`, `getPresetRecords`, `getCustomRecords`, or database helpers; it is a transport boundary for typed interpretation only. [VERIFIED: user prompt; `.planning/ROADMAP.md`]
 
 ## Security Domain
 

@@ -65,3 +65,35 @@ Plans:
 - [x] 06-01-PLAN.md — Harden ETL chronology and freshness rules so future-dated rows/files cannot masquerade as the latest chart data
 - [x] 06-02-PLAN.md — Backfill the missing Neon data, add a manual ETL runner, and document the operator runbook
 - [x] 06-03-PLAN.md — Automate the weekly ETL with GitHub Actions and validate manual workflow dispatch
+
+### Phase 7: Natural-Language Query Interpretation
+
+**Goal:** Parse plain-English chart questions into constrained structured query objects with explicit intent classification, parameter extraction, and user-visible query interpretation.
+**Requirements**: SEARCH-01, RECORDS-02
+**Depends on:** Phase 6
+**Plans:** 3 plans
+
+Plans:
+- [ ] 07-01-PLAN.md — Define the bounded NLQ schema, allowlisted vocabulary, and normalization helpers.
+- [ ] 07-02-PLAN.md — Implement deterministic interpretation and the interpretation-only `/api/query` route.
+- [ ] 07-03-PLAN.md — Lock interpretation behavior with executable golden fixtures and a regression runner.
+
+### Phase 8: Safe Query Execution For Records & Search
+
+**Goal:** Map structured natural-language query objects into safe allowlisted backend operations for records and search without permitting arbitrary SQL execution.
+**Requirements**: CORE-02, SEARCH-01, RECORDS-02
+**Depends on:** Phase 7
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 8 to break down)
+
+### Phase 9: Query Assistant UI For Records & Search
+
+**Goal:** Add a user-facing query assistant that accepts natural-language questions, shows the interpreted query, and renders results through the constrained records/search interface.
+**Requirements**: SEARCH-01, RECORDS-01, RECORDS-02
+**Depends on:** Phase 8
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 9 to break down)
