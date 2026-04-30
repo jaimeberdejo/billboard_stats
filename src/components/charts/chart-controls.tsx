@@ -134,6 +134,7 @@ export function ChartControls({
         Viewing {formatChartDate(selectedDate)}. Jump by year or exact date. Latest available week:{" "}
         {formatChartDate(latestDate)}.
       </div>
+
     </div>
   );
 }
