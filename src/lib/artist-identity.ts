@@ -1,5 +1,7 @@
 const CANONICAL_ARTIST_ALIASES = {
   "Janet Jackson": ["Janet"],
+  "Earth, Wind & Fire": ["Earth", "Wind", "Fire"],
+  Kesha: ["Ke$ha"],
 } as const;
 
 const aliasToCanonicalName = new Map<string, string>();
