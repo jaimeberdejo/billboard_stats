@@ -83,6 +83,8 @@ export default async function AlbumDetailPage(props: PageProps<"/album/[id]">) {
   }
 
   const stats = detail.stats;
+  const chartHref = (date: string | null): string | undefined =>
+    date ? `/?chart=${detail.chartType}&date=${date}` : undefined;
   const statsItems = [
     { label: "Peak", value: formatPeak(stats?.peak_position ?? null), accent: stats?.peak_position === 1 },
     { label: "Weeks on Chart", value: String(stats?.total_weeks ?? 0) },
@@ -93,8 +95,16 @@ export default async function AlbumDetailPage(props: PageProps<"/album/[id]">) {
     },
     { label: "Weeks at Peak", value: String(stats?.weeks_at_peak ?? 0) },
     { label: "Debut Position", value: formatPeak(stats?.debut_position ?? null) },
-    { label: "Debut Date", value: formatDate(stats?.debut_date ?? null) },
-    { label: "Last Week", value: formatDate(stats?.last_date ?? null) },
+    {
+      label: "Debut Date",
+      value: formatDate(stats?.debut_date ?? null),
+      href: chartHref(stats?.debut_date ?? null),
+    },
+    {
+      label: "Last Week",
+      value: formatDate(stats?.last_date ?? null),
+      href: chartHref(stats?.last_date ?? null),
+    },
   ];
 
   return (
@@ -123,7 +133,7 @@ export default async function AlbumDetailPage(props: PageProps<"/album/[id]">) {
           Chart History
         </div>
         {detail.chartRun.length > 0 ? (
-          <ChartHistoryTable chartRun={detail.chartRun} />
+          <ChartHistoryTable chartRun={detail.chartRun} chartType={detail.chartType} />
         ) : (
           <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
             No chart history available

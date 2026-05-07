@@ -1,11 +1,12 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 interface DetailHeaderProps {
   backHref: string;
   title: string;
-  subtitle: string;
+  subtitle: ReactNode;
   quoteTitle?: boolean;
 }
 
