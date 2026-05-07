@@ -1,7 +1,11 @@
+import Link from "next/link";
+
+import type { ChartType } from "@/lib/charts";
 import type { DetailChartRunPoint } from "@/lib/songs";
 
 interface ChartHistoryTableProps {
   chartRun: DetailChartRunPoint[];
+  chartType: ChartType;
 }
 
 function getMovement(point: DetailChartRunPoint): { label: string; tone: string } {
@@ -57,7 +61,7 @@ function formatLastWeek(point: DetailChartRunPoint): string {
   return String(point.last_pos);
 }
 
-export function ChartHistoryTable({ chartRun }: ChartHistoryTableProps) {
+export function ChartHistoryTable({ chartRun, chartType }: ChartHistoryTableProps) {
   const rows = [...chartRun].reverse();
 
   return (
@@ -86,7 +90,12 @@ export function ChartHistoryTable({ chartRun }: ChartHistoryTableProps) {
                   className="border-b border-black/10 bg-white last:border-b-0 hover:bg-[#F5F5F5]"
                 >
                   <td className="px-3 py-2 text-[12px] leading-[1.45] text-[#888888]">
-                    {formatWeek(point.chart_date)}
+                    <Link
+                      href={`/?chart=${chartType}&date=${point.chart_date}`}
+                      className="transition-colors hover:text-[#C8102E]"
+                    >
+                      {formatWeek(point.chart_date)}
+                    </Link>
                   </td>
                   <td
                     className={[
