@@ -3,6 +3,8 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 
+import type { ChartType } from "@/lib/charts";
+
 interface ArtistCatalogTableRow {
   id: number;
   title: string;
@@ -17,6 +19,7 @@ interface ArtistCatalogTableRow {
 interface ArtistCatalogTableProps {
   title: string;
   rows: ArtistCatalogTableRow[];
+  chartType: ChartType;
 }
 
 type SortKey = "title" | "peak_position" | "total_weeks" | "weeks_at_peak" | "debut_date" | "last_date";
@@ -35,7 +38,7 @@ function formatDate(value: string | null): string {
   }).format(new Date(`${value}T00:00:00Z`));
 }
 
-export function ArtistCatalogTable({ title, rows }: ArtistCatalogTableProps) {
+export function ArtistCatalogTable({ title, rows, chartType }: ArtistCatalogTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("debut_date");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
 
@@ -134,10 +137,28 @@ export function ArtistCatalogTable({ title, rows }: ArtistCatalogTableProps) {
                   <td className="px-3 py-2 text-[12px] text-[#0A0A0A]">{row.total_weeks}</td>
                   <td className="px-3 py-2 text-[12px] text-[#0A0A0A]">{row.weeks_at_peak}</td>
                   <td className="px-3 py-2 text-[12px] text-[#888888]">
-                    {formatDate(row.debut_date)}
+                    {row.debut_date ? (
+                      <Link
+                        href={`/?chart=${chartType}&date=${row.debut_date}`}
+                        className="transition-colors hover:text-[#C8102E]"
+                      >
+                        {formatDate(row.debut_date)}
+                      </Link>
+                    ) : (
+                      formatDate(row.debut_date)
+                    )}
                   </td>
                   <td className="px-3 py-2 text-[12px] text-[#888888]">
-                    {formatDate(row.last_date)}
+                    {row.last_date ? (
+                      <Link
+                        href={`/?chart=${chartType}&date=${row.last_date}`}
+                        className="transition-colors hover:text-[#C8102E]"
+                      >
+                        {formatDate(row.last_date)}
+                      </Link>
+                    ) : (
+                      formatDate(row.last_date)
+                    )}
                   </td>
                 </tr>
               ))}
