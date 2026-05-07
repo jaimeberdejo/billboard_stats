@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: in_progress
-last_updated: "2026-04-29T10:25:37.548Z"
-last_activity: 2026-04-29 -- Reformulated natural-language query work into phases 07-09
+last_updated: "2026-05-07T16:48:36.619Z"
+last_activity: 2026-05-07 -- Completed quick task 260507-q4i: link date references to chart weeks
 progress:
   total_phases: 9
   completed_phases: 6
@@ -46,3 +46,4 @@ Last activity: 2026-04-29 -- Reformulated natural-language query work into phase
 | 2026-04-30 | `260430-3c0-fix-ampersand-artist-parsing-so-band-nam` | Added protected `&` act-name parsing in the ETL and unit tests so known band/duo names are preserved while real collaborations still split. |
 | 2026-04-30 | `260430-e13-add-customizable-results-count-box-on-re` | Added a 1–1000 results input to the records-page top bar and threaded the requested limit through the API and records queries. |
 | 2026-04-30 | `260430-e69-inline-simultaneous-entries-expansion-un` | Moved artist drilldowns inline under leaderboard rows and changed simultaneous-entry drilldowns to show every chart week for the artist, grouped inline by week. |
+| 2026-05-07 | `260507-q4i-link-date-references-on-artist-song-and-` | Made every chart-relevant date on song, album, and artist detail pages a hyperlink to the home `/` chart-week view, so users can jump directly from a song's stats or chart history to the chart for that week. |
