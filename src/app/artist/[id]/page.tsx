@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 import Link from "next/link";
 
 import { ArtistCatalogTable } from "@/components/artist/artist-catalog-table";
@@ -41,12 +43,31 @@ function formatPeak(value: number | null): string {
   return value ? `#${value}` : "—";
 }
 
-function formatRange(start: string | null, end: string | null): string {
+function renderDateRangeNode(start: string | null, end: string | null): ReactNode {
   if (!start && !end) {
     return "Career aggregate detail";
   }
 
-  return `${formatDate(start)} – ${formatDate(end)}`;
+  const renderNode = (value: string | null): ReactNode => {
+    if (!value) {
+      return "—";
+    }
+
+    return (
+      <Link
+        href={`/?chart=hot-100&date=${value}`}
+        className="transition-colors hover:text-[#C8102E]"
+      >
+        {formatDate(value)}
+      </Link>
+    );
+  };
+
+  return (
+    <>
+      {renderNode(start)} – {renderNode(end)}
+    </>
+  );
 }
 
 async function loadArtistDetail(
@@ -136,7 +157,10 @@ export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">)
       <DetailHeader
         backHref="/"
         title={detail.artist.name}
-        subtitle={formatRange(stats?.first_chart_date ?? null, stats?.latest_chart_date ?? null)}
+        subtitle={renderDateRangeNode(
+          stats?.first_chart_date ?? null,
+          stats?.latest_chart_date ?? null,
+        )}
       />
 
       <div className="mt-6 w-fit inline-flex self-start overflow-hidden rounded border border-black/10 bg-[#F5F5F5]">
@@ -175,6 +199,7 @@ export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">)
           {detail.songs.length > 0 ? (
             <ArtistCatalogTable
               title="Hot 100 Songs"
+              chartType="hot-100"
               rows={detail.songs.map((song) => ({
                 id: song.id,
                 title: song.title,
@@ -191,6 +216,7 @@ export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">)
           {detail.albums.length > 0 ? (
             <ArtistCatalogTable
               title="Billboard 200 Albums"
+              chartType="billboard-200"
               rows={detail.albums.map((album) => ({
                 id: album.id,
                 title: album.title,
