@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import localFont from "next/font/local";
+import { Analytics } from "@vercel/analytics/next";
 import { SiteShell } from "@/components/shell/site-shell";
 import "./globals.css";
 
@@ -25,6 +26,7 @@ export default function RootLayout({
     <html lang="en" className={`${spaceGrotesk.variable} h-full antialiased`}>
       <body className="flex min-h-full flex-col font-sans text-[13px]">
         <SiteShell>{children}</SiteShell>
+        <Analytics />
       </body>
     </html>
   );
