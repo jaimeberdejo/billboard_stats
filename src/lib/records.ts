@@ -547,7 +547,11 @@ export async function getCustomRecords(
 
     if (artistNames && artistNames.length > 0) {
       const artistValues = artistNames.map((name) => `%${name}%`);
-      const artistClause = artistValues.map(() => `${artistExpr} ILIKE ${placeholder()}`);
+      // Capture the base offset BEFORE the map so each iteration gets its own $N.
+      const artistBase = placeholderOffset + params.length;
+      const artistClause = artistValues.map(
+        (_, index) => `${artistExpr} ILIKE $${artistBase + index + 1}`,
+      );
       filters.push(`(${artistClause.join(" OR ")})`);
       params.push(...artistValues);
     }
@@ -655,7 +659,12 @@ export async function getCustomRecords(
 
     if (artistNames && artistNames.length > 0) {
       const artistValues = artistNames.map((name) => `%${name}%`);
-      const artistClause = artistValues.map(() => `a.name ILIKE ${placeholder()}`);
+      // Capture the base offset BEFORE the map so each iteration gets its own $N.
+      // Local placeholder() resolves to `$${params.length + 1}`, so artistBase = params.length.
+      const artistBase = params.length;
+      const artistClause = artistValues.map(
+        (_, index) => `a.name ILIKE $${artistBase + index + 1}`,
+      );
       filters.push(`(${artistClause.join(" OR ")})`);
       params.push(...artistValues);
     }
