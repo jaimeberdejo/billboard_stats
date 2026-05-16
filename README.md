@@ -1,78 +1,153 @@
 # Billboard Stats
 
-Billboard Stats is a read-only music chart explorer built on Next.js and Neon PostgreSQL. It surfaces Billboard Hot 100 and Billboard 200 data with latest-chart browsing, search, records, and detail pages for songs, albums, and artists.
+A web app for exploring Billboard chart history — browse the Hot 100 and Billboard 200, search any artist or song, and dig into historical records going back to 1958.
 
-The repository also contains the legacy Python ETL and support code used to fetch chart JSON, load it into PostgreSQL, and rebuild aggregate stats.
+**Live site:** https://billboard-stats.vercel.app
 
-## What’s in the repo
+---
 
-- `src/` — the production Next.js app
-- `src/app/` — App Router pages and API routes
-- `src/lib/` — database-backed query helpers for charts, search, records, details, and data status
-- `billboard_stats/` — Python ETL, database schema, legacy Streamlit app, and Telegram bot code
-- `.planning/` — GSD planning and execution artifacts
+## What does it do?
 
-## App features
+Billboard Stats is a free, public music chart explorer. You don't need an account or login — just open the site and start digging through decades of chart data.
 
-- Latest charts for Hot 100 and Billboard 200
-- Detail pages for songs, albums, and artists
-- Search across songs, albums, and artists
-- Records / leaderboards views
-- Data status view showing row counts and latest chart dates
+### Browse the charts
 
-## Web routes
+The home page shows the latest Billboard Hot 100 (singles) and Billboard 200 (albums) charts. You can switch between them and navigate backwards to any past week. Each entry shows the current position, last week's position, how many weeks it's been on the chart, and its peak position.
 
-- `/` — latest charts
-- `/search` — search
-- `/records` — records and leaderboards
-- `/status` — data status
-- `/song/[id]` — song detail
-- `/album/[id]` — album detail
-- `/artist/[id]` — artist detail
+### Search
 
-## API routes
+The search page lets you type any artist name, song title, or album name. Results are grouped by type (songs, albums, artists) in separate tabs, so you can quickly find what you're looking for even if you only remember part of the name.
 
-- `/api/charts`
-- `/api/search`
-- `/api/records`
-- `/api/data-status`
-- `/api/health`
+### Records & leaderboards
 
-## Tech stack
+The records page surfaces historical achievements: which songs spent the most weeks at #1, which artists charted the most songs, the longest consecutive chart runs, and more. There's also a custom query builder where you can filter and sort the data however you like.
 
-- Next.js 16
-- React 19
-- TypeScript
-- Tailwind CSS 4
-- Neon PostgreSQL via `@neondatabase/serverless`
-- Python ETL with `psycopg2`, `billboard.py`, `pydantic`, `streamlit`
+### Detail pages
 
-## Requirements
+Click any song, album, or artist to see their full profile:
 
-- Node.js 20+
-- npm
-- Python 3.11+ recommended
-- A Neon PostgreSQL database
+- **Song pages** — peak position, total weeks on chart, a visual chart run, and the complete week-by-week history table.
+- **Album pages** — same layout as songs, but for Billboard 200 data.
+- **Artist pages** — career stats, every Hot 100 song, and every Billboard 200 album that artist has had.
 
-## Environment variables
+### Data status
 
-The repo already documents the expected env vars in [.env.example](./.env.example).
+A behind-the-scenes page at `/status` that shows when the data was last updated and how many records are in the database. Useful for confirming the data is fresh.
 
-### Next.js app
+### How the data gets updated
 
-The web app requires:
+The website itself is read-only. A separate Python process (the ETL) runs weekly, fetches the latest Billboard charts, and loads them into the database. The website then picks up the new data automatically. This means the site is always fast — it just reads from the database, it never does live scraping on page load.
+
+---
+
+## How to set it up on your machine
+
+Follow these steps in order. Each one builds on the previous. If you run into an error, check the **Troubleshooting** section at the bottom.
+
+---
+
+### Prerequisites — what you need to install first
+
+Before doing anything else, make sure the following are installed on your computer. Click the links to download them.
+
+#### 1. Node.js (required)
+
+Node.js is the runtime that powers the web app.
+
+- Download: [nodejs.org](https://nodejs.org) — pick the **LTS** version (the one labeled "Recommended For Most Users")
+- After installing, open a terminal and confirm it worked:
 
 ```bash
-DATABASE_URL=postgresql://user:password@ep-pooler-name-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require
+node --version
 ```
 
-This should be a pooled Neon connection string.
+You should see something like `v20.x.x` or higher. If you see an error, restart your terminal and try again.
 
-### Python ETL
+#### 2. Git (required)
 
-The ETL uses direct PostgreSQL connection settings:
+Git lets you download the code from GitHub.
+
+- **Mac:** Git is usually pre-installed. Check by running `git --version` in the terminal.
+- **Windows:** Download from [git-scm.com](https://git-scm.com)
+- **Linux:** Run `sudo apt install git` (Ubuntu/Debian) or `sudo dnf install git` (Fedora)
+
+#### 3. Python 3.11 or newer (only needed for data loading)
+
+Python is used to fetch Billboard chart data and load it into the database. You can skip this if someone else has already loaded the data.
+
+- Download: [python.org](https://python.org) — pick version 3.11 or newer
+- After installing, confirm it worked:
 
 ```bash
+python --version
+```
+
+You should see `Python 3.11.x` or higher.
+
+> **Mac note:** If `python` doesn't work, try `python3`. On newer Macs you may also need to install Python through [Homebrew](https://brew.sh): `brew install python`.
+
+#### 4. A Neon PostgreSQL database (required)
+
+The app stores all chart data in a PostgreSQL database hosted on [Neon](https://neon.tech). Neon has a free tier that is more than enough for this project.
+
+1. Go to [neon.tech](https://neon.tech) and create a free account.
+2. Click **"New Project"** and give it any name (e.g. `billboard`).
+3. Once created, you'll land on the project dashboard. Keep this tab open — you'll need the connection strings in Step 3 below.
+
+---
+
+### Step 1 — Download the code
+
+Open a terminal and run:
+
+```bash
+git clone https://github.com/jaimeberdejo/billboard_stats.git
+cd billboard_stats
+```
+
+This creates a folder called `billboard_stats` on your computer with all the source code inside. Every command from here on should be run from inside that folder.
+
+> **No Git?** You can also click the green "Code" button on GitHub and choose "Download ZIP", then unzip it.
+
+---
+
+### Step 2 — Install JavaScript dependencies
+
+Inside the project folder, run:
+
+```bash
+npm install
+```
+
+This reads the `package.json` file and downloads all the JavaScript packages the app needs into a `node_modules` folder. It may take 30–60 seconds.
+
+You should see output ending with something like:
+
+```
+added 312 packages in 45s
+```
+
+If you see errors instead, check that Node.js is installed correctly (Step 1 of Prerequisites).
+
+---
+
+### Step 3 — Create your configuration file
+
+The app needs a file that tells it how to connect to your database. This file is called `.env.local` and lives in the root of the project folder.
+
+#### 3a. Copy the template
+
+```bash
+cp .env.example .env.local
+```
+
+This creates `.env.local` from the provided template. Open it in any text editor (Notepad, TextEdit, VS Code, etc.).
+
+It will look like this:
+
+```
+DATABASE_URL=postgresql://user:password@ep-pooler-name-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require
+
 PGHOST=ep-<id>.us-east-1.aws.neon.tech
 PGPORT=5432
 PGDATABASE=neondb
@@ -81,140 +156,220 @@ PGPASSWORD=<neon-password>
 PGSSLMODE=require
 ```
 
-The repo currently expects these to be available through `billboard_stats/.env` or exported in the shell.
+You need to replace the placeholders with real values from Neon.
 
-## Local development
+#### 3b. Get your Neon connection strings
 
-Install JavaScript dependencies:
+1. Go to your [Neon dashboard](https://console.neon.tech) and open your project.
+2. Click **"Connection Details"** in the left sidebar (or it may appear on the main page).
+3. You'll see a dropdown that says **"Connection type"** — you need two different strings.
 
-```bash
-npm install
-```
+**For `DATABASE_URL` (the web app):**
+- In the dropdown, select **"Pooled connection"**
+- Copy the full connection string. It will look like:
+  `postgresql://jaime:abc123@ep-cool-name-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require`
+- Paste it as the value for `DATABASE_URL` in `.env.local`
 
-Start the Next.js dev server:
+**For the `PG*` variables (the Python ETL):**
+- In the dropdown, select **"Direct connection"** (sometimes called "Unpooled")
+- The connection string will look like:
+  `postgresql://jaime:abc123@ep-cool-name.us-east-2.aws.neon.tech/neondb?sslmode=require`
+- Break it apart and fill in each variable:
+
+| Variable | Where it comes from |
+|---|---|
+| `PGHOST` | The hostname: `ep-cool-name.us-east-2.aws.neon.tech` |
+| `PGPORT` | Always `5432` |
+| `PGDATABASE` | The database name, usually `neondb` |
+| `PGUSER` | Your Neon username (e.g. `jaime`) |
+| `PGPASSWORD` | Your Neon password |
+| `PGSSLMODE` | Always `require` |
+
+> **Important:** Never share or commit your `.env.local` file. It contains your database password. The `.gitignore` already excludes it, so it won't accidentally get uploaded to GitHub.
+
+---
+
+### Step 4 — Start the web app
 
 ```bash
 npm run dev
 ```
 
-Build for production:
+You'll see output like:
 
-```bash
-npm run build
+```
+▲ Next.js 16.x.x
+- Local:        http://localhost:3000
+- Ready in 1234ms
 ```
 
-Run lint:
+Open your browser and go to **http://localhost:3000**
 
-```bash
-npm run lint
-```
+You should see the Billboard Stats app. If your database is empty, the pages will load but show no chart data — that's expected. Follow Step 5 to load data.
 
-## Python setup
+To stop the app, press `Ctrl + C` in the terminal.
 
-Install Python dependencies:
+---
+
+### Step 5 — Load chart data into the database (Python ETL)
+
+If you're starting with an empty database, you need to run the ETL (Extract, Transform, Load) process to fetch Billboard chart data and store it. This step uses Python.
+
+#### 5a. Set up a Python virtual environment
+
+A virtual environment keeps the Python packages for this project separate from the rest of your system.
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate
+```
+
+Then activate it:
+
+- **Mac / Linux:**
+  ```bash
+  source .venv/bin/activate
+  ```
+
+- **Windows (Command Prompt):**
+  ```bash
+  .venv\Scripts\activate.bat
+  ```
+
+- **Windows (PowerShell):**
+  ```bash
+  .venv\Scripts\Activate.ps1
+  ```
+
+Your terminal prompt should now show `(.venv)` at the start, which means the virtual environment is active.
+
+#### 5b. Install Python packages
+
+```bash
 pip install -r requirements.txt
 ```
 
-## ETL and data refresh
+This installs all the Python dependencies. It may take a minute or two.
 
-The canonical updater entrypoint is:
+#### 5c. Set up the ETL credentials file
+
+The Python ETL reads its database credentials from a separate file: `billboard_stats/.env` (note: this is different from `.env.local`).
+
+```bash
+cp .env.example billboard_stats/.env
+```
+
+Open `billboard_stats/.env` and fill in the same `PG*` values you used in Step 3b (the direct/unpooled connection string values). The `DATABASE_URL` line is not needed here — you can delete it or leave it blank.
+
+#### 5d. Run the ETL
 
 ```bash
 python -m billboard_stats.etl.updater
 ```
 
-Other supported modes:
+This will:
+1. Check which chart weeks are missing from your database
+2. Download the missing chart data from Billboard
+3. Load all new rows into PostgreSQL
+4. Rebuild aggregate statistics (career totals, records, etc.)
+
+The first run can take **5–15 minutes** depending on how much historical data it downloads. Subsequent runs are fast because they only fetch new weeks.
+
+Once it finishes, refresh the app at http://localhost:3000 and you should see chart data.
+
+#### 5e. Keep data fresh (optional)
+
+To update the database with the latest charts in the future, just run the same command again:
 
 ```bash
-python -m billboard_stats.etl.updater --repair
 python -m billboard_stats.etl.updater --update
 ```
 
-What it does:
-
-- repairs missing recent chart files
-- downloads newer chart data
-- loads new rows into PostgreSQL
-- rebuilds aggregate stats tables
-
-## Phase 6 ETL operations
-
-Use the committed shell wrapper for manual backfills and weekly maintenance:
+Or use the included shell script:
 
 ```bash
 chmod +x scripts/run_weekly_etl.sh
-./scripts/run_weekly_etl.sh
-```
-
-Useful modes:
-
-```bash
-./scripts/run_weekly_etl.sh --repair
 ./scripts/run_weekly_etl.sh --update
 ```
 
-The script:
+---
 
-- loads ETL credentials from `billboard_stats/.env` when present
-- falls back to already-exported `PG*` variables for CI or shell-driven runs
-- runs the same `python -m billboard_stats.etl.updater` entrypoint used for weekly automation
+### Step 6 — Verify everything is working
 
-### Post-run verification
+Open your browser and check each page:
 
-After a backfill or weekly update, verify the public app freshness:
+| Page | URL | What to look for |
+|---|---|---|
+| Home / Charts | http://localhost:3000 | Hot 100 and Billboard 200 chart entries |
+| Search | http://localhost:3000/search | Type an artist name, results appear |
+| Records | http://localhost:3000/records | Leaderboard tables with data |
+| Status | http://localhost:3000/status | Shows row counts and latest chart dates |
 
-```bash
-curl -s https://billboard-stats.vercel.app/api/data-status
-curl -s "https://billboard-stats.vercel.app/api/charts?chart=hot-100" | head -c 200
-curl -s "https://billboard-stats.vercel.app/api/charts?chart=billboard-200" | head -c 200
+If all four pages show data, your setup is complete.
+
+---
+
+## Troubleshooting
+
+**The app loads but all pages are empty**
+Your database is empty. Follow Step 5 to run the Python ETL and load chart data.
+
+**`Error: DATABASE_URL is not defined` or similar**
+Your `.env.local` file is missing or the variable is not set. Make sure the file exists in the project root (not inside a subfolder) and that `DATABASE_URL` has a real value, not the placeholder text from the template.
+
+**`connection refused` or `could not connect to server`**
+The connection string is wrong. Go back to the Neon dashboard and re-copy the pooled connection string. Watch out for extra spaces or line breaks when pasting.
+
+**`npm: command not found`**
+Node.js is not installed. Download it from [nodejs.org](https://nodejs.org) (LTS version), install it, then open a new terminal window and try again.
+
+**`python: command not found`**
+Python is not installed. Download it from [python.org](https://python.org). On Mac, also try `python3` instead of `python`.
+
+**`ModuleNotFoundError` when running the ETL**
+You forgot to activate the virtual environment. Run `source .venv/bin/activate` (Mac/Linux) or `.venv\Scripts\activate` (Windows) before running the ETL command.
+
+**`Missing required ETL environment variable: PGHOST`** (or similar)
+The `billboard_stats/.env` file is missing or incomplete. Follow Step 5c and make sure all `PG*` variables have real values.
+
+**Port 3000 is already in use**
+Another app is running on port 3000. Either stop that app, or run the dev server on a different port: `npm run dev -- -p 3001`, then open http://localhost:3001.
+
+---
+
+## Project structure
+
+```
+billboard_stats/
+├── src/                    # Next.js web app
+│   ├── app/                # Pages and API routes
+│   │   ├── page.tsx        # Home / charts
+│   │   ├── search/         # Search page
+│   │   ├── records/        # Records & leaderboards
+│   │   ├── status/         # Data status
+│   │   ├── song/[id]/      # Song detail
+│   │   ├── album/[id]/     # Album detail
+│   │   ├── artist/[id]/    # Artist detail
+│   │   └── api/            # JSON API endpoints
+│   └── lib/                # Database query helpers
+├── billboard_stats/        # Python ETL package
+│   ├── etl/                # Chart fetching and loading logic
+│   ├── db/                 # Database connection and schema
+│   └── services/           # Query layer (used by the legacy Streamlit app)
+├── scripts/                # Shell helpers for running the ETL
+├── .env.example            # Template for your .env.local
+└── requirements.txt        # Python dependencies
 ```
 
-Expected:
+---
 
-- `/api/data-status` reports non-future latest dates
-- Hot 100 latest date advances beyond stale checkpoints when new data exists
-- both chart endpoints return real JSON payloads
+## Tech stack
 
-The ETL and data-status layers now treat only non-future Saturday chart dates as valid latest weeks, so invalid future rows/files should no longer masquerade as current data.
-
-## Database notes
-
-- Database access for the web app is centralized in `src/lib/db.ts`
-- SQL schema lives in `billboard_stats/db/schema.sql`
-- The dataset includes normalized artist join tables for songs and albums
-- The app is read-only; write-side data maintenance currently happens through the Python ETL
-
-## Deployment
-
-The app is designed for:
-
-- Neon PostgreSQL for data storage
-- Vercel for web deployment
-
-The current deployment flow expects:
-
-- `DATABASE_URL` set in Vercel
-- GitHub connected to Vercel
-- production deploys from the main branch
-
-## Project status
-
-The core web app is live and usable. Current planning artifacts in `.planning/` also cover:
-
-- deployment and Neon cutover
-- chart data freshness backfill
-- weekly ETL automation planning
-
-## Legacy code
-
-The `billboard_stats/` package still contains:
-
-- the original Streamlit app
-- ETL loaders and fetchers
-- Telegram bot code
-
-Those pieces are still relevant operationally for data loading, even though the primary user-facing app is now the Next.js frontend in `src/`.
+| Layer | Technology |
+|---|---|
+| Web framework | Next.js 16 + React 19 |
+| Language | TypeScript |
+| Styling | Tailwind CSS 4 |
+| Database | PostgreSQL (hosted on Neon) |
+| Database client | @neondatabase/serverless |
+| Data pipeline | Python 3.11+ with `billboard.py` |
+| Hosting | Vercel |
