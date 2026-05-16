@@ -2,8 +2,6 @@
 
 A web app for exploring Billboard chart history — browse the Hot 100 and Billboard 200, search any artist or song, and dig into historical records going back to 1958.
 
----
-
 ## What does it do?
 
 Billboard Stats is a free, public music chart explorer. You don't need an account or login — just open the site and start digging through decades of chart data.
