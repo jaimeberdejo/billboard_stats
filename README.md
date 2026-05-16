@@ -2,8 +2,6 @@
 
 A web app for exploring Billboard chart history — browse the Hot 100 and Billboard 200, search any artist or song, and dig into historical records going back to 1958.
 
-**Live site:** https://billboard-stats.vercel.app
-
 ![Billboard Stats — Latest Charts](public/screenshot.png)
 
 ---
