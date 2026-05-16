@@ -209,7 +209,9 @@ To stop the app, press `Ctrl + C` in the terminal.
 
 ### Step 5 — Load chart data into the database (Python ETL)
 
-If you're starting with an empty database, you need to run the ETL (Extract, Transform, Load) process to fetch Billboard chart data and store it. This step uses Python.
+If you're starting with an empty database, you need to run the ETL (Extract, Transform, Load) process to load Billboard chart data into it. This step uses Python.
+
+> **Good news — most of the data is already here.** The repository ships with over 7,000 chart files in JSON format covering every week from **January 1958 through April 2026**, stored in `billboard_stats/data/`. The ETL reads from these local files first before making any network requests, so the initial load is fast and doesn't require downloading decades of historical data. It will only go out to fetch weeks that are newer than what's already on disk.
 
 #### 5a. Set up a Python virtual environment
 
