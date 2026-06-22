@@ -8,16 +8,20 @@ A public web app that replaces the existing Streamlit interface with a polished 
 
 Any visitor can browse current chart rankings, search any artist/song/album, and explore historical records — all fast, public, and without friction.
 
-## Current Milestone: v1.0 Initial Next.js Release
+## Current State
 
-**Goal:** Create a read-only public web app surfacing Billboard chart data — replacing the Streamlit interface with a polished Next.js UI deployed on Vercel and connected to a Neon PostgreSQL database.
+**Shipped:** ✅ v1.0 Initial Next.js Release (2026-06-22)
 
-**Target features:**
-- Setup: Next.js App Router + TypeScript + Tailwind + Vercel deployment
-- Infrastructure: Neon PostgreSQL connectivity + Next.js API Routes (replacing Python services)
-- Main Pages: Latest Charts, Search (Fuzzy), Records, and Data Status
-- Detail Pages: Song, Album, Artist views with stats and chart history
-- UI: Mobile-responsive structure matching the HTML prototype
+The Streamlit interface has been fully replaced by a read-only public Next.js web app,
+deployed to Vercel on a Neon PostgreSQL database. Latest Charts, Search, Records, and
+Song/Album/Artist detail pages are all live. The Python ETL writes to Neon and runs
+automatically every week via GitHub Actions.
+
+See `.planning/MILESTONES.md` for the full v1.0 record and `.planning/milestones/v1.0-ROADMAP.md`
+for archived phase detail.
+
+**Next milestone:** Not yet defined. Run `/gsd-new-milestone` to scope the next version.
+The Natural-Language Query feature (former Phases 7-9) was removed from scope.
 
 ## Requirements
 
@@ -29,20 +33,23 @@ Any visitor can browse current chart rankings, search any artist/song/album, and
 - ✓ Fuzzy search via `pg_trgm` PostgreSQL extension — existing
 - ✓ Service layer with records, artist, song, album, and chart queries — existing
 
+- ✓ Next.js App Router project with TypeScript and Tailwind CSS — v1.0
+- ✓ Neon PostgreSQL hosting — migrated existing database, ETL points at Neon — v1.0
+- ✓ Next.js API routes replacing Python services (charts, search, records, song/album/artist detail) — v1.0
+- ✓ Latest Charts page — HOT 100 / B200 toggle, week selector, ranked table with movement badges — v1.0
+- ✓ Search page — fuzzy search across songs, albums, artists with tabbed results — v1.0
+- ✓ Records page — preset leaderboards + custom query builder — v1.0
+- ✓ Data Status page — read-only display of table row counts and latest chart dates — v1.0
+- ✓ Song detail page — stats bar, chart run SVG visualization, week-by-week history table, artist pills — v1.0
+- ✓ Album detail page — stats bar, chart run SVG visualization, week-by-week history table, artist pills — v1.0
+- ✓ Artist detail page — stats bar, Hot 100 songs table, Billboard 200 albums table — v1.0
+- ✓ Mobile-responsive layout with bottom nav (matching prototype) — v1.0
+- ✓ Vercel deployment with Neon environment variable wired up — v1.0
+- ✓ Automated weekly Python ETL via GitHub Actions (added Phase 6) — v1.0
+
 ### Active
 
-- [ ] Next.js App Router project with TypeScript and Tailwind CSS
-- [ ] Neon PostgreSQL hosting — migrate existing database, update ETL connection string
-- [ ] Next.js API routes replacing Python services (charts, search, records, song/album/artist detail)
-- [ ] Latest Charts page — HOT 100 / B200 toggle, week selector, ranked table with movement badges
-- [ ] Search page — fuzzy search across songs, albums, artists with tabbed results
-- [ ] Records page — preset leaderboards (most weeks at #1, longest runs, etc.) + custom query builder
-- [ ] Data Status page — read-only display of table row counts and latest chart dates
-- [ ] Song detail page — stats bar, chart run SVG visualization, week-by-week history table, artist pills
-- [ ] Album detail page — stats bar, chart run SVG visualization, week-by-week history table, artist pills
-- [ ] Artist detail page — stats bar, Hot 100 songs table, Billboard 200 albums table
-- [ ] Mobile-responsive layout with bottom nav (matching prototype)
-- [ ] Vercel deployment with Neon environment variable wired up
+(None — v1.0 shipped. Next milestone not yet scoped; run `/gsd-new-milestone`.)
 
 ### Out of Scope
 
@@ -54,11 +61,19 @@ Any visitor can browse current chart rankings, search any artist/song/album, and
 
 ## Context
 
-The project already has a fully mapped codebase (`/planning/codebase/`). The Streamlit app in `app.py` covers the same pages as the prototype — Latest Charts, Search, Records, Data Status — plus artist/song/album detail views. All SQL queries exist in `services/`; they'll be translated to TypeScript in Next.js API routes.
+**Post-v1.0 state.** The Next.js app is live in production on Vercel (~7,480 LOC TypeScript
+across 51 `src/` files), backed by Neon PostgreSQL. The Python ETL writes to Neon and runs
+weekly via GitHub Actions (`schedule` + `workflow_dispatch`). The Streamlit app has been fully
+replaced. Several post-launch quick tasks refined the UI (date→chart-week links, customizable
+result counts, inline drilldowns) and hardened ETL artist-name parsing (protected `&` band names).
 
-The HTML prototype (`BillboardStats.html`) is the definitive UI reference. Design system: Billboard red `#C8102E`, Space Grotesk font, white background, data-dense tables, thin borders, sticky top nav, mobile bottom nav.
+The HTML prototype (`BillboardStats.html`) remained the UI reference and was matched faithfully:
+Billboard red `#C8102E`, Space Grotesk font, white background, data-dense tables, thin borders,
+sticky top nav, mobile bottom nav. The existing PostgreSQL schema and `pg_trgm` fuzzy search
+ported to Neon directly with no rewrite.
 
-The existing PostgreSQL schema and query patterns can be used directly. `pg_trgm` is supported by Neon (standard PostgreSQL extension). ETL will simply point at the Neon connection string instead of `localhost`.
+The Natural-Language Query feature (former Phases 7-9) was explored in roadmap form but removed
+from scope before implementation.
 
 ## Constraints
 
@@ -71,10 +86,12 @@ The existing PostgreSQL schema and query patterns can be used directly. `pg_trgm
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Next.js API routes instead of a separate Python backend | Single deployment, fewer moving parts, SQL queries are portable | — Pending |
-| Neon for PostgreSQL hosting | Native Vercel integration, free tier, standard Postgres (pg_trgm works) | — Pending |
-| Replace Streamlit entirely (not run alongside) | Clean break, no dual-maintenance burden | — Pending |
-| Drop Telegram bot from scope | Out of scope for this milestone — focus on web UI | — Pending |
+| Next.js API routes instead of a separate Python backend | Single deployment, fewer moving parts, SQL queries are portable | ✓ Good — services ported cleanly to typed TS route handlers |
+| Neon for PostgreSQL hosting | Native Vercel integration, free tier, standard Postgres (pg_trgm works) | ✓ Good — full dataset migrated, pg_trgm works, app + ETL share Neon |
+| Replace Streamlit entirely (not run alongside) | Clean break, no dual-maintenance burden | ✓ Good — Streamlit fully retired |
+| Drop Telegram bot from scope | Out of scope for this milestone — focus on web UI | ✓ Good — still out of scope |
+| Automate weekly ETL via GitHub Actions (Phase 6) | Keep production data fresh without manual runs | ✓ Good — scheduled + manual dispatch verified end to end |
+| Drop Natural-Language Query (Phases 7-9) | Removed from scope at v1.0 close — not pursuing | — Pending revisit if a future milestone wants it |
 
 ## Evolution
 
@@ -94,4 +111,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-27 after milestone v1.0 start*
+*Last updated: 2026-06-22 after v1.0 milestone completion*

@@ -2,11 +2,13 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: in_progress
-last_updated: "2026-05-07T16:48:36.619Z"
-last_activity: 2026-05-07 -- Completed quick task 260507-q4i: link date references to chart weeks
+current_phase: 0
+status: Awaiting next milestone
+last_updated: "2026-06-22T14:08:24.460Z"
+last_activity: 2026-06-22
+last_activity_desc: Milestone v1.0 completed and archived
 progress:
-  total_phases: 9
+  total_phases: 6
   completed_phases: 6
   total_plans: 18
   completed_plans: 18
@@ -15,27 +17,27 @@ progress:
 
 ## Current Position
 
-Phase: 07
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-05-08 - Completed quick task 260508-mbw: fix comma-separated artist input failure in custom queries
+Phase: Milestone v1.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-06-22 — Milestone v1.0 completed and archived
+
+## Project Reference
+
+See: `.planning/PROJECT.md` (updated 2026-06-22)
+
+**Core value:** Any visitor can browse current chart rankings, search any artist/song/album, and explore historical records — fast, public, frictionless.
+**Current focus:** Planning next milestone (none scoped yet).
 
 ## Accumulated Context
 
-**Planned Phase:** 05 (i-want-to-configure-neon-and-deploy-the-app-in-vercel) — 3 plans — 2026-04-29T00:00:00.000Z
-
-**Planned Phase:** 06 (update-the-missing-data-last-uploaded-week-is-feb-14-configu) — 3 plans — 2026-04-29T00:00:00.000Z
-
-**Planned Phase:** 04 (search-records) — 4 plans — 2026-04-28T19:16:15.211Z
+v1.0 shipped and archived. No open blockers.
 
 ### Roadmap Evolution
 
 - Phase 5 added: configure Neon and deploy the app in Vercel
-- Phase 6 added: update the missing data, last uploaded week is feb 14, configure the ETL to work automatically every week
-- Phase 7 added: constrained natural-language query layer for records/search
-- Phase 7 reformulated: natural-language query interpretation
-- Phase 8 added: safe query execution for records and search
-- Phase 9 added: query assistant UI for records and search
+- Phase 6 added: update the missing data + automate the weekly ETL
+- Phases 7-9 (Natural-Language Query) added then **removed at v1.0 close** — feature dropped from scope
 
 ## Quick Tasks Completed
 
@@ -48,3 +50,7 @@ Last activity: 2026-05-08 - Completed quick task 260508-mbw: fix comma-separated
 | 2026-04-30 | `260430-e69-inline-simultaneous-entries-expansion-un` | Moved artist drilldowns inline under leaderboard rows and changed simultaneous-entry drilldowns to show every chart week for the artist, grouped inline by week. |
 | 2026-05-07 | `260507-q4i-link-date-references-on-artist-song-and-` | Made every chart-relevant date on song, album, and artist detail pages a hyperlink to the home `/` chart-week view, so users can jump directly from a song's stats or chart history to the chart for that week. |
 | 2026-05-08 | `260508-mbw-fix-comma-separated-artist-input-failure` | Fixed multi-artist custom queries (e.g., "Katy, Taylor"): the SQL builder was emitting one shared `$N` placeholder across all ILIKE clauses while pushing N values, causing a parameter-count mismatch. Each clause now gets its own placeholder. |
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone
