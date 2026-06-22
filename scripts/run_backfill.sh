@@ -30,8 +30,27 @@ if [[ -f "${ENV_FILE}" ]]; then
   set +a
 fi
 
-# Mark this as a legitimate manual run for the backfill guardrail. The backfill
-# refuses to run unless BACKFILL_ALLOW=1 (and never on GITHUB_EVENT_NAME=schedule).
-export BACKFILL_ALLOW=1
+# Mark this as a legitimate manual run for the backfill guardrail ONLY when the
+# operator explicitly opted in. The marker is NOT exported unconditionally: a
+# bare `run_backfill.sh --full` wired into a non-GitHub scheduler (cron, systemd
+# timer) would otherwise bypass the guardrail entirely. The marker is set when:
+#   - the operator passed an explicit --allow flag on the command line, or
+#   - BACKFILL_ALLOW is already exported in the environment (the GitHub
+#     backfill.yml workflow sets it in its job `env:` block).
+# Otherwise we leave it unset and let backfill.py's guardrail refuse the run.
+case " $* " in
+  *" --allow "*)
+    export BACKFILL_ALLOW=1
+    ;;
+  *)
+    if [[ "${BACKFILL_ALLOW:-}" != "1" ]]; then
+      echo "run_backfill.sh: refusing to set the backfill marker without an" >&2
+      echo "explicit --allow flag (or a pre-set BACKFILL_ALLOW=1). This guards" >&2
+      echo "against a cron/systemd timer silently triggering the multi-decade" >&2
+      echo "scrape. Re-run with --allow for a legitimate manual backfill." >&2
+      exit 2
+    fi
+    ;;
+esac
 
 python -m billboard_stats.etl.backfill "$@"

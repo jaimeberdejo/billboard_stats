@@ -58,7 +58,25 @@ class BackfillGuardrailError(Exception):
 
 
 def _check_guardrail(env, allow: bool) -> None:
-    """Refuse to run on the weekly cron / without the manual marker.
+    """Refuse to run on an automated/cron context / without the manual marker.
+
+    The guardrail is defense-in-depth against the multi-decade scrape ever
+    starting automatically (success criterion #4). It has two layers:
+
+      1. **Automated-context refusal (NOT rescuable by the marker).** Any
+         GitHub Actions run whose triggering event is not ``workflow_dispatch``
+         (``schedule``, ``push``, ``repository_dispatch`` ...) is refused even
+         if ``BACKFILL_ALLOW=1`` is present, because only the manual
+         ``workflow_dispatch`` path is a legitimate operator action. The
+         original ``GITHUB_EVENT_NAME == 'schedule'`` check is the canonical
+         subset of this.
+
+      2. **Manual-marker requirement.** For every other context (local shell,
+         a non-GitHub cron, a systemd timer) the run is refused unless the
+         operator explicitly opted in via ``allow=True`` (the ``--allow`` flag)
+         or by exporting ``BACKFILL_ALLOW=1``. ``run_backfill.sh`` no longer
+         exports the marker unconditionally, so a bare cron-driven
+         ``run_backfill.sh --full`` falls through to this refusal.
 
     Args:
         env: The environment mapping to inspect (defaults to ``os.environ``).
@@ -66,24 +84,31 @@ def _check_guardrail(env, allow: bool) -> None:
             equivalent to ``BACKFILL_ALLOW=1``.
 
     Raises:
-        BackfillGuardrailError: on a scheduled-cron context, or when neither the
-            ``allow`` flag nor ``BACKFILL_ALLOW=1`` is present.
+        BackfillGuardrailError: on an automated GitHub-Actions context, or when
+            neither the ``allow`` flag nor ``BACKFILL_ALLOW=1`` is present.
     """
     event_name = env.get("GITHUB_EVENT_NAME", "")
-    if event_name == "schedule":
+    is_github_actions = env.get("GITHUB_ACTIONS", "") == "true" or bool(event_name)
+
+    # Layer 1: under GitHub Actions, ONLY the manual workflow_dispatch event may
+    # run the backfill. Every other event (schedule/push/etc.) is refused
+    # outright and the manual marker does NOT override this.
+    if is_github_actions and event_name and event_name != "workflow_dispatch":
         raise BackfillGuardrailError(
-            "Refusing to run the backfill on the weekly schedule "
-            "(GITHUB_EVENT_NAME == 'schedule'). The multi-decade backfill is "
-            "operator-run/manual only and must never fire on the cron."
+            f"Refusing to run the backfill from a non-manual GitHub Actions "
+            f"event (GITHUB_EVENT_NAME == {event_name!r}). The multi-decade "
+            "backfill is operator-run/manual only (workflow_dispatch) and must "
+            "never fire automatically from a schedule or other trigger."
         )
 
+    # Layer 2: outside that path, require the explicit manual marker / flag.
     marker = env.get(ALLOW_ENV_VAR, "")
     if not allow and marker != "1":
         raise BackfillGuardrailError(
             f"Refusing to run the backfill without the manual marker. Set "
             f"{ALLOW_ENV_VAR}=1 (or pass --allow / allow=True) to confirm this "
             "is a legitimate local/manual run. The backfill must never be "
-            "triggered automatically from a schedule."
+            "triggered automatically from a schedule, cron, or systemd timer."
         )
 
 

@@ -38,10 +38,6 @@ def _write_sidecar(path, payload=None):
 _FIXED_LATEST = __import__("datetime").date(2024, 8, 10)
 
 
-class _ManualEnv(dict):
-    """An env mapping that simulates a legitimate manual run (BACKFILL_ALLOW=1)."""
-
-
 def _manual_env():
     return {"BACKFILL_ALLOW": "1"}
 
@@ -92,6 +88,65 @@ class GuardrailTests(unittest.TestCase):
                         data_dir=tmp,
                         sidecar_path=sidecar,
                         env={"GITHUB_EVENT_NAME": "schedule", "BACKFILL_ALLOW": "1"},
+                    )
+                dl.assert_not_called()
+
+    def test_non_dispatch_github_event_aborts_even_with_marker(self):
+        # Any GitHub Actions event other than workflow_dispatch (e.g. push) is an
+        # automated trigger and must abort even when BACKFILL_ALLOW=1 is set.
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = os.path.join(tmp, "verified_charts.json")
+            _write_sidecar(sidecar)
+            with mock.patch.object(backfill, "download_chart") as dl:
+                with self.assertRaises(BackfillGuardrailError):
+                    run_backfill(
+                        mode="smoke",
+                        data_dir=tmp,
+                        sidecar_path=sidecar,
+                        env={
+                            "GITHUB_ACTIONS": "true",
+                            "GITHUB_EVENT_NAME": "push",
+                            "BACKFILL_ALLOW": "1",
+                        },
+                    )
+                dl.assert_not_called()
+
+    def test_workflow_dispatch_with_marker_is_allowed(self):
+        # The manual workflow_dispatch path (what backfill.yml uses) WITH the
+        # marker is the one legitimate GitHub Actions run and must proceed.
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = os.path.join(tmp, "verified_charts.json")
+            _write_sidecar(sidecar)
+            with mock.patch.object(backfill, "download_chart") as dl, mock.patch.object(
+                backfill, "get_latest_publishable_chart_week", return_value=_FIXED_LATEST
+            ):
+                run_backfill(
+                    mode="smoke",
+                    data_dir=tmp,
+                    sidecar_path=sidecar,
+                    env={
+                        "GITHUB_ACTIONS": "true",
+                        "GITHUB_EVENT_NAME": "workflow_dispatch",
+                        "BACKFILL_ALLOW": "1",
+                    },
+                )
+                self.assertTrue(dl.called)
+
+    def test_non_github_cron_without_marker_aborts(self):
+        # A non-GitHub scheduler (cron/systemd timer) leaves GITHUB_* unset and,
+        # because run_backfill.sh no longer auto-exports the marker, BACKFILL_ALLOW
+        # is absent -> the run must be refused (no automatic multi-decade scrape).
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = os.path.join(tmp, "verified_charts.json")
+            _write_sidecar(sidecar)
+            with mock.patch.object(backfill, "download_chart") as dl:
+                with self.assertRaises(BackfillGuardrailError):
+                    run_backfill(
+                        mode="full",
+                        data_dir=tmp,
+                        sidecar_path=sidecar,
+                        # Typical cron env markers, but no human opt-in.
+                        env={"CRON": "1", "SHELL": "/bin/sh"},
                     )
                 dl.assert_not_called()
 
@@ -251,6 +306,62 @@ class MissingSidecarTests(unittest.TestCase):
                         sidecar_path=missing,
                         env=_manual_env(),
                     )
+
+
+class RunBackfillScriptGuardrailTests(unittest.TestCase):
+    """The shell runner must not auto-set the marker without an explicit opt-in."""
+
+    def _script_path(self):
+        import pathlib
+
+        return str(
+            pathlib.Path(__file__).resolve().parent.parent
+            / "scripts"
+            / "run_backfill.sh"
+        )
+
+    def test_refuses_without_allow_flag_or_marker(self):
+        # No --allow and no pre-set BACKFILL_ALLOW -> the script must exit 2
+        # BEFORE invoking python, so a cron-wired `run_backfill.sh --full`
+        # cannot silently start the multi-decade scrape.
+        import subprocess
+
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("BACKFILL_ALLOW", "GITHUB_EVENT_NAME", "GITHUB_ACTIONS")
+        }
+        proc = subprocess.run(
+            ["bash", self._script_path(), "--full"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+        self.assertIn("--allow", proc.stderr)
+
+    def test_preset_marker_satisfies_runner(self):
+        # A pre-set BACKFILL_ALLOW=1 (as the GitHub workflow provides via env:)
+        # must NOT trip the runner's refusal — it should fall through to python.
+        # We point at a bogus subcommand so python exits fast without networking;
+        # the key assertion is that the runner did NOT exit 2 with our message.
+        import subprocess
+
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in ("GITHUB_EVENT_NAME", "GITHUB_ACTIONS")
+        }
+        env["BACKFILL_ALLOW"] = "1"
+        proc = subprocess.run(
+            ["bash", self._script_path(), "--not-a-real-flag"],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        # argparse rejects the bogus flag with exit code 2 of its OWN, but the
+        # runner's specific refusal message must be absent (it did not gate us).
+        self.assertNotIn("refusing to set the backfill marker", proc.stderr)
 
 
 class PostgresFreeTests(unittest.TestCase):
