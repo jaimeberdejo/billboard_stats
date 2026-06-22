@@ -1,0 +1,51 @@
+name: backfill
+
+# MANUAL-DISPATCH ONLY. There is intentionally NO `schedule:` trigger here, so
+# GitHub can only ever start the multi-decade backfill manually. The weekly cron
+# (weekly-etl.yml) stays incremental-only and must never invoke this job.
+"on":
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Backfill mode"
+        type: choice
+        required: true
+        default: "smoke"
+        options:
+          - smoke
+          - full
+      slug:
+        description: "Optional single slug to target (blank = all verified charts)"
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    # NOTE: the multi-decade `full` scrape can exceed the 6h hosted-runner cap.
+    # It is resumable via the on-disk cache; for a true full history prefer a
+    # local/long-lived machine. This workflow is primarily for the smoke proof
+    # and per-slug top-ups.
+    env:
+      # The EXACT marker the backfill guardrail checks (mirrors run_backfill.sh).
+      BACKFILL_ALLOW: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run backfill
+        run: |
+          ARGS="--${{ github.event.inputs.mode }} --allow"
+          if [ -n "${{ github.event.inputs.slug }}" ]; then
+            ARGS="$ARGS --slug ${{ github.event.inputs.slug }}"
+          fi
+          bash scripts/run_backfill.sh $ARGS

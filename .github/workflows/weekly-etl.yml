@@ -1,5 +1,12 @@
 name: weekly-etl
 
+# INCREMENTAL-ONLY. This scheduled cron runs ONLY the incremental updater
+# (scripts/run_weekly_etl.sh -> billboard_stats.etl.updater). It MUST NEVER
+# invoke the multi-decade backfill module or its operator runner:
+#   - the backfill guardrail aborts when GITHUB_EVENT_NAME == "schedule" (belt), and
+#   - this workflow references ONLY the weekly updater path (suspenders).
+# The multi-decade scrape is operator-run and lives in the separate
+# manual-dispatch workflow. Do not add any backfill step here.
 "on":
   workflow_dispatch:
   schedule:
