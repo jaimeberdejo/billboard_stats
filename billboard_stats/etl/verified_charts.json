@@ -1,0 +1,47 @@
+[
+  {
+    "slug": "country-songs",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  },
+  {
+    "slug": "r-b-hip-hop-songs",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  },
+  {
+    "slug": "rock-songs",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  },
+  {
+    "slug": "latin-songs",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  },
+  {
+    "slug": "country-albums",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  },
+  {
+    "slug": "r-b-hip-hop-albums",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  },
+  {
+    "slug": "rock-albums",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  },
+  {
+    "slug": "latin-albums",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  },
+  {
+    "slug": "artist-100",
+    "first_date": "2026-06-20",
+    "first_date_unknown": false
+  }
+]

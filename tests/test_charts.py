@@ -23,16 +23,24 @@ def _fake_entry():
     return mock.Mock()
 
 
+class _FakeChart:
+    """A ChartData-like stand-in that is re-iterable (like the real object)."""
+
+    def __init__(self, date="2024-08-10", previous_date="2024-08-03", n_entries=10):
+        self.date = date
+        self.previousDate = previous_date
+        self.entries = [_fake_entry() for _ in range(n_entries)]
+
+    def __iter__(self):
+        return iter(self.entries)
+
+    def __len__(self):
+        return len(self.entries)
+
+
 def _fake_chart(date="2024-08-10", previous_date="2024-08-03", n_entries=10):
-    """Build a fake ChartData-like object (iterable with .date/.previousDate)."""
-    chart = mock.MagicMock()
-    chart.date = date
-    chart.previousDate = previous_date
-    entries = [_fake_entry() for _ in range(n_entries)]
-    chart.entries = entries
-    chart.__iter__.return_value = iter(entries)
-    chart.__len__.return_value = len(entries)
-    return chart
+    """Build a fresh re-iterable fake ChartData object."""
+    return _FakeChart(date=date, previous_date=previous_date, n_entries=n_entries)
 
 
 class CuratedChartsShapeTests(unittest.TestCase):
@@ -121,7 +129,7 @@ class VerifySlugsSetTests(unittest.TestCase):
                 billboard, "ChartData", return_value=_fake_chart()
             ):
                 results = verify_slugs(
-                    CURATED_CHARTS, sidecar_path=tmp, raise_on_failure=True
+                    CURATED_CHARTS, sidecar_path=tmp, raise_on_failure=True, delay=0
                 )
             self.assertEqual(len(results), len(CURATED_CHARTS))
             self.assertTrue(all(r["verified"] for r in results))
@@ -148,7 +156,7 @@ class VerifySlugsSetTests(unittest.TestCase):
             with mock.patch.object(billboard, "ChartData", side_effect=fake_chartdata):
                 with self.assertRaises(SlugVerificationError) as ctx:
                     verify_slugs(
-                        CURATED_CHARTS, sidecar_path=tmp, raise_on_failure=True
+                        CURATED_CHARTS, sidecar_path=tmp, raise_on_failure=True, delay=0
                     )
             self.assertIn(CURATED_CHARTS[0]["slug"], str(ctx.exception))
             import os
