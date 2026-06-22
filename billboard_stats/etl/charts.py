@@ -120,7 +120,15 @@ def get_chart(slug):
 
 
 # Sidecar of verified (slug, first_date) results, written by ``verify_slugs``.
-VERIFIED_CHARTS_PATH = str(Path(__file__).resolve().parent / "verified_charts.json")
+#
+# This lives in the project DATA dir (mirroring ``fetcher.DATA_DIR``), NOT inside
+# the package source tree. Writing runtime output into the installed package
+# directory raises ``PermissionError`` on a read-only install (site-packages, a
+# container layer, a wheel) and couples "where code lives" to "where output
+# lives". The data dir is the writable home for all acquisition artifacts.
+from billboard_stats.etl.fetcher import DATA_DIR as _DATA_DIR
+
+VERIFIED_CHARTS_PATH = str(Path(_DATA_DIR) / "verified_charts.json")
 
 
 # ---------------------------------------------------------------------------
@@ -267,6 +275,10 @@ def verify_slugs(charts=None, sidecar_path=None, raise_on_failure=True, delay=1.
         }
         for r in results
     ]
+    # Ensure the destination dir exists (the default data dir lives outside the
+    # package and may not exist yet on a fresh checkout).
+    sidecar_dir = Path(sidecar_path).resolve().parent
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
     with open(sidecar_path, "w", encoding="utf-8") as f:
         json.dump(sidecar, f, indent=2)
 
