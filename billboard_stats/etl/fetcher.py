@@ -190,6 +190,106 @@ def download_b200(start_year: int = None, end_year: int = None, data_dir: str = 
     print(f"Billboard 200 done: {success} downloaded, {failed} failed.")
 
 
+class HardStopError(Exception):
+    """An HTTP 403/429 was received — abort the whole run immediately.
+
+    Per Pitfall 4, a 403/429 from billboard.com signals rate-limiting / IP block
+    and must HARD-STOP the run rather than tight-retrying the offending week.
+    """
+
+
+def _http_status(exc) -> int | None:
+    """Return the HTTP status code carried by an exception, if any."""
+    response = getattr(exc, "response", None)
+    if response is not None:
+        return getattr(response, "status_code", None)
+    return None
+
+
+def download_chart(slug: str, start_date: str, end_date: str, data_dir: str = None,
+                   overwrite: bool = False, delay: float = 1.5):
+    """Download an arbitrary chart by slug for all Saturdays in a date range.
+
+    Generalizes ``download_hot100`` into a slug-parameterized, resumable
+    primitive. Writes one JSON file per chart per week under
+    ``data/{slug}/{YYYY-MM-DD}.json`` with the generic per-entry shape.
+
+    Behavior:
+        - A week whose file already exists and is >= ``MIN_FILE_SIZE`` is SKIPPED
+          (no ChartData call) — on-disk cache skip makes a resumed run never
+          re-scrape an existing file.
+        - An HTTP 403 or 429 raises :class:`HardStopError` and aborts the whole
+          run immediately — NOT a tight per-week retry loop.
+        - Any other per-week error is counted as a failure and the run continues
+          (so genuinely-missing pre-launch weeks don't kill the run).
+
+    Args:
+        slug: The verified chart slug (e.g. ``"country-songs"``).
+        start_date: Start date as 'YYYY-MM-DD'.
+        end_date: End date as 'YYYY-MM-DD'.
+        data_dir: Root data directory. Defaults to project ``data/``.
+        overwrite: If True, overwrite existing files.
+        delay: Seconds to wait between requests (politeness).
+
+    Raises:
+        HardStopError: on an HTTP 403/429 response.
+    """
+    import billboard
+
+    if data_dir is None:
+        data_dir = DATA_DIR
+
+    folder = os.path.join(data_dir, slug)
+    os.makedirs(folder, exist_ok=True)
+
+    dates = get_saturdays_between(start_date, end_date)
+    print(f"Downloading {slug}: {len(dates)} weeks ({start_date} to {end_date})")
+
+    success, failed = 0, 0
+    for date_str in dates:
+        filepath = os.path.join(folder, f"{date_str}.json")
+        if not overwrite and os.path.exists(filepath) and os.path.getsize(filepath) >= MIN_FILE_SIZE:
+            continue
+
+        sys.stdout.write(f"\r  Downloading {date_str}...")
+        sys.stdout.flush()
+
+        try:
+            chart = billboard.ChartData(slug, date=date_str, timeout=20)
+            data = [
+                {
+                    "rank": entry.rank,
+                    "title": entry.title,
+                    "artist": entry.artist,
+                    "peakPos": entry.peakPos,
+                    "lastPos": entry.lastPos,
+                    "weeks": entry.weeks,
+                    "isNew": entry.isNew,
+                    "image": entry.image,
+                }
+                for entry in chart
+            ]
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            success += 1
+            time.sleep(delay)
+        except Exception as e:
+            status = _http_status(e)
+            if status in (403, 429):
+                # Hard stop: an IP-block / rate-limit signal aborts the run.
+                sys.stdout.write(f" HARD STOP (HTTP {status})\n")
+                raise HardStopError(
+                    f"HTTP {status} fetching {slug} {date_str} — aborting run "
+                    "(rate-limited / IP-blocked; not retrying)"
+                ) from e
+            # Tolerate transient/missing-week errors and keep going.
+            sys.stdout.write(f" FAILED ({e})\n")
+            failed += 1
+            time.sleep(delay * 1.5)
+
+    print(f"\n{slug} done: {success} downloaded, {failed} failed.")
+
+
 def find_failed_downloads(chart_type: str = "hot-100", start_year: int = 1958,
                           end_year: int = 2026, data_dir: str = None) -> list[str]:
     """Find dates with missing or corrupted chart files.
@@ -327,6 +427,12 @@ if __name__ == "__main__":
     dl_b200.add_argument("--end-year", type=int, default=2026)
     dl_b200.add_argument("--overwrite", action="store_true")
 
+    dl_chart = sub.add_parser("download-chart", help="Download any chart by slug")
+    dl_chart.add_argument("--slug", required=True)
+    dl_chart.add_argument("--start", required=True, help="YYYY-MM-DD")
+    dl_chart.add_argument("--end", required=True, help="YYYY-MM-DD")
+    dl_chart.add_argument("--overwrite", action="store_true")
+
     retry = sub.add_parser("retry", help="Retry failed downloads")
     retry.add_argument("--chart", default="hot-100", choices=["hot-100", "billboard-200"])
 
@@ -338,6 +444,8 @@ if __name__ == "__main__":
         download_hot100(args.start, args.end, overwrite=args.overwrite)
     elif args.command == "download-b200":
         download_b200(args.start_year, args.end_year, overwrite=args.overwrite)
+    elif args.command == "download-chart":
+        download_chart(args.slug, args.start, args.end, overwrite=args.overwrite)
     elif args.command == "retry":
         retry_failed(args.chart)
     elif args.command == "check-gaps":
