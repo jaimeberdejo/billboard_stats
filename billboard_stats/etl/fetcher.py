@@ -4,6 +4,8 @@ Consolidates the original download_charts.py, album_downloader.py,
 retry_failed_albums.py, and check_data_gaps.py into a single module.
 """
 
+from __future__ import annotations
+
 import datetime
 import json
 import os
