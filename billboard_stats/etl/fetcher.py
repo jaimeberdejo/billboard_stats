@@ -206,6 +206,98 @@ def _http_status(exc) -> int | None:
     return None
 
 
+# Safety floor for the backward history walk. No Billboard chart predates the
+# Hot 100's 1958 debut, so a chart that never returns an empty/not-found week
+# (a pathological parse loop) is bounded by this cutoff instead of walking back
+# forever. Callers may override via download_chart_history(stop_floor=...).
+HISTORY_STOP_FLOOR = datetime.date(1958, 1, 1)
+
+
+# Sentinel results for the per-week fetch helper.
+_WEEK_SKIPPED = "skipped"      # file already on disk (cache skip)
+_WEEK_HAS_DATA = "has_data"    # fetched + saved with >= 1 entry
+_WEEK_EMPTY = "empty"          # resolved but zero entries (treat as before-debut)
+_WEEK_NOT_FOUND = "not_found"  # 404 / BillboardNotFoundException (before debut)
+_WEEK_FAILED = "failed"        # other transient error (tolerated, not a boundary)
+
+
+def _fetch_and_save_week(slug: str, date_str: str, folder: str,
+                         overwrite: bool, delay: float) -> str:
+    """Fetch + save ONE week of a chart, returning an outcome sentinel.
+
+    This is the single per-week fetch/save primitive shared by both
+    :func:`download_chart` (forward range) and :func:`download_chart_history`
+    (backward walk) so the fetch/parse/write/skip/hard-stop logic lives in one
+    place.
+
+    Returns one of the ``_WEEK_*`` sentinels:
+        - ``_WEEK_SKIPPED``: the file already exists (>= ``MIN_FILE_SIZE``).
+        - ``_WEEK_HAS_DATA``: fetched and wrote a file with >= 1 entry.
+        - ``_WEEK_EMPTY``: the chart resolved but had zero entries.
+        - ``_WEEK_NOT_FOUND``: a 404 / ``BillboardNotFoundException``.
+        - ``_WEEK_FAILED``: any other (transient) error.
+
+    Raises:
+        HardStopError: on an HTTP 403/429 (rate-limit / IP-block).
+    """
+    import billboard
+
+    filepath = os.path.join(folder, f"{date_str}.json")
+    if not overwrite and os.path.exists(filepath) and os.path.getsize(filepath) >= MIN_FILE_SIZE:
+        return _WEEK_SKIPPED
+
+    sys.stdout.write(f"\r  Downloading {date_str}...")
+    sys.stdout.flush()
+
+    try:
+        chart = billboard.ChartData(slug, date=date_str, timeout=20)
+        data = [
+            {
+                "rank": entry.rank,
+                "title": entry.title,
+                "artist": entry.artist,
+                "peakPos": entry.peakPos,
+                "lastPos": entry.lastPos,
+                "weeks": entry.weeks,
+                "isNew": entry.isNew,
+                "image": entry.image,
+            }
+            for entry in chart
+        ]
+    except billboard.BillboardNotFoundException:
+        # No chart published that week — for the backward walk this is the
+        # natural before-debut boundary, not a loud error.
+        sys.stdout.write(f" not found ({date_str})\n")
+        time.sleep(delay)
+        return _WEEK_NOT_FOUND
+    except Exception as e:
+        status = _http_status(e)
+        if status in (403, 429):
+            # Hard stop: an IP-block / rate-limit signal aborts the run.
+            sys.stdout.write(f" HARD STOP (HTTP {status})\n")
+            raise HardStopError(
+                f"HTTP {status} fetching {slug} {date_str} — aborting run "
+                "(rate-limited / IP-blocked; not retrying)"
+            ) from e
+        # Tolerate transient errors; caller decides whether to keep going.
+        sys.stdout.write(f" FAILED ({e})\n")
+        time.sleep(delay * 1.5)
+        return _WEEK_FAILED
+
+    if not data:
+        # Resolved but empty: a chart that existed structurally but listed no
+        # entries for this week. For the backward walk this means we've gone
+        # before the chart's debut. Do NOT write an empty file.
+        sys.stdout.write(f" empty ({date_str})\n")
+        time.sleep(delay)
+        return _WEEK_EMPTY
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    time.sleep(delay)
+    return _WEEK_HAS_DATA
+
+
 def download_chart(slug: str, start_date: str, end_date: str, data_dir: str = None,
                    overwrite: bool = False, delay: float = 1.5):
     """Download an arbitrary chart by slug for all Saturdays in a date range.
@@ -247,47 +339,113 @@ def download_chart(slug: str, start_date: str, end_date: str, data_dir: str = No
 
     success, failed = 0, 0
     for date_str in dates:
-        filepath = os.path.join(folder, f"{date_str}.json")
-        if not overwrite and os.path.exists(filepath) and os.path.getsize(filepath) >= MIN_FILE_SIZE:
-            continue
-
-        sys.stdout.write(f"\r  Downloading {date_str}...")
-        sys.stdout.flush()
-
-        try:
-            chart = billboard.ChartData(slug, date=date_str, timeout=20)
-            data = [
-                {
-                    "rank": entry.rank,
-                    "title": entry.title,
-                    "artist": entry.artist,
-                    "peakPos": entry.peakPos,
-                    "lastPos": entry.lastPos,
-                    "weeks": entry.weeks,
-                    "isNew": entry.isNew,
-                    "image": entry.image,
-                }
-                for entry in chart
-            ]
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f)
+        # HardStopError (403/429) propagates out of the helper.
+        outcome = _fetch_and_save_week(slug, date_str, folder, overwrite, delay)
+        if outcome == _WEEK_HAS_DATA:
             success += 1
-            time.sleep(delay)
-        except Exception as e:
-            status = _http_status(e)
-            if status in (403, 429):
-                # Hard stop: an IP-block / rate-limit signal aborts the run.
-                sys.stdout.write(f" HARD STOP (HTTP {status})\n")
-                raise HardStopError(
-                    f"HTTP {status} fetching {slug} {date_str} — aborting run "
-                    "(rate-limited / IP-blocked; not retrying)"
-                ) from e
-            # Tolerate transient/missing-week errors and keep going.
-            sys.stdout.write(f" FAILED ({e})\n")
+        elif outcome in (_WEEK_EMPTY, _WEEK_NOT_FOUND, _WEEK_FAILED):
+            # A genuinely-missing / pre-launch / transient week does not kill a
+            # forward range download; keep going (count non-skips as failures).
             failed += 1
-            time.sleep(delay * 1.5)
 
     print(f"\n{slug} done: {success} downloaded, {failed} failed.")
+
+
+def download_chart_history(slug: str, data_dir: str = None, overwrite: bool = False,
+                           delay: float = 1.5, as_of: datetime.date = None,
+                           stop_floor: datetime.date = None,
+                           empty_tolerance: int = 1) -> dict:
+    """Download a chart's FULL history by walking BACKWARD to its debut.
+
+    Unlike :func:`download_chart` (which needs a known start date), this
+    discovers each chart's true history depth at runtime. It starts at the
+    latest publishable chart week and walks backward one Saturday (7 days) at a
+    time, saving each week via the shared per-week primitive. It STOPS when it
+    reaches the chart's debut — signalled by a before-debut week that resolves
+    EMPTY or NOT-FOUND — rather than trusting a (misleading) recorded
+    ``first_date``.
+
+    This is resumable for free: weeks already on disk are skipped (no network
+    call), so a re-run continues where a crashed/cancelled run left off.
+
+    Args:
+        slug: The verified chart slug (e.g. ``"artist-100"``).
+        data_dir: Root data directory. Defaults to project ``data/``.
+        overwrite: If True, re-fetch even weeks already on disk.
+        delay: Polite seconds between requests.
+        as_of: Treat this date as "today" when computing the latest week
+            (injectable for deterministic tests). Defaults to today.
+        stop_floor: Earliest date the walk may reach before giving up
+            unconditionally (bounds a pathological never-empty chart). Defaults
+            to :data:`HISTORY_STOP_FLOOR` (1958-01-01).
+        empty_tolerance: Number of CONSECUTIVE empty/not-found weeks that marks
+            the debut boundary. Default 1 — a single empty at the deep end is the
+            expected debut. Raise to 2 to tolerate one legitimately-missing
+            mid-history week before stopping.
+
+    Returns:
+        A summary dict: ``{"slug", "saved", "skipped", "failed", "earliest",
+        "stopped_at", "reason"}`` where ``reason`` is ``"debut"`` (hit the empty
+        boundary) or ``"floor"`` (hit ``stop_floor``).
+
+    Raises:
+        HardStopError: propagated from the per-week primitive on an HTTP 403/429.
+            A 403/429 is NEVER treated as the debut boundary.
+    """
+    if data_dir is None:
+        data_dir = DATA_DIR
+    if stop_floor is None:
+        stop_floor = HISTORY_STOP_FLOOR
+
+    folder = os.path.join(data_dir, slug)
+    os.makedirs(folder, exist_ok=True)
+
+    week = get_latest_publishable_chart_week(as_of=as_of)
+    print(f"Walking {slug} history backward from {week.isoformat()} "
+          f"(floor {stop_floor.isoformat()})")
+
+    saved = skipped = failed = 0
+    consecutive_empty = 0
+    earliest = None
+    reason = "floor"
+
+    while week >= stop_floor:
+        date_str = week.isoformat()
+        # HardStopError (403/429) propagates — NOT a debut boundary.
+        outcome = _fetch_and_save_week(slug, date_str, folder, overwrite, delay)
+
+        if outcome in (_WEEK_EMPTY, _WEEK_NOT_FOUND):
+            consecutive_empty += 1
+            if consecutive_empty >= empty_tolerance:
+                # Reached the chart's debut: the deep end is empty. Stop cleanly.
+                reason = "debut"
+                break
+        else:
+            # Any data/skip/transient-failure week resets the empty run so a
+            # single missing mid-history week doesn't falsely end the walk.
+            consecutive_empty = 0
+            if outcome == _WEEK_HAS_DATA:
+                saved += 1
+                earliest = date_str
+            elif outcome == _WEEK_SKIPPED:
+                skipped += 1
+                earliest = date_str
+            elif outcome == _WEEK_FAILED:
+                failed += 1
+
+        week -= datetime.timedelta(days=7)
+
+    print(f"\n{slug} history done ({reason}): {saved} saved, {skipped} skipped, "
+          f"{failed} failed; earliest kept = {earliest}.")
+    return {
+        "slug": slug,
+        "saved": saved,
+        "skipped": skipped,
+        "failed": failed,
+        "earliest": earliest,
+        "stopped_at": week.isoformat(),
+        "reason": reason,
+    }
 
 
 def find_failed_downloads(chart_type: str = "hot-100", start_year: int = 1958,

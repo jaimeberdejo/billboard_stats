@@ -1,14 +1,18 @@
 """Offline, operator-run backfill orchestrator over verified curated slugs.
 
-This module turns the verified-slug list + ``first_date`` sidecar written by
-``charts.verify_slugs`` (Plan 01) into actual on-disk raw JSON, by calling the
-``fetcher.download_chart`` primitive once per verified chart. It has two modes:
+This module turns the verified-slug list written by ``charts.verify_slugs``
+(Plan 01) into actual on-disk raw JSON. The sidecar's ``first_date`` is a
+"verified-as-of" marker (the week verification ran), NOT each chart's earliest
+week — so FULL mode does NOT trust it as a start. It has two modes:
 
   - ``smoke``: download only the most recent few Saturdays per verified slug.
     This is the phase's PROOF-OF-PATH — small, fast, no multi-decade scrape.
-  - ``full``: download each chart's history from its captured ``first_date``
-    through the latest publishable week. This is the OPERATOR's long-running
-    job; resumability is free from ``download_chart``'s on-disk cache skip.
+  - ``full``: discover each chart's true history depth by walking BACKWARD from
+    the latest publishable week to the chart's debut (via
+    ``fetcher.download_chart_history``), instead of trusting the sidecar's
+    ``first_date`` (which records the verified-as-of week, NOT the earliest).
+    This is the OPERATOR's long-running job; resumability is free from the
+    per-week on-disk cache skip.
 
 GUARDRAIL (success criterion #4): ``run_backfill`` refuses to run on the weekly
 cron. It aborts when ``GITHUB_EVENT_NAME == "schedule"`` OR when the marker env
@@ -34,6 +38,7 @@ from billboard_stats.etl.fetcher import (
     DATA_DIR,
     HardStopError,
     download_chart,
+    download_chart_history,
     get_latest_publishable_chart_week,
 )
 
@@ -161,8 +166,9 @@ def run_backfill(
 
     Args:
         mode: ``"smoke"`` (a few recent weeks per chart — the phase's
-            proof-of-path) or ``"full"`` (each chart's history from its captured
-            ``first_date`` — the operator's long job).
+            proof-of-path) or ``"full"`` (each chart's history discovered by
+            walking BACKWARD from the latest week to its debut — the operator's
+            long job; the sidecar ``first_date`` is NOT used as a start).
         slug: If given, restrict the run to this single verified slug. It must be
             present in the sidecar, else ``ValueError``.
         data_dir: Root data directory. Defaults to ``fetcher.DATA_DIR``.
@@ -175,13 +181,17 @@ def run_backfill(
             ``os.environ``) — injectable for tests.
 
     Returns:
-        A dict mapping each processed slug to its ``(start_date, end_date)``.
+        A dict mapping each processed slug to a per-slug result:
+          - smoke mode: the ``(start_date, end_date)`` window downloaded.
+          - full mode: the ``download_chart_history`` summary dict (``saved``,
+            ``skipped``, ``earliest``, ``reason`` = ``"debut"``/``"floor"`` ...).
 
     Raises:
         BackfillGuardrailError: on a scheduled-cron context or missing marker.
         ValueError: for an unknown mode, or a ``--slug`` not in the sidecar.
         FileNotFoundError: if the sidecar is missing.
-        HardStopError: propagated from ``download_chart`` on a 403/429.
+        HardStopError: propagated from the per-week fetch on a 403/429 (NEVER
+            treated as the debut boundary).
     """
     if env is None:
         env = os.environ
@@ -208,34 +218,32 @@ def run_backfill(
 
     latest_week = get_latest_publishable_chart_week()
 
-    ranges = {}
+    results = {}
     for rec in targets:
         chart_slug = rec["slug"]
         if mode == "smoke":
             start_date, end_date = _smoke_window(latest_week, smoke_weeks)
+            results[chart_slug] = (start_date, end_date)
+            # HardStopError (403/429) propagates — do NOT swallow it.
+            download_chart(
+                chart_slug,
+                start_date,
+                end_date,
+                data_dir=data_dir,
+                delay=delay,
+            )
         else:  # full
-            first_date = rec.get("first_date")
-            if not first_date:
-                # No captured first_date -> do not silently scrape an empty range.
-                print(
-                    f"  SKIP {chart_slug}: no captured first_date in sidecar "
-                    "(re-run verification).",
-                    file=sys.stderr,
-                )
-                continue
-            start_date, end_date = first_date, latest_week.isoformat()
+            # Discover history depth by walking BACKWARD to the chart's debut.
+            # The sidecar's first_date is deliberately NOT used as a start — it
+            # records the verified-as-of week, not the earliest. HardStopError
+            # (403/429) propagates and is NEVER treated as the debut boundary.
+            results[chart_slug] = download_chart_history(
+                chart_slug,
+                data_dir=data_dir,
+                delay=delay,
+            )
 
-        ranges[chart_slug] = (start_date, end_date)
-        # HardStopError (403/429) propagates — do NOT swallow it.
-        download_chart(
-            chart_slug,
-            start_date,
-            end_date,
-            data_dir=data_dir,
-            delay=delay,
-        )
-
-    return ranges
+    return results
 
 
 def _build_arg_parser():
@@ -245,7 +253,8 @@ def _build_arg_parser():
         description=(
             "Offline backfill orchestrator over verified curated slugs. "
             "SMOKE = a few recent weeks per chart (proof-of-path); "
-            "FULL = each chart's history from first_date (operator job)."
+            "FULL = each chart's history discovered by walking backward to its "
+            "debut (operator job)."
         )
     )
     group = parser.add_mutually_exclusive_group()
@@ -261,7 +270,7 @@ def _build_arg_parser():
         action="store_const",
         dest="mode",
         const="full",
-        help="Download each verified chart's full history from its first_date.",
+        help="Walk each verified chart's history backward to its debut.",
     )
     parser.add_argument(
         "--slug",

@@ -216,11 +216,19 @@ class SmokeModeTests(unittest.TestCase):
 
 
 class FullModeTests(unittest.TestCase):
-    def test_full_uses_each_charts_first_date(self):
+    def test_full_walks_history_backward_not_first_date(self):
+        # FULL mode must drive the backward history walk
+        # (download_chart_history), NOT download_chart with first_date as a
+        # start. It must call the walker once per verified slug and never the
+        # forward range primitive.
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = os.path.join(tmp, "verified_charts.json")
             _write_sidecar(sidecar)
             with mock.patch.object(backfill, "download_chart") as dl, mock.patch.object(
+                backfill, "download_chart_history",
+                return_value={"slug": "x", "saved": 0, "skipped": 0, "failed": 0,
+                              "earliest": None, "stopped_at": "", "reason": "debut"},
+            ) as hist, mock.patch.object(
                 backfill, "get_latest_publishable_chart_week", return_value=_FIXED_LATEST
             ):
                 run_backfill(
@@ -230,22 +238,16 @@ class FullModeTests(unittest.TestCase):
                     env=_manual_env(),
                 )
 
-            starts = {}
-            for c in dl.call_args_list:
-                slug = c.kwargs.get("slug", c.args[0])
-                start = c.kwargs.get("start_date", c.args[1] if len(c.args) > 1 else None)
-                end = c.kwargs.get("end_date", c.args[2] if len(c.args) > 2 else None)
-                starts[slug] = start
-                self.assertEqual(end, _FIXED_LATEST.isoformat())
-
-            self.assertEqual(starts["country-songs"], "2014-01-04")
-            self.assertEqual(starts["artist-100"], "2014-07-19")
+            # download_chart (forward range) must NOT be used in full mode.
+            dl.assert_not_called()
+            walked = sorted(c.kwargs.get("slug", c.args[0]) for c in hist.call_args_list)
+            self.assertEqual(walked, ["artist-100", "country-songs"])
 
     def test_full_single_slug_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = os.path.join(tmp, "verified_charts.json")
             _write_sidecar(sidecar)
-            with mock.patch.object(backfill, "download_chart") as dl, mock.patch.object(
+            with mock.patch.object(backfill, "download_chart_history") as hist, mock.patch.object(
                 backfill, "get_latest_publishable_chart_week", return_value=_FIXED_LATEST
             ):
                 run_backfill(
@@ -255,20 +257,40 @@ class FullModeTests(unittest.TestCase):
                     sidecar_path=sidecar,
                     env=_manual_env(),
                 )
-            called_slugs = [c.kwargs.get("slug", c.args[0]) for c in dl.call_args_list]
+            called_slugs = [c.kwargs.get("slug", c.args[0]) for c in hist.call_args_list]
             self.assertEqual(called_slugs, ["artist-100"])
 
     def test_full_unverified_single_slug_raises(self):
         with tempfile.TemporaryDirectory() as tmp:
             sidecar = os.path.join(tmp, "verified_charts.json")
             _write_sidecar(sidecar)
-            with mock.patch.object(backfill, "download_chart"), mock.patch.object(
+            with mock.patch.object(backfill, "download_chart_history"), mock.patch.object(
                 backfill, "get_latest_publishable_chart_week", return_value=_FIXED_LATEST
             ):
                 with self.assertRaises(ValueError):
                     run_backfill(
                         mode="full",
                         slug="not-a-verified-slug",
+                        data_dir=tmp,
+                        sidecar_path=sidecar,
+                        env=_manual_env(),
+                    )
+
+    def test_full_hard_stop_propagates_not_treated_as_debut(self):
+        # A 403/429 raised by the backward walk must propagate as HardStopError,
+        # never be swallowed as the debut boundary.
+        with tempfile.TemporaryDirectory() as tmp:
+            sidecar = os.path.join(tmp, "verified_charts.json")
+            _write_sidecar(sidecar)
+            with mock.patch.object(
+                backfill, "download_chart_history",
+                side_effect=HardStopError("HTTP 429"),
+            ), mock.patch.object(
+                backfill, "get_latest_publishable_chart_week", return_value=_FIXED_LATEST
+            ):
+                with self.assertRaises(HardStopError):
+                    run_backfill(
+                        mode="full",
                         data_dir=tmp,
                         sidecar_path=sidecar,
                         env=_manual_env(),

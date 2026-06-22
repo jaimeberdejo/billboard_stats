@@ -33,8 +33,12 @@ slug-verification spike, which resolves each curated slug against
 ```
 
 - On success it prints a PASS/FAIL table and writes
-  **`billboard_stats/etl/verified_charts.json`** — the `(slug, first_date)`
-  sidecar the backfill reads.
+  **`billboard_stats/data/verified_charts.json`** — the verified-slug sidecar
+  the backfill reads.
+- The sidecar's `first_date` is a **"verified-as-of" marker** — the week
+  verification ran — **NOT** each chart's earliest/debut week. The FULL backfill
+  deliberately does **not** use it as a start date (see §3); it discovers true
+  history depth by walking backward to the debut.
 - A renamed/removed slug **fails loudly** (non-zero exit). Fix the slug in
   `billboard_stats/etl/charts.py` (`CURATED_CHARTS`) and re-run.
 - If `verified_charts.json` is missing, the backfill aborts with a clear error
@@ -68,9 +72,29 @@ files (everything is skipped) — proving **resumability**.
 
 ## 3. Full multi-decade backfill (the operator's long job)
 
-The full backfill downloads each verified chart from its captured `first_date`
-through the latest publishable week. This is **long-running** (N charts ×
-thousands of Saturdays × a polite ~1.5s delay = hours to days).
+The full backfill **discovers each chart's true history depth by walking
+BACKWARD to its debut**. For each verified chart it starts at the latest
+publishable week and steps back one Saturday (7 days) at a time, saving every
+week's JSON, until it reaches a **before-debut boundary** — a week that resolves
+**empty** or **not-found (404)**. That boundary is treated as the natural
+end-of-history (the chart's debut), and the walk stops cleanly there.
+
+This replaces the earlier (broken) approach of starting from the sidecar's
+`first_date`: that field records the *verified-as-of* week (the current week at
+verification time), so using it as a start would download only ~1 week per chart
+instead of the full multi-decade history. The backward walk needs no knowledge
+of each chart's launch date (Artist 100 since 2014, Hot 100 since 1958, genre
+charts vary) — it finds the debut empirically.
+
+This is **long-running** (N charts × thousands of Saturdays × a polite ~1.5s
+delay = hours to days).
+
+> **Boundary semantics.** A `403`/`429` is **never** treated as the debut
+> boundary — it is a rate-limit / IP-block and hard-stops the run (see §4). Only
+> an empty / not-found week marks the debut. A configurable **safety floor**
+> (default `1958-01-01`) bounds the walk so a chart that never returns empty
+> cannot loop forever. A small **consecutive-empty tolerance** (default 1) means
+> a single legitimately-missing mid-history week does not falsely end the walk.
 
 **Locally (recommended for the full history):**
 
