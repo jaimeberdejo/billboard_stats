@@ -67,7 +67,10 @@ class VerifySlugSuccessTests(unittest.TestCase):
         ) as mocked:
             result = verify_slug("country-songs")
 
-        mocked.assert_called_once_with("country-songs")
+        # verify_slug bounds verification latency with an explicit timeout
+        # (mirrors download_chart), so it must not fall back to the library
+        # default of 25s x retries.
+        mocked.assert_called_once_with("country-songs", timeout=20)
         self.assertEqual(result["slug"], "country-songs")
         self.assertTrue(result["verified"])
         self.assertIsNotNone(result["first_date"])

@@ -177,7 +177,10 @@ def verify_slug(slug):
     import billboard
 
     try:
-        chart = billboard.ChartData(slug)
+        # Bound verification latency to match download_chart's tightened
+        # timeout (the library default is 25s x retries, which can stall a
+        # multi-slug verification spike far past the intended window).
+        chart = billboard.ChartData(slug, timeout=20)
     except Exception as exc:  # noqa: BLE001 - re-raise as a loud, named error
         raise SlugVerificationError(
             f"slug '{slug}' failed verification: {type(exc).__name__}: {exc}"
