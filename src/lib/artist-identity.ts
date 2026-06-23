@@ -1,6 +1,10 @@
+// This map holds GENUINE artist aliases only — real alternate names the database
+// does not collapse on its own (e.g. a stage-name variant for the same act).
+// Split-fragment identity (an act mistakenly broken into separate pieces) is now
+// fixed at the source in the ETL (artist_aliases.py / reconcile_artists.py), so it
+// is no longer merged here at read time.
 const CANONICAL_ARTIST_ALIASES = {
   "Janet Jackson": ["Janet"],
-  "Earth, Wind & Fire": ["Earth", "Wind", "Fire"],
   Kesha: ["Ke$ha"],
 } as const;
 
