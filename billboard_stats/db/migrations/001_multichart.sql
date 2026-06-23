@@ -115,6 +115,15 @@ WHERE chart_id IS NULL;
 -- -----------------------------------------------------------------------------
 
 -- Hot 100: hot100_entries (song_id) → chart_entries (chart_id = hot-100).
+-- The JOIN to chart_weeks ON cw.chart_type = 'hot-100' scopes the backfill to
+-- rows whose source week is ACTUALLY a hot-100 week (WR-02). In a clean v1.0 DB
+-- every hot100_entries row references a hot-100 week, but that invariant is
+-- otherwise unverified: were any row to point at a billboard-200 week, an
+-- unscoped backfill would label it chart_id=hot-100 while step 3 sets that
+-- week's chart_weeks.chart_id to billboard-200, silently corrupting the
+-- per-chart rollup. The JOIN guarantees chart_entries.chart_id always agrees
+-- with the referenced week's chart_id. Still idempotent/additive via ON
+-- CONFLICT (chart_week_id, rank) DO NOTHING.
 INSERT INTO chart_entries
     (chart_id, chart_week_id, song_id, rank, peak_pos, last_pos, weeks_on_chart, is_new)
 SELECT
@@ -127,9 +136,11 @@ SELECT
     h.weeks_on_chart,
     h.is_new
 FROM hot100_entries h
+JOIN chart_weeks cw ON cw.id = h.chart_week_id AND cw.chart_type = 'hot-100'
 ON CONFLICT (chart_week_id, rank) DO NOTHING;
 
 -- Billboard 200: b200_entries (album_id) → chart_entries (chart_id = billboard-200).
+-- Symmetric chart_type scoping to hot-100 above (WR-02).
 INSERT INTO chart_entries
     (chart_id, chart_week_id, album_id, rank, peak_pos, last_pos, weeks_on_chart, is_new)
 SELECT
@@ -142,4 +153,5 @@ SELECT
     b.weeks_on_chart,
     b.is_new
 FROM b200_entries b
+JOIN chart_weeks cw ON cw.id = b.chart_week_id AND cw.chart_type = 'billboard-200'
 ON CONFLICT (chart_week_id, rank) DO NOTHING;

@@ -243,6 +243,10 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 "SELECT COUNT(*) FROM chart_entries WHERE chart_id = %s;",
                 (hot100_id,),
             )
+            # JOIN chart_weeks ON cw.chart_type = 'hot-100' scopes the backfill
+            # to rows whose source week is actually a hot-100 week (WR-02), so
+            # chart_entries.chart_id can never disagree with the referenced
+            # week's chart_id even if a stray entry pointed at the wrong type.
             cur.execute(
                 "INSERT INTO chart_entries "
                 "(chart_id, chart_week_id, song_id, rank, peak_pos, last_pos, "
@@ -251,6 +255,8 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 "h.chart_week_id, h.song_id, h.rank, h.peak_pos, h.last_pos, "
                 "h.weeks_on_chart, h.is_new "
                 "FROM hot100_entries h "
+                "JOIN chart_weeks cw ON cw.id = h.chart_week_id "
+                "AND cw.chart_type = 'hot-100' "
                 "ON CONFLICT (chart_week_id, rank) DO NOTHING;"
             )
             after_hot100_ce = _count(
@@ -265,6 +271,7 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 "SELECT COUNT(*) FROM chart_entries WHERE chart_id = %s;",
                 (b200_id,),
             )
+            # Symmetric chart_type scoping to the hot-100 backfill above (WR-02).
             cur.execute(
                 "INSERT INTO chart_entries "
                 "(chart_id, chart_week_id, album_id, rank, peak_pos, last_pos, "
@@ -273,6 +280,8 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 "b.chart_week_id, b.album_id, b.rank, b.peak_pos, b.last_pos, "
                 "b.weeks_on_chart, b.is_new "
                 "FROM b200_entries b "
+                "JOIN chart_weeks cw ON cw.id = b.chart_week_id "
+                "AND cw.chart_type = 'billboard-200' "
                 "ON CONFLICT (chart_week_id, rank) DO NOTHING;"
             )
             after_b200_ce = _count(

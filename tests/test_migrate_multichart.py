@@ -217,18 +217,30 @@ class FakeDB:
             if w["chart_id"] is None:
                 w["chart_id"] = self.chart_id(w["chart_type"])
 
+    def _week_chart_type(self, chart_week_id):
+        for w in self.chart_weeks:
+            if w["id"] == chart_week_id:
+                return w["chart_type"]
+        return None
+
     def backfill_chart_entries(self, slug, entity_kind):
         """INSERT INTO chart_entries ... ON CONFLICT (chart_week_id, rank) DO NOTHING.
 
         Mirrors the migration: exactly one entity FK per row (song_id for
         hot-100, album_id for billboard-200), conflict-skipping on
-        (chart_week_id, rank).
+        (chart_week_id, rank), and JOINed to chart_weeks ON cw.chart_type = slug
+        so a source row whose week is the WRONG chart_type is NOT backfilled
+        (WR-02 -- guarantees chart_entries.chart_id agrees with the week).
         """
         chart_id = self.chart_id(slug)
         source = self.hot100_entries if entity_kind == "song" else self.b200_entries
         entity_col = "song_id" if entity_kind == "song" else "album_id"
         existing = {(e["chart_week_id"], e["rank"]) for e in self.chart_entries}
         for src in source:
+            # WR-02: JOIN chart_weeks ON cw.chart_type = slug -- skip rows whose
+            # source week is not actually this chart's type.
+            if self._week_chart_type(src["chart_week_id"]) != slug:
+                continue
             key = (src["chart_week_id"], src["rank"])
             if key in existing:
                 continue  # ON CONFLICT (chart_week_id, rank) DO NOTHING
@@ -360,6 +372,51 @@ class MigrateParityTests(unittest.TestCase):
             self.assertEqual(w["chart_id"], db.chart_id(w["chart_type"]))
             # chart_type stays populated (Phase 15 retires it, not this migration).
             self.assertIn(w["chart_type"], ("hot-100", "billboard-200"))
+
+
+# ----------------------------------------------------------------------------
+# WR-02: backfill is scoped to the source week's chart_type
+# ----------------------------------------------------------------------------
+class MigrateChartTypeScopingTests(unittest.TestCase):
+    def test_backfill_skips_source_row_pointing_at_wrong_type_week(self):
+        # A hot100_entries row that (corruptly) references a billboard-200 week
+        # must NOT be backfilled as a hot-100 chart_entries row, because the
+        # JOIN scopes the hot-100 backfill to cw.chart_type='hot-100' (WR-02).
+        chart_weeks = [
+            {"id": 1, "chart_type": "hot-100", "chart_id": None},
+            {"id": 2, "chart_type": "billboard-200", "chart_id": None},
+        ]
+        hot100_entries = [
+            # legitimate hot-100 row
+            {"id": 1, "chart_week_id": 1, "song_id": 10, "rank": 1,
+             "peak_pos": 1, "last_pos": None, "weeks_on_chart": 2, "is_new": False},
+            # CORRUPT: hot100 entry whose week is a billboard-200 week
+            {"id": 2, "chart_week_id": 2, "song_id": 11, "rank": 5,
+             "peak_pos": 5, "last_pos": None, "weeks_on_chart": 1, "is_new": True},
+        ]
+        b200_entries = [
+            {"id": 1, "chart_week_id": 2, "album_id": 20, "rank": 1,
+             "peak_pos": 1, "last_pos": None, "weeks_on_chart": 3, "is_new": False},
+        ]
+        db = FakeDB(chart_weeks, hot100_entries, b200_entries)
+        conn = FakeConn(db)
+
+        # The corrupt row breaks hot-100 count parity (1 backfilled != 2 source),
+        # so the migration must roll back and raise rather than silently
+        # mislabel the row.
+        with self.assertRaises(MigrationParityError):
+            migrate(conn, dry_run=False)
+        self.assertTrue(conn.rolled_back)
+        self.assertFalse(conn.committed)
+
+    def test_chart_entries_chart_id_agrees_with_week_chart_id(self):
+        # On a clean DB, every backfilled chart_entries row's chart_id matches
+        # its referenced week's chart_id (the invariant WR-02 protects).
+        db = _fixture()
+        migrate(FakeConn(db), dry_run=False)
+        week_chart_id = {w["id"]: w["chart_id"] for w in db.chart_weeks}
+        for e in db.chart_entries:
+            self.assertEqual(e["chart_id"], week_chart_id[e["chart_week_id"]])
 
 
 # ----------------------------------------------------------------------------
