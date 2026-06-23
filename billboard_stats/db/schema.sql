@@ -116,6 +116,48 @@ CREATE TABLE IF NOT EXISTS charts (
 -- UNIQUE(chart_id, chart_date) constraint here.
 ALTER TABLE chart_weeks ADD COLUMN IF NOT EXISTS chart_id INT REFERENCES charts(id);
 
+-- Unified, polymorphic weekly entries (DATA-02). One table for all charts;
+-- exactly one of song_id / album_id / artist_id is set per row, enforced by the
+-- num_nonnulls CHECK. artist_id is a first-class polymorphic target so Artist
+-- 100 (entity_kind='artist') drops in for free in Phase 11 with no schema
+-- change. Mirrors the v1.0 per-entry columns (rank, peak_pos, last_pos,
+-- weeks_on_chart, is_new) and the UNIQUE(chart_week_id, rank) idempotency
+-- constraint from hot100_entries/b200_entries.
+CREATE TABLE IF NOT EXISTS chart_entries (
+    id              BIGSERIAL PRIMARY KEY,
+    chart_id        INT NOT NULL REFERENCES charts(id),
+    chart_week_id   INT NOT NULL REFERENCES chart_weeks(id),
+    song_id         INT REFERENCES songs(id),    -- exactly one of the three is non-null
+    album_id        INT REFERENCES albums(id),
+    artist_id       INT REFERENCES artists(id),
+    rank            SMALLINT NOT NULL,
+    peak_pos        SMALLINT,
+    last_pos        SMALLINT,
+    weeks_on_chart  SMALLINT,
+    is_new          BOOLEAN NOT NULL DEFAULT FALSE,
+    UNIQUE (chart_week_id, rank),
+    CHECK (num_nonnulls(song_id, album_id, artist_id) = 1)  -- one-of-three polymorphism guard
+);
+
+-- Per-chart artist rollup (DATA-03). One ROW per (artist, chart) — adding a
+-- chart adds rows, never columns. Generalizes the per-chart facts that the v1.0
+-- artist_stats table hardcodes as hot100_/b200_ columns. Career totals derive
+-- by aggregation (SUM/MIN/MAX GROUP BY artist_id) over these rows. The column
+-- names declared here are authoritative — Plan 03's INSERT writes exactly these.
+-- Coexists with artist_stats (compat); artist_stats is NOT altered or dropped.
+CREATE TABLE IF NOT EXISTS artist_chart_stats (
+    artist_id        INT  NOT NULL REFERENCES artists(id),
+    chart_id         INT  NOT NULL REFERENCES charts(id),
+    total_entries    INT  NOT NULL DEFAULT 0,   -- songs OR albums OR direct artist entries on this chart
+    total_weeks      INT  NOT NULL DEFAULT 0,   -- summed weeks_on_chart presence on this chart
+    number_ones      INT  NOT NULL DEFAULT 0,   -- count of #1 placements on this chart
+    best_peak        SMALLINT,                  -- best (lowest) rank achieved on this chart
+    max_simultaneous INT  NOT NULL DEFAULT 0,   -- max concurrent entries in a single week
+    first_date       DATE,                      -- earliest chart_week date on this chart
+    last_date        DATE,                      -- latest chart_week date on this chart
+    PRIMARY KEY (artist_id, chart_id)
+);
+
 -- ============================================================
 -- Pre-computed Stats Tables
 -- ============================================================
@@ -169,6 +211,18 @@ CREATE INDEX idx_hot100_song_id ON hot100_entries(song_id);
 CREATE INDEX idx_hot100_chart_week ON hot100_entries(chart_week_id);
 CREATE INDEX idx_b200_album_id ON b200_entries(album_id);
 CREATE INDEX idx_b200_chart_week ON b200_entries(chart_week_id);
+
+-- Multi-chart entry indexes (Phase 9): mirror the per-entry indexes above for
+-- the polymorphic chart_entries table — by week, by chart, and a partial index
+-- per entity FK so each lookup matches the v1.0 access pattern.
+CREATE INDEX IF NOT EXISTS idx_ce_chart ON chart_entries(chart_id);
+CREATE INDEX IF NOT EXISTS idx_ce_week ON chart_entries(chart_week_id);
+CREATE INDEX IF NOT EXISTS idx_ce_song ON chart_entries(song_id) WHERE song_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ce_album ON chart_entries(album_id) WHERE album_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ce_artist ON chart_entries(artist_id) WHERE artist_id IS NOT NULL;
+
+-- Per-chart artist rollup index (mirrors ARCHITECTURE.md idx_acs_chart).
+CREATE INDEX IF NOT EXISTS idx_acs_chart ON artist_chart_stats(chart_id);
 
 -- Fast lookups by date
 CREATE INDEX idx_chart_weeks_date ON chart_weeks(chart_date);
