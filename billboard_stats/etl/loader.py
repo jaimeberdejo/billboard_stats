@@ -183,6 +183,19 @@ def load_chart(conn, chart, only_dates=None, data_dir=None):
     logger.info("Found %d %s chart files to load.", len(files), chart.slug)
 
     chart_id = _resolve_chart_id(conn, chart.slug)
+    # WR-03: fail fast on an unresolved chart_id. chart_entries.chart_id is
+    # NOT NULL REFERENCES charts(id), so a None here would otherwise surface as a
+    # NOT NULL / FK violation deep inside the per-week batch INSERT, aborting that
+    # week's transaction mid-load (and, if the transaction boundary were ever
+    # loosened, risking legacy-vs-chart_entries divergence for the week). The
+    # registry path can't hit this (iter_charts only yields real charts), but a
+    # compat-shim caller or a registry/charts-table drift can. Raise a clear error
+    # BEFORE touching any rows.
+    if chart_id is None:
+        raise ValueError(
+            f"Chart slug {chart.slug!r} not found in charts registry; cannot load "
+            "(chart_entries.chart_id is NOT NULL REFERENCES charts(id))."
+        )
 
     # W1 (artist_cache strategy): the v1.0 _load_b200 pre-loaded the artist_cache
     # from the DB while _load_hot100 started empty. The unified load_chart uses

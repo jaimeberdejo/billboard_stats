@@ -566,6 +566,22 @@ class LoadChartDualWriteTests(unittest.TestCase):
             )
             self.assertEqual(nonnull, 1, f"row {e} must set exactly one entity FK")
 
+    def test_unregistered_slug_fails_fast_before_writing_rows(self):
+        # WR-03: a slug missing from the charts registry must raise a clear error
+        # BEFORE any chart_entries are written, not a mid-batch NOT NULL/FK
+        # violation. chart_entries.chart_id is NOT NULL.
+        db = self._base_db()  # has hot-100 / billboard-200 / country-songs only
+        ghost = ChartRecord(
+            slug="not-a-real-chart", entity_kind="song",
+            folder="/fake/ghost", last_loaded_date=None, legacy_table=None,
+        )
+        with self.assertRaises(ValueError) as ctx:
+            _load(db, ghost, _HOT100_ENTRIES)
+        self.assertIn("not-a-real-chart", str(ctx.exception))
+        # No rows leaked before the guard fired.
+        self.assertEqual(db.chart_entries, [])
+        self.assertEqual(db.chart_weeks, [])
+
     def test_entity_kind_dispatch_links_artists(self):
         db = self._base_db()
         _load(db, _hot100_record(), _HOT100_ENTRIES)
