@@ -83,6 +83,40 @@ CREATE TABLE b200_entries (
 );
 
 -- ============================================================
+-- Multi-Chart Generalization (Phase 9, additive)
+-- ============================================================
+-- These objects generalize the bifurcated hot100_entries/b200_entries model
+-- into a chart registry + a single polymorphic chart_entries table + a
+-- per-chart artist rollup. They are STRICTLY ADDITIVE: every v1.0 table,
+-- column, and constraint above (hot100_entries, b200_entries,
+-- chart_weeks.chart_type + its CHECK, artist_stats, song_stats, album_stats)
+-- is kept verbatim so the unchanged v1.0 frontend keeps working. All new
+-- statements use IF NOT EXISTS so a fresh install and an existing install
+-- converge to the same shape and re-application is a no-op. Seeding of the
+-- charts registry and backfill of chart_entries / artist_chart_stats happen
+-- in the Phase 9 migration (Plan 02), not here. The chart_weeks.chart_id FK
+-- stays NULLABLE until Phase 15.
+
+-- Registry of every chart we ingest (DATA-01). Generalizes the
+-- chart_weeks.chart_type CHECK into an open, self-describing table.
+CREATE TABLE IF NOT EXISTS charts (
+    id          SERIAL PRIMARY KEY,
+    slug        VARCHAR(64) NOT NULL UNIQUE,    -- billboard.py slug, e.g. 'hot-100'
+    title       VARCHAR(128),                   -- human label, e.g. 'Billboard Hot 100'
+    entity_kind VARCHAR(16) NOT NULL CHECK (entity_kind IN ('song', 'album', 'artist')),  -- ranked entity type
+    category    VARCHAR(32),                    -- UI grouping, e.g. 'core' | 'genre' | 'artist'
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,  -- include in weekly fetch?
+    first_date  DATE,                           -- earliest real chart (post-phantom)
+    sort_order  SMALLINT NOT NULL DEFAULT 100
+);
+
+-- Wire chart_weeks to the registry. NULLABLE FK (additive); backfilled in
+-- Plan 02 from the existing chart_type. The chart_type column + its CHECK are
+-- KEPT (do NOT drop/narrow — Phase 15 retires them). Do NOT add NOT NULL or a
+-- UNIQUE(chart_id, chart_date) constraint here.
+ALTER TABLE chart_weeks ADD COLUMN IF NOT EXISTS chart_id INT REFERENCES charts(id);
+
+-- ============================================================
 -- Pre-computed Stats Tables
 -- ============================================================
 
