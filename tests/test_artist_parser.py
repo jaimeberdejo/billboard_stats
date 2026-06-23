@@ -117,6 +117,17 @@ class DeterminismTests(unittest.TestCase):
                 )
 
 
+class _RecordingHandler(logging.Handler):
+    """Collects emitted records so we can assert an exact zero-emission count."""
+
+    def __init__(self):
+        super().__init__(level=logging.INFO)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
 class CommaSplitLoggingTests(unittest.TestCase):
     """Every comma-containing split is logged so unlisted comma-acts surface (D-05)."""
 
@@ -125,18 +136,24 @@ class CommaSplitLoggingTests(unittest.TestCase):
             parse_artist_credit("DJ Khaled Featuring Drake, Lil Wayne & Rick Ross")
         self.assertEqual(len(captured.records), 1)
 
-    def test_matched_comma_act_logs_nothing(self):
+    def _emitted_records(self, credit):
+        """Parse `credit` and return the records emitted by the parser logger."""
         logger = logging.getLogger(ARTIST_PARSER_LOGGER)
-        with self.assertRaises(AssertionError):
-            with self.assertLogs(ARTIST_PARSER_LOGGER, level=logging.INFO):
-                parse_artist_credit("Tyler, The Creator")
-        # also confirm via a sentinel that no record was emitted for the matched act
-        self.assertTrue(logger is not None)
+        handler = _RecordingHandler()
+        logger.addHandler(handler)
+        try:
+            parse_artist_credit(credit)
+        finally:
+            logger.removeHandler(handler)
+        return handler.records
+
+    def test_matched_comma_act_logs_nothing(self):
+        # The comma lives inside a matched known act; no split happened, so no log.
+        self.assertEqual(self._emitted_records("Tyler, The Creator"), [])
 
     def test_non_comma_split_does_not_log(self):
-        with self.assertRaises(AssertionError):
-            with self.assertLogs(ARTIST_PARSER_LOGGER, level=logging.INFO):
-                parse_artist_credit("Future & Drake")
+        # A genuine split with no comma must not be logged.
+        self.assertEqual(self._emitted_records("Future & Drake"), [])
 
 
 class EmptyInputTests(unittest.TestCase):
