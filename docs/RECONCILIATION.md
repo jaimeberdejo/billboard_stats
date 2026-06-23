@@ -145,10 +145,21 @@ rollback source.
   links (get-or-create the artist, role set deterministically from the parse),
   remove links the new parse no longer supports, then delete any artist left with
   zero links (and its `artist_stats`).
-- The script captures **before/after invariants** — distinct song/album id SETS
-  unchanged, no song/album left with zero artists, link totals only decrease, and
-  **no artist produced by some credit's new-parse is deleted** — and **rolls back
-  and raises** on any violation, so it never leaves a half-merged DB.
+- The script captures **before/after invariants** — **no song/album is left with
+  zero artists** (its distinct id set may GROW when an entity gains a link its
+  credit implies, but it never shrinks); **each reconciled song/album ends with
+  EXACTLY the canonical artist set its credit's new-parse produces** (the direct
+  per-entity correctness check); and **no artist produced by some credit's
+  new-parse is deleted** — and **rolls back and raises** on any violation, so it
+  never leaves a half-merged DB.
+- Reconciliation **may net-add a link** when a credit produces an artist the
+  entity was missing — e.g. an interrupted/partial load, manually pruned links,
+  or a credit that now resolves a featured act or alias the entity was never
+  linked to. These gap-filling adds are **in scope and validated per-entity**;
+  the migration no longer requires link totals to only decrease. On data produced
+  purely by the loader the add path simply does not fire (the run only
+  dedupes/repoints), but against non-pristine production data an add is a normal,
+  committable outcome rather than a hard rollback.
 
 ---
 
@@ -171,12 +182,19 @@ be recomputed. Run the existing `build_artist_stats` rebuild (a DELETE+rebuild):
 
 Confirm the safety invariants held and the heal is visible:
 
-- **Distinct song count unchanged** and **distinct album count unchanged** (no
-  song/album lost all its artists).
-- **No song or album left with zero artists.**
-- **Total link rows only decreased** (via dedupe) — never increased.
+- **No song or album left with zero artists** — the distinct song/album counts
+  may **stay the same or GROW** (an entity that was missing a link its credit
+  implies gains one), but they must **never shrink**. A shrink means an entity
+  lost all its artists and is a hard rollback.
+- **Each reconciled song/album ends with exactly its credit's new-parse artist
+  set.** This is the direct correctness invariant the script enforces.
+- **Total link rows may decrease (dedupe/repoint) or increase (credit-justified
+  adds).** A net increase is expected only on non-pristine data where credits
+  imply links the rows were missing; on loader-clean data the totals only
+  decrease. The old "link rows only decrease" rule no longer applies.
 
-  Quick check with `psql` (run before/after, compare):
+  Quick check with `psql` (run before/after, compare — expect distinct counts
+  non-decreasing):
 
   ```bash
   psql "host=$PGHOST port=$PGPORT dbname=$PGDATABASE user=$PGUSER" -c \

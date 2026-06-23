@@ -40,10 +40,17 @@ Design / safety contract (D-07, D-07a, D-07b, D-07c):
   ``role`` is taken DETERMINISTICALLY from the new parse (fixing CR-02 — no
   reliance on ON CONFLICT's arbitrary surviving row). It commits only if every
   before/after invariant holds; on any violated invariant it rolls back.
-* Invariants (WR-01): distinct song/album ID SETS unchanged (not just counts);
-  no song/album left with zero artists; total link rows only DECREASE; and every
-  artist still present is produced by at least one credit's new-parse while every
-  deleted artist is produced by NONE — so a wrong-target merge is caught.
+* Invariants (WR-01 / RR-WR-01): no song/album is left with zero artists (its
+  distinct ID set may GROW when an entity gains its first correct link, but
+  never shrinks); each reconciled song/album ends with EXACTLY the canonical
+  artist set its credit's new-parse produces (the direct correctness check,
+  which accepts credit-justified ADDS rather than the old, over-strict "link
+  rows must only decrease" proxy that rejected them); and every deleted artist
+  is produced by NO credit's new-parse — so a wrong-target merge is still
+  caught. Reconciliation MAY net-add a link when a credit produces an artist the
+  entity was missing (interrupted/partial loads, manually pruned links, or a
+  newly-resolved feature/alias); gap-filling adds are in scope and validated
+  per-entity, not forbidden.
 * Idempotent: detection is data-driven, so once links match the credits a re-run
   is a clean no-op. There is no "already ran" flag.
 * This module NEVER connects to production during automated execution and NEVER
@@ -106,47 +113,122 @@ def _capture_snapshot(cur) -> Dict[str, object]:
     return snap
 
 
+def _capture_entity_artist_keys(
+    cur, id_to_name: Dict[int, str]
+) -> Tuple[Dict[int, Set[str]], Dict[int, Set[str]]]:
+    """Capture each entity's resulting canonical artist-key set after the plan.
+
+    Returns (song_keys, album_keys) mapping entity_id -> set of canonical
+    artist keys currently linked. This is the direct correctness signal the
+    invariant compares against each entity's target (new-parse) key set, so a
+    credit-justified ADD is accepted while a wrong/missing artist is caught.
+    Artist ids no longer present (e.g. deleted true-orphans) are skipped, which
+    is correct: their links were removed before the delete.
+    """
+    song_keys: Dict[int, Set[str]] = {}
+    cur.execute("SELECT song_id, artist_id FROM song_artists;")
+    for song_id, artist_id in cur.fetchall():
+        name = id_to_name.get(artist_id)
+        if name is not None:
+            song_keys.setdefault(song_id, set()).add(_normalize_key(name))
+
+    album_keys: Dict[int, Set[str]] = {}
+    cur.execute("SELECT album_id, artist_id FROM album_artists;")
+    for album_id, artist_id in cur.fetchall():
+        name = id_to_name.get(artist_id)
+        if name is not None:
+            album_keys.setdefault(album_id, set()).add(_normalize_key(name))
+
+    return song_keys, album_keys
+
+
 def _assert_invariants(
     before: Dict[str, object],
     after: Dict[str, object],
     deleted_artist_keys: Set[str],
     produced_keys: Set[str],
+    song_target_keys: Dict[int, Set[str]],
+    album_target_keys: Dict[int, Set[str]],
+    song_after_keys: Dict[int, Set[str]],
+    album_after_keys: Dict[int, Set[str]],
 ) -> None:
     """Assert the reconciliation safety invariants, raising on any violation.
 
-    WR-01: compare the actual distinct ID SETS (not just counts) so a song/album
-    silently swapping which entities have artists is caught, and assert that no
-    artist produced by some credit's new-parse was deleted — which is what
-    catches a wrong-target merge that the old count-only checks missed.
+    The migration's goal is that every song/album ends with EXACTLY the artist
+    set its credit's new-parse (canonicalized) produces. We therefore assert
+    set-correctness directly rather than the old count-monotonicity proxy
+    (``after_links <= before_links``), which wrongly rejected the legitimate
+    credit-justified ADD path — a song/album that was missing a link its credit
+    implies (RR-WR-01).
+
+    Invariants (RR-WR-01 / WR-01):
+
+    * No song/album loses ALL its artists: the distinct id set never SHRINKS
+      (it may grow when an entity legitimately gains its first correct link).
+      An entity must never be left artist-less.
+    * Each reconciled entity ends with EXACTLY its target (new-parse) artist-key
+      set — the most direct correctness invariant, which supersedes the link
+      count proxy and accepts credit-justified adds while catching a wrong or
+      missing artist.
+    * No artist produced by some credit's new-parse was deleted
+      (``deleted_artist_keys & produced_keys == {}``) — the strong wrong-merge
+      backstop that protects solo members of real acts (CR-01). KEEP.
     """
-    if after["song_ids"] != before["song_ids"]:
-        lost = before["song_ids"] - after["song_ids"]
+    # No entity may lose all its artists: the id set may grow (an entity gains
+    # its first correct link) but must never shrink.
+    lost_songs = before["song_ids"] - after["song_ids"]
+    if lost_songs:
         raise ReconciliationInvariantError(
-            f"distinct song id set changed (lost {sorted(lost)[:10]}...) "
-            "— a song lost all its artists"
+            f"song(s) left with zero artists: {sorted(lost_songs)[:10]} "
+            "— every non-empty credit parses to >=1 artist, so no song may "
+            "lose all its links"
         )
-    if after["album_ids"] != before["album_ids"]:
-        lost = before["album_ids"] - after["album_ids"]
+    lost_albums = before["album_ids"] - after["album_ids"]
+    if lost_albums:
         raise ReconciliationInvariantError(
-            f"distinct album id set changed (lost {sorted(lost)[:10]}...) "
-            "— an album lost all its artists"
+            f"album(s) left with zero artists: {sorted(lost_albums)[:10]} "
+            "— every non-empty credit parses to >=1 artist, so no album may "
+            "lose all its links"
         )
-    before_links = before["song_links"] + before["album_links"]
-    after_links = after["song_links"] + after["album_links"]
-    if after_links > before_links:
-        raise ReconciliationInvariantError(
-            f"total link rows increased: {before_links} -> {after_links} "
-            "(reconciliation must only dedupe/repoint, never net-add)"
-        )
+
+    # Each reconciled entity must end with EXACTLY its credit's new-parse set.
+    _assert_entity_targets("song", song_target_keys, song_after_keys)
+    _assert_entity_targets("album", album_target_keys, album_after_keys)
+
     # No artist that some credit's new-parse PRODUCES may be deleted. This is the
-    # invariant that would catch a wrong-but-nonempty merge (CR-01 regression):
-    # solo Diana Ross is produced by her own credits, so deleting her trips this.
+    # backstop that catches a wrong-but-nonempty merge (CR-01 regression): solo
+    # Diana Ross is produced by her own credits, so deleting her trips this.
     wrongly_deleted = deleted_artist_keys & produced_keys
     if wrongly_deleted:
         raise ReconciliationInvariantError(
             "deleted artist(s) still produced by a credit's new-parse: "
             f"{sorted(wrongly_deleted)[:10]} — refusing to destroy a real artist"
         )
+
+
+def _assert_entity_targets(
+    kind: str,
+    target_keys: Dict[int, Set[str]],
+    after_keys: Dict[int, Set[str]],
+) -> None:
+    """Assert each entity's resulting artist-key set equals its target set.
+
+    Reports the precise difference (missing vs unexpected keys) so an ADD is
+    never mislabelled as a loss.
+    """
+    for entity_id, target in target_keys.items():
+        if not target:
+            # An entity whose credit produces no artists (empty/unparseable
+            # credit) is not something this migration adds links for; skip.
+            continue
+        actual = after_keys.get(entity_id, set())
+        if actual != target:
+            missing = sorted(target - actual)[:10]
+            unexpected = sorted(actual - target)[:10]
+            raise ReconciliationInvariantError(
+                f"{kind} {entity_id} artist set does not match its credit's "
+                f"new-parse target: missing {missing}, unexpected {unexpected}"
+            )
 
 
 # ----------------------------------------------------------------------------
@@ -228,6 +310,7 @@ def reconcile(
                 song_add,
                 song_remove,
                 song_produced,
+                song_target_keys,
             ) = _plan_for_kind(
                 name_to_id, song_credits, song_links, derived_acts
             )
@@ -235,6 +318,7 @@ def reconcile(
                 album_add,
                 album_remove,
                 album_produced,
+                album_target_keys,
             ) = _plan_for_kind(
                 name_to_id, album_credits, album_links, derived_acts
             )
@@ -326,7 +410,19 @@ def reconcile(
                 "album_links": after["album_links"],
             }
 
-            _assert_invariants(before, after, deleted_artist_keys, produced_keys)
+            song_after_keys, album_after_keys = _capture_entity_artist_keys(
+                cur, id_to_name
+            )
+            _assert_invariants(
+                before,
+                after,
+                deleted_artist_keys,
+                produced_keys,
+                song_target_keys,
+                album_target_keys,
+                song_after_keys,
+                album_after_keys,
+            )
 
         conn.commit()
         logger.info(
@@ -351,18 +447,24 @@ def _plan_for_kind(
     List[Tuple[int, str, str]],
     List[Tuple[int, int]],
     Set[str],
+    Dict[int, Set[str]],
 ]:
     """Diff current links for one entity kind against the re-parsed credits.
 
-    Returns (links_to_add, links_to_remove, produced_keys) where each add is
-    ``(entity_id, canonical_name, role)`` and each remove is
-    ``(entity_id, artist_id)``. Roles are taken deterministically from the parse
-    (first occurrence of a canonical name wins), fixing CR-02.
+    Returns (links_to_add, links_to_remove, produced_keys, target_keys) where
+    each add is ``(entity_id, canonical_name, role)``, each remove is
+    ``(entity_id, artist_id)``, ``produced_keys`` is the union of every
+    canonical artist key any credit produces, and ``target_keys`` maps each
+    entity_id to the EXACT set of canonical artist keys its credit's new-parse
+    produces (the per-entity correctness target the invariant checks against).
+    Roles are taken deterministically from the parse (first occurrence of a
+    canonical name wins), fixing CR-02.
     """
     id_to_key = {aid: key for key, aid in name_to_id.items()}
     links_to_add: List[Tuple[int, str, str]] = []
     links_to_remove: List[Tuple[int, int]] = []
     produced_keys: Set[str] = set()
+    target_keys: Dict[int, Set[str]] = {}
 
     for entity_id, credit in credits:
         target_role: Dict[str, str] = {}
@@ -375,12 +477,16 @@ def _plan_for_kind(
                 target_role[key] = role
                 target_name[key] = canonical
 
-        current = current_links.get(entity_id, set())
-        current_keys = {
-            id_to_key[aid] for aid in current if aid in id_to_key
-        }
+        # The exact canonical artist-key set this entity should end up with.
+        target_keys[entity_id] = set(target_name.keys())
 
-        # Add any target artist not currently linked.
+        current = current_links.get(entity_id, set())
+
+        # Add any target artist not currently linked. This is a LEGITIMATE
+        # net-add when the credit produces an artist the entity was never
+        # linked to (e.g. a featured act, an alias-resolved name, or a
+        # previously pruned/zero-link entity). The invariant validates these
+        # adds per-entity rather than forbidding them wholesale (RR-WR-01).
         for key, canonical in target_name.items():
             artist_id = name_to_id.get(key)
             if artist_id is None or artist_id not in current:
@@ -392,7 +498,7 @@ def _plan_for_kind(
             if key is None or key not in target_name:
                 links_to_remove.append((entity_id, artist_id))
 
-    return links_to_add, links_to_remove, produced_keys
+    return links_to_add, links_to_remove, produced_keys, target_keys
 
 
 def _surviving_artist_ids(

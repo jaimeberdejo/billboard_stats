@@ -645,6 +645,116 @@ class ReconcileMemberArtistSafetyTests(unittest.TestCase):
         self.assertIsNotNone(db.artist_id("Diana Ross & The Supremes"))
 
 
+class ReconcileCreditJustifiedAddTests(unittest.TestCase):
+    """RR-WR-01: a credit's new-parse may legitimately ADD a link the entity is
+    missing. The invariant must validate the add per-entity (target-correctness)
+    and COMMIT — not reject it via the old ``after_links <= before_links`` proxy.
+    """
+
+    def test_feature_add_commits_not_rolls_back(self):
+        # Song credited "Drake Featuring Rihanna" linked only to Drake. The new
+        # parse produces Drake (primary) + Rihanna (featured); reconciliation
+        # must ADD the Rihanna link and COMMIT (old invariant rolled this back
+        # with "total link rows increased").
+        artists = [
+            {"id": 1, "name": "Drake"},
+            {"id": 2, "name": "Rihanna"},
+        ]
+        songs = [{"id": 100, "artist_credit": "Drake Featuring Rihanna"}]
+        song_artists = [{"song_id": 100, "artist_id": 1, "role": "primary"}]
+        db = FakeDB(artists, songs, [], song_artists, [], [1, 2])
+        conn = FakeConn(db)
+
+        report = reconcile(conn, dry_run=False)
+
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+        self.assertEqual(report["added_song_links"], 1)
+        # Song 100 now links BOTH the primary and the featured artist.
+        self.assertEqual(sorted(db.song_artist_ids(100)), [1, 2])
+        # The featured link carries the role the parse assigned.
+        rihanna_link = next(
+            l for l in db.song_artists
+            if l["song_id"] == 100 and l["artist_id"] == 2
+        )
+        self.assertEqual(rihanna_link["role"], "featured")
+
+    def test_zero_link_song_gets_its_correct_links_added(self):
+        # A song with ZERO current links (interrupted/partial load or pruned
+        # links) must have its correct link ADDED and COMMIT. Its distinct id set
+        # GROWS — that is allowed (only SHRINKING is a violation), and the old
+        # "a song lost all its artists" message must not fire for a gained song.
+        artists = [{"id": 1, "name": "Drake"}]
+        songs = [{"id": 101, "artist_credit": "Drake"}]
+        db = FakeDB(artists, songs, [], [], [], [1])
+        conn = FakeConn(db)
+
+        report = reconcile(conn, dry_run=False)
+
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+        self.assertEqual(report["added_song_links"], 1)
+        self.assertEqual(db.song_artist_ids(101), [1])
+
+    def test_dry_run_add_then_apply_agree(self):
+        # The dry-run vs apply feasibility disagreement (RR-WR-01 secondary
+        # smell): a plan that dry-run advertises as an add must now actually
+        # apply+commit when re-run with dry_run=False.
+        artists = [
+            {"id": 1, "name": "Drake"},
+            {"id": 2, "name": "Rihanna"},
+        ]
+        songs = [{"id": 100, "artist_credit": "Drake Featuring Rihanna"}]
+        song_artists = [{"song_id": 100, "artist_id": 1, "role": "primary"}]
+
+        db_dry = FakeDB(artists, songs, [], song_artists, [], [1, 2])
+        dry_conn = FakeConn(db_dry)
+        dry_report = reconcile(dry_conn, dry_run=True)
+        self.assertEqual(dry_report["added_song_links"], 1)
+        self.assertFalse(dry_conn.committed)
+        # Same plan applied for real commits (feasibility now agrees).
+        db_apply = FakeDB(artists, songs, [], song_artists, [], [1, 2])
+        apply_conn = FakeConn(db_apply)
+        apply_report = reconcile(apply_conn, dry_run=False)
+        self.assertEqual(apply_report["added_song_links"], 1)
+        self.assertTrue(apply_conn.committed)
+        self.assertFalse(apply_conn.rolled_back)
+
+    def test_add_and_heal_in_one_run(self):
+        # Mixed run: EWF shatter is healed (net-remove + delete) AND a separate
+        # feature credit adds a link, all in one transaction that COMMITS.
+        artists = [
+            {"id": 1, "name": "Earth, Wind & Fire"},
+            {"id": 2, "name": "Earth"},
+            {"id": 3, "name": "Wind"},
+            {"id": 4, "name": "Fire"},
+            {"id": 5, "name": "Drake"},
+            {"id": 6, "name": "Rihanna"},
+        ]
+        songs = [
+            {"id": 100, "artist_credit": "Earth, Wind & Fire"},
+            {"id": 101, "artist_credit": "Drake Featuring Rihanna"},
+        ]
+        song_artists = [
+            {"song_id": 100, "artist_id": 2, "role": "primary"},
+            {"song_id": 100, "artist_id": 3, "role": "primary"},
+            {"song_id": 100, "artist_id": 4, "role": "primary"},
+            {"song_id": 101, "artist_id": 5, "role": "primary"},
+        ]
+        db = FakeDB(artists, songs, [], song_artists, [], [1, 2, 3, 4, 5, 6])
+        conn = FakeConn(db)
+
+        reconcile(conn, dry_run=False)
+
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+        # EWF healed onto canonical; fragments deleted.
+        self.assertEqual(db.song_artist_ids(100), [1])
+        self.assertIsNone(db.artist_id("Earth"))
+        # Feature add applied.
+        self.assertEqual(sorted(db.song_artist_ids(101)), [5, 6])
+
+
 class ReconcileRollbackTests(unittest.TestCase):
     def test_invariant_violation_rolls_back_and_raises(self):
         # Force an invariant breach by making _capture_snapshot report a dropped
@@ -676,6 +786,35 @@ class ReconcileRollbackTests(unittest.TestCase):
         self.assertTrue(conn.rolled_back)
         self.assertFalse(conn.committed)
         # State restored to its pre-run snapshot.
+        self.assertEqual(db.snapshot(), before)
+
+    def test_target_mismatch_rolls_back_and_raises(self):
+        # A genuinely artist-less / wrong RESULT (an entity ending with an
+        # artist set that does NOT equal its credit's new-parse target) must
+        # still roll back. We corrupt the after-keys so song 100 appears
+        # artist-less, which violates the per-entity target-correctness
+        # invariant — the real safety net that supersedes the old count proxy.
+        db = _ewf_fixture()
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        original = reconcile_artists._capture_entity_artist_keys
+
+        def fake_keys(cur, id_to_name):
+            song_keys, album_keys = original(cur, id_to_name)
+            if 100 in song_keys:
+                song_keys[100] = set()  # pretend song 100 lost its artist
+            return song_keys, album_keys
+
+        reconcile_artists._capture_entity_artist_keys = fake_keys
+        try:
+            with self.assertRaises(ReconciliationInvariantError):
+                reconcile(conn, dry_run=False)
+        finally:
+            reconcile_artists._capture_entity_artist_keys = original
+
+        self.assertTrue(conn.rolled_back)
+        self.assertFalse(conn.committed)
         self.assertEqual(db.snapshot(), before)
 
 
