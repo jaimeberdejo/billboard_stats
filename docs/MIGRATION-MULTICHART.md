@@ -29,8 +29,15 @@ The migration takes an **existing v1.0 production database** from the bifurcated
 **without mutating anything the unchanged v1.0 frontend reads**. It:
 
 1. Adds the **`charts`** registry, the polymorphic **`chart_entries`** table, the
-   per-chart **`artist_chart_stats`** rollup, and a **NULLABLE `chart_weeks.chart_id`**
-   FK (all DDL guarded with `IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`).
+   per-chart **`artist_chart_stats`** rollup, a **NULLABLE `chart_weeks.chart_id`**
+   FK, and the **partial unique index `uq_chart_weeks_chart_id_date`** on
+   `chart_weeks(chart_id, chart_date) WHERE chart_id IS NOT NULL` (all DDL guarded
+   with `IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`). The partial index keys
+   NEW-chart weeks (Phase 11+) on `(chart_id, chart_date)` so re-loading a
+   new-chart week is idempotent (CR-01); it is strictly additive and does **not**
+   touch the legacy `UNIQUE(chart_date, chart_type)`. For the two legacy charts,
+   every existing week already has a single `chart_id` per `(chart_date)` after
+   step 3's backfill, so creating this index cannot fail on existing data.
 2. **Seeds** the registry with the two core charts — `hot-100`
    (`entity_kind=song`) and `billboard-200` (`entity_kind=album`) — via
    `ON CONFLICT (slug) DO NOTHING`.
