@@ -1,4 +1,28 @@
-"""Incremental chart update and data gap repair.
+"""Registry-driven incremental chart update and data gap repair.
+
+This is the WEEKLY path (Plan 10-03, DATA-06 success criterion #4). It runs ONE
+registry-driven incremental update: it loops the chart registry
+(:func:`billboard_stats.etl.chart_registry.iter_charts`) and, per chart, derives
+the new date window from that chart's ``last_loaded_date``, fetches just the
+delta, and calls :func:`billboard_stats.etl.loader.load_chart` (which
+DUAL-WRITES the new ``chart_entries`` plus the legacy table for the two core
+charts) — replacing the hardcoded hot-100 / billboard-200 branches and the old
+``_load_hot100`` / ``_load_b200`` calls. After loading, when any chart got new
+weeks, it rebuilds BOTH the v1.0 ``artist_stats`` and the new
+``artist_chart_stats`` via :func:`build_all_stats`.
+
+INCREMENTAL-ONLY: the weekly path NEVER triggers the multi-decade backfill. Each
+chart's fetch window starts the day AFTER its ``last_loaded_date`` and ends at
+the latest publishable chart week; a chart that has never been loaded
+(``last_loaded_date is None``) is SKIPPED here (the full first load is
+:func:`run_etl`'s / Phase 11's job, not the weekly updater). A chart whose
+on-disk folder is absent/partial is logged and skipped, never a crash.
+
+psycopg2 is NEVER a top-level import (mirrors chart_registry.py /
+migrate_multichart.py): ``get_conn`` / ``put_conn`` and ``load_chart`` are
+imported lazily inside the functions that need them, so this module imports
+cleanly in the psycopg2-free test environment and the tests inject a fake
+registry + stub ``load_chart`` / the fetcher (no real DB, no network).
 
 Usage:
     python -m billboard_stats.etl.updater          # run update + gap repair
@@ -9,133 +33,203 @@ Suggested crontab (Monday 6 AM):
     0 6 * * 1 cd /path/to/billboard_stats && python -m billboard_stats.etl.updater
 """
 
+from __future__ import annotations
+
 import datetime
 import logging
 import os
 from pathlib import Path
 
-from billboard_stats.db.connection import get_conn, put_conn
+from billboard_stats.etl.chart_registry import iter_charts
 from billboard_stats.etl.fetcher import (
     DATA_DIR,
-    download_hot100,
     download_b200,
+    download_chart,
+    download_hot100,
     find_failed_downloads,
     get_latest_publishable_chart_week,
 )
-from billboard_stats.etl.loader import _load_hot100, _load_b200
 from billboard_stats.etl.stats_builder import build_all_stats
 
 logger = logging.getLogger(__name__)
 
-
-def _get_latest_chart_dates(conn) -> dict:
-    """Query DB for the latest non-future Saturday per chart_type."""
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT chart_type, MAX(chart_date) FROM chart_weeks "
-            "WHERE chart_date <= CURRENT_DATE "
-            "AND EXTRACT(DOW FROM chart_date) = 6 "
-            "GROUP BY chart_type;"
-        )
-        return {row[0]: row[1] for row in cur.fetchall()}
+# psycopg2-free hygiene: the loader imports psycopg2/execute_values at top level
+# (it is operator-run), so updater.py does NOT import it eagerly. ``load_chart``
+# is resolved lazily on first use via :func:`_get_load_chart` and cached here, so
+# tests can also inject a stub by assigning ``updater.load_chart`` directly.
+load_chart = None
 
 
-def update_charts(conn, data_dir: str = None):
-    """Incremental update: fetch new data since last DB date, load, rebuild stats.
+def _get_load_chart():
+    """Return the loader's ``load_chart``, importing it lazily on first use.
+
+    Lazy so this module imports cleanly without psycopg2 (the fake-DB tests
+    inject a stub by setting ``updater.load_chart`` before calling
+    :func:`update_charts`); only the real operator-run path triggers the import.
+    """
+    global load_chart
+    if load_chart is None:
+        from billboard_stats.etl.loader import load_chart as _lc
+
+        load_chart = _lc
+    return load_chart
+
+
+def _fetch_chart_delta(chart, start_date: str, end_date: str, data_dir: str):
+    """Fetch one chart's incremental delta with the chart-appropriate downloader.
+
+    The two LEGACY charts keep their existing fetch behavior (their on-disk
+    folders are ``hot100`` / ``b200``, NOT the slug), so they use
+    :func:`download_hot100` / :func:`download_b200`. Every other chart's folder
+    IS its slug, so it uses the generic slug downloader
+    :func:`download_chart`. INCREMENTAL-ONLY: the window is always
+    ``[start_date, end_date]`` bounded by ``last_loaded_date`` — never a
+    multi-decade backfill.
+    """
+    if chart.slug == "hot-100":
+        download_hot100(start_date, end_date, data_dir)
+    elif chart.slug == "billboard-200":
+        download_b200(data_dir=data_dir, start_date=start_date, end_date=end_date)
+    else:
+        download_chart(chart.slug, start_date, end_date, data_dir)
+
+
+def _new_on_disk_dates(folder: str, last_loaded, latest_valid_week) -> list:
+    """Return the ISO date strings on disk that are NEW for this chart.
+
+    A date is new when ``last_loaded < d <= latest_valid_week``. Tolerant of an
+    absent folder (returns ``[]``). The window upper bound excludes any
+    pre-fetched future week beyond the latest publishable chart week.
+    """
+    if not os.path.isdir(folder):
+        return []
+    new_dates = []
+    for fname in sorted(os.listdir(folder)):
+        if not fname.endswith(".json"):
+            continue
+        date_str = fname[: -len(".json")]
+        try:
+            d = datetime.date.fromisoformat(date_str)
+        except ValueError:
+            continue
+        if last_loaded < d <= latest_valid_week:
+            new_dates.append(date_str)
+    return new_dates
+
+
+def update_charts(conn, data_dir: str = None) -> dict:
+    """Registry-driven incremental update over EVERY registered chart.
+
+    ONE incremental path (replacing the hardcoded hot-100 / billboard-200
+    branches): loop :func:`iter_charts`, and for each chart derive its delta
+    window from ``last_loaded_date`` (the day after, through
+    :func:`get_latest_publishable_chart_week`), fetch the delta with the
+    chart-appropriate downloader, compute which on-disk dates are new, and call
+    :func:`load_chart` (which DUAL-WRITES) with those ``only_dates``. After the
+    loop, when any chart loaded new weeks, rebuild BOTH stats sets via
+    :func:`build_all_stats`.
+
+    INCREMENTAL-ONLY: never triggers the multi-decade backfill. A chart with
+    ``last_loaded_date is None`` (never loaded) is SKIPPED — the weekly path does
+    not first-load a chart (that is :func:`run_etl` / Phase 11). A chart whose
+    on-disk folder is absent/partial is logged and skipped, never a crash.
+
+    repair_gaps (below) keeps its legacy-folder logic for the two core charts
+    only; new charts are not gap-repaired until Phase 11 — intentionally not
+    over-scoped here.
 
     Args:
-        conn: Database connection.
-        data_dir: Root data directory containing hot100/ and b200/ subdirectories.
+        conn: Database connection (real psycopg2 at operator-time, a fake in
+            tests). ``load_chart`` is imported lazily so this module stays
+            psycopg2-free at import time.
+        data_dir: Root data directory containing the per-chart subdirectories.
+
+    Returns:
+        ``{chart_slug: n_weeks_loaded}`` for every chart that loaded new weeks.
     """
+    # Resolve load_chart lazily (psycopg2-free import hygiene). Tests inject a
+    # stub by setting updater.load_chart before calling this; that wins.
+    _load_chart = load_chart if load_chart is not None else _get_load_chart()
+
     if data_dir is None:
         data_dir = DATA_DIR
 
-    latest = _get_latest_chart_dates(conn)
     latest_valid_week = get_latest_publishable_chart_week()
-    new_dates = {"hot-100": [], "billboard-200": []}
+    loaded = {}  # slug -> count of new weeks loaded
 
-    # Hot 100: download dates after the latest in DB
-    hot100_latest = latest.get("hot-100")
-    if hot100_latest:
-        start = (hot100_latest + datetime.timedelta(days=1)).isoformat()
-        end = latest_valid_week.isoformat()
-        if hot100_latest < latest_valid_week:
-            logger.info(f"Hot 100: fetching from {start} to {end}")
-            download_hot100(start, end, data_dir)
+    for chart in iter_charts(conn, data_dir=data_dir):
+        last_loaded = chart.last_loaded_date
+
+        # Never-loaded charts are NOT first-loaded by the weekly incremental
+        # path (no incremental start signal). Their full first load is run_etl /
+        # Phase 11, not this updater. Skip without backfilling.
+        if last_loaded is None:
+            logger.warning(
+                "Skipping %s: no existing data (last_loaded_date is None). "
+                "Run the full ETL first; the weekly path is incremental-only.",
+                chart.slug,
+            )
+            continue
+
+        # Tolerate an absent/partial on-disk folder (Phase 7 may not have it).
+        if not os.path.isdir(chart.folder):
+            logger.warning(
+                "Skipping %s: data folder not found: %s",
+                chart.slug,
+                chart.folder,
+            )
+            continue
+
+        # Fetch only the delta since last_loaded_date (incremental-only).
+        if last_loaded < latest_valid_week:
+            start = (last_loaded + datetime.timedelta(days=1)).isoformat()
+            end = latest_valid_week.isoformat()
+            logger.info("%s: fetching delta %s..%s", chart.slug, start, end)
+            _fetch_chart_delta(chart, start, end, data_dir)
         else:
-            logger.info("Hot 100: already current through the latest valid chart week.")
+            logger.info(
+                "%s: already current through the latest valid chart week.",
+                chart.slug,
+            )
 
-        # Determine which new dates to load
-        hot100_dir = os.path.join(data_dir, "hot100")
-        for fname in sorted(os.listdir(hot100_dir)):
-            if fname.endswith(".json"):
-                date_str = fname.replace(".json", "")
-                try:
-                    d = datetime.date.fromisoformat(date_str)
-                    if hot100_latest < d <= latest_valid_week:
-                        new_dates["hot-100"].append(date_str)
-                except ValueError:
-                    pass
-    else:
-        logger.warning("No existing Hot 100 data in DB. Run full ETL first.")
+        new_dates = _new_on_disk_dates(chart.folder, last_loaded, latest_valid_week)
+        if not new_dates:
+            logger.info("%s: no new weeks to load.", chart.slug)
+            continue
 
-    # Billboard 200: download dates after the latest in DB
-    b200_latest = latest.get("billboard-200")
-    if b200_latest:
-        start = (b200_latest + datetime.timedelta(days=1)).isoformat()
-        end = latest_valid_week.isoformat()
-        if b200_latest < latest_valid_week:
-            logger.info(f"Billboard 200: fetching from {start} to {end}")
-            download_b200(data_dir=data_dir, start_date=start, end_date=end)
-        else:
-            logger.info("Billboard 200: already current through the latest valid chart week.")
+        logger.info("Loading %d new %s week(s)...", len(new_dates), chart.slug)
+        _load_chart(conn, chart, only_dates=set(new_dates), data_dir=data_dir)
+        loaded[chart.slug] = len(new_dates)
 
-        b200_dir = os.path.join(data_dir, "b200")
-        for fname in sorted(os.listdir(b200_dir)):
-            if fname.endswith(".json"):
-                date_str = fname.replace(".json", "")
-                try:
-                    d = datetime.date.fromisoformat(date_str)
-                    if b200_latest < d <= latest_valid_week:
-                        new_dates["billboard-200"].append(date_str)
-                except ValueError:
-                    pass
-    else:
-        logger.warning("No existing Billboard 200 data in DB. Run full ETL first.")
-
-    # Load new data into DB
-    hot100_new = new_dates["hot-100"]
-    b200_new = new_dates["billboard-200"]
-
-    if hot100_new:
-        logger.info(f"Loading {len(hot100_new)} new Hot 100 weeks into DB...")
-        _load_hot100(conn, os.path.join(data_dir, "hot100"), only_dates=set(hot100_new))
-    else:
-        logger.info("No new Hot 100 data to load.")
-
-    if b200_new:
-        logger.info(f"Loading {len(b200_new)} new Billboard 200 weeks into DB...")
-        _load_b200(conn, os.path.join(data_dir, "b200"), only_dates=set(b200_new))
-    else:
-        logger.info("No new Billboard 200 data to load.")
-
-    # Rebuild stats if anything changed
-    if hot100_new or b200_new:
-        logger.info("Rebuilding stats...")
+    # Rebuild BOTH v1.0 artist_stats AND artist_chart_stats when anything loaded.
+    if loaded:
+        logger.info("Rebuilding stats (artist_stats + artist_chart_stats)...")
         build_all_stats(conn)
         logger.info("Stats rebuild complete.")
+    else:
+        logger.info("No new data loaded; skipping stats rebuild.")
 
-    return {"hot100_loaded": len(hot100_new), "b200_loaded": len(b200_new)}
+    return loaded
 
 
-def repair_gaps(conn, data_dir: str = None, since_year: int = 2025):
+def repair_gaps(conn, data_dir: str = None, since_year: int = 2025) -> dict:
     """Find and re-download genuinely missing historical data.
+
+    LEGACY-ONLY scope: gap repair runs against the two core charts' legacy
+    folders (hot100 / b200) via the legacy downloaders + the loader's
+    compatibility shims. New (registry-only) charts are NOT gap-repaired until
+    Phase 11 — intentionally not over-scoped here; the weekly registry-driven
+    incremental path lives in :func:`update_charts`.
 
     Args:
         conn: Database connection.
         data_dir: Root data directory.
         since_year: Only look for gaps from this year onward.
     """
+    # Lazy import: the legacy-folder compat shims live in loader (which imports
+    # psycopg2 at top level); keep this module psycopg2-free at import time.
+    from billboard_stats.etl.loader import _load_b200, _load_hot100
+
     if data_dir is None:
         data_dir = DATA_DIR
 
@@ -190,14 +284,18 @@ def repair_gaps(conn, data_dir: str = None, since_year: int = 2025):
     return repaired
 
 
-def run_update(data_dir: str = None, repair: bool = True, update: bool = True):
-    """CLI entry point: runs gap repair and/or incremental update.
+def run_update(data_dir: str = None, repair: bool = True, update: bool = True) -> dict:
+    """CLI entry point: runs gap repair and/or the registry-driven update.
 
     Args:
         data_dir: Root data directory.
         repair: Whether to run gap repair.
-        update: Whether to run incremental update.
+        update: Whether to run the registry-driven incremental update.
     """
+    # Lazy import: the connection pool imports psycopg2 at top level; keep this
+    # module psycopg2-free at import time (the CLI is operator-run).
+    from billboard_stats.db.connection import get_conn, put_conn
+
     conn = get_conn()
     try:
         results = {}
@@ -205,7 +303,7 @@ def run_update(data_dir: str = None, repair: bool = True, update: bool = True):
             logger.info("=== Gap Repair ===")
             results["repair"] = repair_gaps(conn, data_dir)
         if update:
-            logger.info("=== Incremental Update ===")
+            logger.info("=== Incremental Update (registry-driven) ===")
             results["update"] = update_charts(conn, data_dir)
         return results
     finally:
