@@ -85,8 +85,10 @@ def valid_weeks_cte(name: str = "valid_weeks") -> str:
     -- a week is phantom when >= 95% of THAT CHART's ``chart_entries`` rows for the
     week have ``is_new = true AND weeks_on_chart = 1`` -- but keyed by a
     ``chart_id`` bind parameter over the polymorphic ``chart_entries`` table
-    instead of a hardcoded ``chart_type`` literal. The earliest phantom week is
-    kept as the real first chart; all later phantoms are excluded.
+    instead of a hardcoded ``chart_type`` literal. The earliest phantom week --
+    selected by ``MIN(chart_weeks.id)`` scoped to the bound chart, identical to
+    the v1.0 literal CTEs' ``MIN(cw.id)`` rule (CR-01) -- is kept as the real
+    first chart; all later phantoms are excluded.
 
     The returned text is a CTE *body* (no leading ``WITH``) producing a relation
     ``<name>`` with a single ``id`` column = the valid ``chart_week_id`` values.
@@ -116,11 +118,21 @@ def valid_weeks_cte(name: str = "valid_weeks") -> str:
                >= COUNT(*) * 95 / 100
     ),
     first_real_{name} AS (
-        SELECT cw.id
+        -- Pick the SAME "first real" week the v1.0 literal CTEs pick
+        -- (_VALID_HOT100_WEEKS_CTE / _VALID_B200_WEEKS_CTE), which use
+        -- MIN(cw.id) scoped to the chart. Using MIN(id) -- NOT
+        -- ORDER BY chart_date -- guarantees the parametric path and the v1.0
+        -- path select the identical first-real week even when chart_weeks.id
+        -- order != chart_date order (e.g. backfilled / re-ingested weeks
+        -- inserted out of date order, as in this migration and the Phase 7
+        -- offline-raw-JSON backfill). The bound chart_id scope makes the two
+        -- paths provably identical on the same data (CR-01). If a date-ordered
+        -- tie-break is ever wanted, change BOTH paths together -- never ship
+        -- two paths that silently disagree on production data.
+        SELECT MIN(cw.id) AS id
         FROM phantom_{name} ph
         JOIN chart_weeks cw ON ph.chart_week_id = cw.id
-        ORDER BY cw.chart_date, cw.id
-        LIMIT 1
+        WHERE cw.chart_id = (SELECT chart_id FROM bound_{name})
     ),
     {name} AS (
         SELECT DISTINCT e.chart_week_id AS id

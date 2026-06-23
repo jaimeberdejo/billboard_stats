@@ -162,6 +162,12 @@ class FakeDB:
 
         A week is phantom when >= 95% of that chart's entries for the week have
         is_new=true AND weeks_on_chart=1.
+
+        The "first real" phantom week is selected by ``MIN(chart_weeks.id)``
+        scoped to the chart -- the SAME rule the production parametric CTE and
+        the v1.0 literal CTEs use (CR-01). Using MIN(id), not MIN(chart_date),
+        is load-bearing: it guarantees the parametric path and the v1.0 path
+        agree even when chart_weeks.id order != chart_date order.
         """
         weeks = {}
         for e in self.chart_entries:
@@ -180,14 +186,46 @@ class FakeDB:
             if total > 0 and phantom_entries >= total * 95 / 100:
                 phantom_week_ids.append(week_id)
 
-        # earliest phantom by chart_date is kept as the real first chart.
+        # earliest phantom by chart_week id (MIN(cw.id)) is kept as the real
+        # first chart -- matches the production CTE + v1.0 rule (CR-01).
         first_real = None
         if phantom_week_ids:
-            first_real = min(
-                phantom_week_ids,
-                key=lambda wid: self._week_date(wid),
-            )
+            first_real = min(phantom_week_ids)
 
+        valid = set()
+        for week_id in weeks:
+            if week_id not in phantom_week_ids or week_id == first_real:
+                valid.add(week_id)
+        return valid
+
+    def v1_valid_week_ids(self, chart_id):
+        """Independent reference implementation of the v1.0 literal-CTE rule
+        (_VALID_HOT100_WEEKS_CTE / _VALID_B200_WEEKS_CTE): phantom detection per
+        chart_week, then keep all non-phantom weeks plus the phantom week with
+        the smallest chart_weeks.id (MIN(cw.id)).
+
+        Used by the CR-01 regression test to assert the parametric path agrees
+        with the v1.0 path on the SAME data, including when id order != date
+        order.
+        """
+        weeks = {}
+        for e in self.chart_entries:
+            if e["chart_id"] != chart_id:
+                continue
+            weeks.setdefault(e["chart_week_id"], []).append(e)
+
+        phantom_week_ids = []
+        for week_id, entries in weeks.items():
+            total = len(entries)
+            phantom_entries = sum(
+                1
+                for e in entries
+                if e.get("is_new") and e.get("weeks_on_chart") == 1
+            )
+            if total > 0 and phantom_entries >= total * 95 / 100:
+                phantom_week_ids.append(week_id)
+
+        first_real = min(phantom_week_ids) if phantom_week_ids else None
         valid = set()
         for week_id in weeks:
             if week_id not in phantom_week_ids or week_id == first_real:
@@ -395,6 +433,51 @@ def _artist_chart_fixture():
     return FakeDB(charts=charts, chart_weeks=chart_weeks, chart_entries=chart_entries)
 
 
+def _id_order_reversed_phantom_fixture():
+    """A hot-100 (song) chart where chart_weeks.id order is the REVERSE of
+    chart_date order, with TWO phantom weeks and one real week. This is the
+    out-of-order-loaded shape the migration / Phase 7 backfill produces.
+
+    chart_weeks:
+      id=1  chart_date 2020-01-15  (LATER date, SMALLER id)  -> phantom
+      id=2  chart_date 2020-01-01  (EARLIER date, LARGER id) -> phantom
+      id=3  chart_date 2020-01-22                            -> real
+
+    MIN(cw.id) picks id=1 as the first-real phantom (v1.0 + fixed parametric).
+    The OLD MIN(chart_date) tie-break would have picked id=2 instead. So the
+    set of valid weeks differs by one phantom week between the two rules unless
+    both use MIN(id).
+    """
+    charts = [{"id": 1, "slug": "hot-100", "entity_kind": "song"}]
+    chart_weeks = [
+        {"id": 1, "chart_date": "2020-01-15", "chart_id": 1},
+        {"id": 2, "chart_date": "2020-01-01", "chart_id": 1},
+        {"id": 3, "chart_date": "2020-01-22", "chart_id": 1},
+    ]
+    chart_entries = [
+        # week id=1 (phantom): both entries is_new + weeks=1
+        _ce(1, 1, song_id=10, rank=1, is_new=True, weeks_on_chart=1),
+        _ce(1, 1, song_id=11, rank=2, is_new=True, weeks_on_chart=1),
+        # week id=2 (phantom): both entries is_new + weeks=1
+        _ce(1, 2, song_id=12, rank=1, is_new=True, weeks_on_chart=1),
+        _ce(1, 2, song_id=13, rank=2, is_new=True, weeks_on_chart=1),
+        # week id=3 (real)
+        _ce(1, 3, song_id=10, rank=1, is_new=False, weeks_on_chart=2),
+    ]
+    song_artists = [
+        {"song_id": 10, "artist_id": 100, "role": "primary"},
+        {"song_id": 11, "artist_id": 101, "role": "primary"},
+        {"song_id": 12, "artist_id": 102, "role": "primary"},
+        {"song_id": 13, "artist_id": 103, "role": "primary"},
+    ]
+    return FakeDB(
+        charts=charts,
+        chart_weeks=chart_weeks,
+        chart_entries=chart_entries,
+        song_artists=song_artists,
+    )
+
+
 # ============================================================================
 # Parametric phantom-week CTE
 # ============================================================================
@@ -418,6 +501,37 @@ class ValidWeeksCteTests(unittest.TestCase):
         self.assertIn(1, valid)
         self.assertIn(2, valid)
         self.assertNotIn(3, valid)
+
+    def test_first_real_uses_min_id_not_chart_date(self):
+        # CR-01 (source-level pin): the production parametric CTE must select
+        # the first-real week by MIN(cw.id) scoped to the bound chart -- the
+        # SAME rule as the v1.0 literal CTEs -- NOT by ORDER BY cw.chart_date.
+        # Ordering by chart_date would silently diverge from artist_stats on
+        # out-of-order-loaded weeks (Phase 7/11), so guard against regression.
+        sql = re.sub(r"\s+", " ", valid_weeks_cte("valid_weeks")).lower()
+        self.assertIn("min(cw.id)", sql)
+        self.assertIn(
+            "where cw.chart_id = (select chart_id from bound_valid_weeks)", sql
+        )
+        # The old date-ordered tie-break must be gone from first_real.
+        self.assertNotIn("order by cw.chart_date, cw.id limit 1", sql)
+
+    def test_parametric_first_real_agrees_with_v1_when_id_order_ne_date_order(self):
+        # CR-01 (behavioral): build a chart where chart_weeks.id order is the
+        # REVERSE of chart_date order, with TWO phantom weeks. MIN(cw.id)
+        # (v1.0 + fixed parametric) and the OLD MIN(chart_date) tie-break would
+        # pick DIFFERENT first-real weeks. Assert the parametric path now agrees
+        # with the v1.0 rule -- i.e. the two stat paths can never silently
+        # diverge on the same data.
+        db = _id_order_reversed_phantom_fixture()
+        parametric_valid = db.valid_week_ids(1)
+        v1_valid = db.v1_valid_week_ids(1)
+        self.assertEqual(parametric_valid, v1_valid)
+        # Concretely: id=1 (later date) is the MIN-id phantom -> KEPT;
+        # id=2 (earlier date) is the other phantom -> EXCLUDED. The old
+        # date-ordered rule would have kept id=2 and excluded id=1.
+        self.assertIn(1, parametric_valid)
+        self.assertNotIn(2, parametric_valid)
 
 
 # ============================================================================
