@@ -15,18 +15,31 @@ for every chart, AND for the two LEGACY charts ALSO writes the old
 legacy writes are strictly additive (same INSERT shape + ON CONFLICT
 (chart_week_id, rank) DO NOTHING as v1.0) and are retired in Phase 15.
 
-psycopg2 / execute_values stay imported at the top exactly as in the v1.0 loader
-(this module is operator-run, not a psycopg2-free test target); the automated
-tests inject a fake connection and monkeypatch ``parse_chart_file`` /
-``execute_values`` so no real DB or network is touched.
+The psycopg2-dependent imports (``execute_values`` and the connection-pool
+helpers ``get_conn`` / ``put_conn``) are GUARDED behind ``try/except ImportError``
+so this module imports cleanly in the psycopg2-free test/CI environment, while
+staying module-level names so the fixture tests can monkeypatch
+``loader.execute_values`` (and ``parse_chart_file`` / ``list_chart_files``) over a
+fake connection -- no real DB or network is touched. When psycopg2 IS installed
+(the operator-run path) the names bind to the real implementations and behavior
+is identical to the v1.0 loader. (Mirrors updater.py's psycopg2-free hygiene.)
 """
+
+from __future__ import annotations
 
 import logging
 from pathlib import Path
 
-from psycopg2.extras import execute_values
+try:
+    from psycopg2.extras import execute_values
+except ImportError:  # test/CI env without psycopg2
+    execute_values = None
 
-from billboard_stats.db.connection import get_conn, put_conn
+try:
+    from billboard_stats.db.connection import get_conn, put_conn
+except ImportError:  # test/CI env without psycopg2 (connection pool needs it)
+    get_conn = put_conn = None
+
 from billboard_stats.etl.artist_parser import parse_artist_credit
 from billboard_stats.etl.chart_registry import iter_charts
 from billboard_stats.etl.json_parser import list_chart_files, parse_chart_file
