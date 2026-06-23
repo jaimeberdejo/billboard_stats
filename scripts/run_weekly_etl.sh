@@ -21,4 +21,8 @@ for var_name in "${required_vars[@]}"; do
   fi
 done
 
+# Registry-driven INCREMENTAL path: billboard_stats.etl.updater now loops the
+# chart registry and dual-writes via load_chart per chart (Plan 10-03). This is
+# incremental-only — it never triggers the multi-decade backfill. See
+# docs/ETL-REGISTRY.md for the operator validation gate before prod relies on it.
 python -m billboard_stats.etl.updater "$@"
