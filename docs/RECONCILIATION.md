@@ -22,16 +22,31 @@ The historical over-eager parser shattered multi-part acts into standalone
 fragment artist rows. The canonical example: **"Earth, Wind & Fire"** was stored
 as three separate artists — **"Earth"**, **"Wind"**, and **"Fire"** — each with
 its own `song_artists` / `album_artists` links. The Plan-01 parser fix keeps NEW
-loads whole, but the already-stored fragments still pollute the join tables. This
-migration repoints each fragment's links onto the canonical artist (deduping
-collisions with `ON CONFLICT DO NOTHING`) and deletes the orphaned fragment rows.
+loads whole, but the already-stored fragments still pollute the join tables.
+
+**How it heals — driven by RE-PARSING the stored credits.** The migration does
+**not** guess fragments by splitting canonical artist names (that approach is
+unsound: real members of acts — solo **Diana Ross**, solo **Tina Turner**,
+standalone **Tyler** — are themselves real artists and would be wrongly deleted).
+Instead, the source of truth is the stored `artist_credit` string on every `song`
+and `album` — the exact input the loader fed to the parser. For each credit the
+migration runs the NEW `parse_artist_credit` (with the DB-derived known-acts set)
+to get the canonical artist list the credit SHOULD map to today, then reconciles
+each song/album's join rows to that target: it adds missing canonical links
+(get-or-create the artist, mirroring the loader), removes links the new parse no
+longer supports, and sets each link's `role` **deterministically** from the
+parse. An artist row (and its `artist_stats`) is deleted **only** when, after
+re-deriving every link, it has **zero** remaining links — a true orphan no credit
+produces. This inherently protects solo members of real acts (they are produced
+by their own standalone credits) while still deleting pure shatter fragments like
+"Wind" (which only ever had EWF-split links and no standalone credit of its own).
 
 Genuine aliases (e.g. "Janet" for "Janet Jackson", "Ke$ha" for "Kesha") are
-modeled in `billboard_stats/etl/artist_aliases.py` and are **NOT** treated as
-fragments — the migration never deletes a genuine-alias row.
+modeled in `billboard_stats/etl/artist_aliases.py` and are folded into the
+canonical identity during the re-parse, exactly as at load time.
 
-The script is **idempotent**: once the fragments are merged, a second run finds
-nothing and is a clean no-op (data-driven, not a flag).
+The script is **idempotent**: once links match the re-parsed credits, a second
+run is a clean no-op (data-driven, not a flag).
 
 ---
 
@@ -50,6 +65,13 @@ nothing and is a clean no-op (data-driven, not a flag).
 The script reads the same `PG*` environment variables as the rest of the ETL
 (`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, and optional
 `PGSSLMODE`) via `billboard_stats/db/connection.py`.
+
+> **Access note.** Because reconciliation re-parses the stored credits, the role
+> it runs as needs **read** access to `songs` and `albums` (specifically their
+> `artist_credit` column) in addition to the write access it needs on `artists`,
+> `song_artists`, `album_artists`, and `artist_stats`. The whole run uses a
+> **single connection / single transaction**, so detection and execution always
+> see a consistent snapshot — run it with **no concurrent writers**.
 
 > Use **PG\*** env placeholders only — never paste secrets into this file, a
 > shell history you will share, or a commit.
@@ -74,16 +96,23 @@ production primary.
 
 - The `--dry-run` path computes the planned merges and **writes nothing**,
   exiting 0.
-- Read the report: each line shows a canonical act and the fragment artists that
-  would be merged into it, e.g.
+- Read the report: it summarizes the link adds/removes and lists every orphan
+  artist that would be deleted, e.g.
 
   ```
-  DRY RUN — 1 cluster(s), 3 fragment row(s).
-    Earth, Wind & Fire <- Earth, Wind, Fire
+  DRY RUN — song links +0/-2, album links +0/-1, 3 orphan artist(s) deleted.
+    delete orphan: Earth (#2)
+    delete orphan: Wind (#3)
+    delete orphan: Fire (#4)
   ```
 
-- If the report lists **zero clusters**, there is nothing to reconcile (either
-  already applied, or no fragments present) — you are done.
+- **Sanity-check the delete list.** Every name here must be a pure shatter
+  fragment (a piece of an act with no standalone credit of its own). If you see a
+  real standalone artist (e.g. "Diana Ross", "Tina Turner", "Tyler"), STOP — that
+  would mean the artist has no surviving credit, which should never happen; do not
+  apply.
+- If the report shows **0 link changes and 0 orphans**, there is nothing to
+  reconcile (already applied, or no fragments present) — you are done.
 
 ---
 
@@ -111,11 +140,15 @@ rollback source.
 .venv/bin/python -m billboard_stats.etl.reconcile_artists
 ```
 
-- All work happens in a **single transaction**: repoint `song_artists` /
-  `album_artists` onto each canonical artist with `ON CONFLICT DO NOTHING`, then
-  delete the orphaned fragment `artist_stats` and `artists` rows.
-- The script captures **before/after invariant counts** and **rolls back and
-  raises** if any invariant is violated, so it never leaves a half-merged DB.
+- All work happens in a **single transaction** on **one connection**: re-derive
+  every song/album's target artist set from its credit, add missing canonical
+  links (get-or-create the artist, role set deterministically from the parse),
+  remove links the new parse no longer supports, then delete any artist left with
+  zero links (and its `artist_stats`).
+- The script captures **before/after invariants** — distinct song/album id SETS
+  unchanged, no song/album left with zero artists, link totals only decrease, and
+  **no artist produced by some credit's new-parse is deleted** — and **rolls back
+  and raises** on any violation, so it never leaves a half-merged DB.
 
 ---
 
@@ -151,6 +184,28 @@ Confirm the safety invariants held and the heal is visible:
        (SELECT COUNT(DISTINCT song_id)  FROM song_artists)  AS songs,
        (SELECT COUNT(DISTINCT album_id) FROM album_artists) AS albums,
        (SELECT COUNT(*) FROM song_artists) + (SELECT COUNT(*) FROM album_artists) AS links;"
+  ```
+
+- **No dangling join rows** referencing a deleted artist (the fixture tests
+  cannot exercise real FK ordering — WR-04). After apply, this must return zero:
+
+  ```bash
+  psql "host=$PGHOST port=$PGPORT dbname=$PGDATABASE user=$PGUSER" -c \
+    "SELECT
+       (SELECT COUNT(*) FROM song_artists  sa LEFT JOIN artists a ON a.id = sa.artist_id WHERE a.id IS NULL) AS dangling_song_links,
+       (SELECT COUNT(*) FROM album_artists aa LEFT JOIN artists a ON a.id = aa.artist_id WHERE a.id IS NULL) AS dangling_album_links;"
+  ```
+
+- **Role spot-check** (the fixture DB does not model PostgreSQL `role`
+  arbitration — CR-02). The reconcile sets each link's `role` deterministically
+  from the new parse, so a previously-shattered act's primary link should read
+  `primary`:
+
+  ```bash
+  psql "host=$PGHOST port=$PGPORT dbname=$PGDATABASE user=$PGUSER" -c \
+    "SELECT sa.role, COUNT(*) FROM song_artists sa
+       JOIN artists a ON a.id = sa.artist_id
+      WHERE a.name = 'Earth, Wind & Fire' GROUP BY sa.role;"
   ```
 
 - **Manual UI check:** open a previously-fragmented artist's detail page (e.g.
