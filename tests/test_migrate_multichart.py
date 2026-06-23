@@ -96,11 +96,20 @@ class FakeCursor:
             return
 
         # --- COUNT(*) parity queries ------------------------------------------
-        if norm.startswith("select count(*) from hot100_entries"):
+        # Bare source counts only (the WR-03 reverse anti-joins also start with
+        # "select count(*) from hot100_entries h LEFT JOIN ..." -- exclude those
+        # so they fall through to the dedicated handlers below).
+        if (
+            norm.startswith("select count(*) from hot100_entries")
+            and "left join" not in norm
+        ):
             self._result = [(len(self._db.hot100_entries),)]
             return
 
-        if norm.startswith("select count(*) from b200_entries"):
+        if (
+            norm.startswith("select count(*) from b200_entries")
+            and "left join" not in norm
+        ):
             self._result = [(len(self._db.b200_entries),)]
             return
 
@@ -109,6 +118,44 @@ class FakeCursor:
             self._result = [
                 (len([e for e in self._db.chart_entries if e["chart_id"] == chart_id]),)
             ]
+            return
+
+        # --- WR-03 content-parity checks (anti-joins + polymorphism) ----------
+        if norm.startswith(
+            "select count(*) from chart_entries "
+            "where num_nonnulls(song_id, album_id, artist_id) <> 1"
+        ):
+            self._result = [(self._db.count_bad_polymorphism(),)]
+            return
+
+        # hot-100 / billboard-200 anti-joins: chart_entries with no source row.
+        if (
+            norm.startswith("select count(*) from chart_entries ce")
+            and "join charts c" in norm
+            and "left join hot100_entries" in norm
+        ):
+            self._result = [(self._db.count_ce_orphans("hot-100"),)]
+            return
+        if (
+            norm.startswith("select count(*) from chart_entries ce")
+            and "join charts c" in norm
+            and "left join b200_entries" in norm
+        ):
+            self._result = [(self._db.count_ce_orphans("billboard-200"),)]
+            return
+
+        # source rows that were not backfilled (reverse anti-join).
+        if (
+            norm.startswith("select count(*) from hot100_entries h")
+            and "left join chart_entries ce" in norm
+        ):
+            self._result = [(self._db.count_source_missing("hot-100"),)]
+            return
+        if (
+            norm.startswith("select count(*) from b200_entries b")
+            and "left join chart_entries ce" in norm
+        ):
+            self._result = [(self._db.count_source_missing("billboard-200"),)]
             return
 
         if norm.startswith("select count(*) from chart_entries"):
@@ -261,6 +308,63 @@ class FakeDB:
             row[entity_col] = src[entity_col]
             self._next_ce_id += 1
             self.chart_entries.append(row)
+
+    # --- WR-03 content-parity modeling ----------------------------------------
+    def count_bad_polymorphism(self):
+        """Rows that don't set EXACTLY one of song_id/album_id/artist_id."""
+        bad = 0
+        for e in self.chart_entries:
+            nonnull = sum(
+                1 for k in ("song_id", "album_id", "artist_id") if e.get(k) is not None
+            )
+            if nonnull != 1:
+                bad += 1
+        return bad
+
+    def count_ce_orphans(self, slug):
+        """chart_entries rows for ``slug`` with no matching source row on
+        (chart_week_id, rank, entity_id) -- the forward anti-join."""
+        chart_id = self.chart_id(slug)
+        if slug == "hot-100":
+            source = {
+                (s["chart_week_id"], s["rank"], s["song_id"])
+                for s in self.hot100_entries
+            }
+            col = "song_id"
+        else:
+            source = {
+                (s["chart_week_id"], s["rank"], s["album_id"])
+                for s in self.b200_entries
+            }
+            col = "album_id"
+        orphans = 0
+        for e in self.chart_entries:
+            if e["chart_id"] != chart_id:
+                continue
+            if (e["chart_week_id"], e["rank"], e[col]) not in source:
+                orphans += 1
+        return orphans
+
+    def count_source_missing(self, slug):
+        """Source rows that were NOT backfilled into chart_entries for ``slug``
+        on (chart_week_id, rank, entity_id) -- the reverse anti-join."""
+        chart_id = self.chart_id(slug)
+        if slug == "hot-100":
+            source = self.hot100_entries
+            col = "song_id"
+        else:
+            source = self.b200_entries
+            col = "album_id"
+        present = {
+            (e["chart_week_id"], e["rank"], e[col])
+            for e in self.chart_entries
+            if e["chart_id"] == chart_id
+        }
+        missing = 0
+        for s in source:
+            if (s["chart_week_id"], s["rank"], s[col]) not in present:
+                missing += 1
+        return missing
 
     # --- snapshot --------------------------------------------------------------
     def snapshot(self):
@@ -449,6 +553,38 @@ class MigrateRollbackTests(unittest.TestCase):
         self.assertTrue(conn.rolled_back)
         self.assertFalse(conn.committed)
         # State restored to its pre-run snapshot.
+        self.assertEqual(db.snapshot(), before)
+
+    def test_wrong_content_equal_count_backfill_is_caught(self):
+        # WR-03: a backfill that inserts the RIGHT NUMBER of rows but with a
+        # WRONG song_id must fail the content anti-join (count parity passes,
+        # content parity does not) -> rollback + raise.
+        db = _fixture()
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        original = FakeDB.backfill_chart_entries
+
+        def corrupting_backfill(self_db, slug, entity_kind):
+            original(self_db, slug, entity_kind)
+            if slug == "hot-100":
+                # Corrupt one freshly inserted hot-100 row's song_id to a value
+                # that has no matching source row. Count is unchanged.
+                for e in self_db.chart_entries:
+                    if e["chart_id"] == self_db.chart_id("hot-100"):
+                        e["song_id"] = 99999  # not in hot100_entries
+                        break
+
+        FakeDB.backfill_chart_entries = corrupting_backfill
+        try:
+            with self.assertRaises(MigrationParityError) as ctx:
+                migrate(conn, dry_run=False)
+        finally:
+            FakeDB.backfill_chart_entries = original
+
+        self.assertIn("content mismatch", str(ctx.exception))
+        self.assertTrue(conn.rolled_back)
+        self.assertFalse(conn.committed)
         self.assertEqual(db.snapshot(), before)
 
 

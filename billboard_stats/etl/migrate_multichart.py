@@ -28,8 +28,13 @@ Design / safety contract (mirrors billboard_stats/etl/reconcile_artists.py):
     count(chart_entries)                              == hot100_entries + b200_entries
   and that no known chart_type week is left with a NULL chart_id. Comparing
   TOTAL counts (not "rows inserted this run") means an idempotent re-run with
-  zero inserts still passes parity. On any mismatch it calls ``rollback()`` and
-  raises ``MigrationParityError``; it commits only if every assertion holds.
+  zero inserts still passes parity. It ALSO asserts CONTENT parity (WR-03): an
+  anti-join in both directions proves every backfilled chart_entries row
+  round-trips its v1.0 source on (chart_week_id, rank, entity_id) and that the
+  one-of-three entity-FK invariant holds -- so a wrong-but-equal-count backfill
+  (right number of rows, wrong song_id/album_id/rank/week) is caught and rolled
+  back. On any mismatch it calls ``rollback()`` and raises
+  ``MigrationParityError``; it commits only if every assertion holds.
 * ``--dry-run`` reports the planned seed/backfill counts and writes nothing,
   exiting 0.
 * psycopg2 is imported LAZILY inside ``main()`` so the module imports cleanly in
@@ -323,6 +328,83 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 raise MigrationParityError(
                     f"{remaining_null} chart_weeks row(s) for known chart_types "
                     "still have a NULL chart_id after backfill"
+                )
+
+            # --- 6. CONTENT parity (WR-03) -----------------------------------
+            # Count parity alone can't catch a wrong-but-equal-count backfill
+            # (right number of rows, wrong song_id/album_id/rank/week). These
+            # anti-join checks assert the backfilled chart_entries round-trip
+            # the v1.0 source row-for-row, so a content corruption with a
+            # correct count still rolls back.
+
+            # Every chart_entries row sets exactly one entity FK (the real SQL
+            # num_nonnulls CHECK; asserted here so a bad SELECT list is caught
+            # even where the CHECK isn't exercised, e.g. the fake DB).
+            bad_polymorphism = _count(
+                cur,
+                "SELECT COUNT(*) FROM chart_entries "
+                "WHERE num_nonnulls(song_id, album_id, artist_id) <> 1;",
+            )
+            if bad_polymorphism:
+                raise MigrationParityError(
+                    f"{bad_polymorphism} chart_entries row(s) violate the "
+                    "one-of-three entity-FK invariant"
+                )
+
+            # hot-100: every backfilled (chart_week_id, rank, song_id) must
+            # exist in hot100_entries, and vice versa (round-trip both ways).
+            hot100_orphans = _count(
+                cur,
+                "SELECT COUNT(*) FROM chart_entries ce "
+                "JOIN charts c ON c.id = ce.chart_id AND c.slug = 'hot-100' "
+                "LEFT JOIN hot100_entries h "
+                "ON h.chart_week_id = ce.chart_week_id "
+                "AND h.rank = ce.rank AND h.song_id = ce.song_id "
+                "WHERE h.id IS NULL;",
+            )
+            hot100_missing = _count(
+                cur,
+                "SELECT COUNT(*) FROM hot100_entries h "
+                "LEFT JOIN chart_entries ce "
+                "ON ce.chart_week_id = h.chart_week_id "
+                "AND ce.rank = h.rank AND ce.song_id = h.song_id "
+                "AND ce.chart_id = (SELECT id FROM charts WHERE slug = 'hot-100') "
+                "WHERE ce.id IS NULL;",
+            )
+            if hot100_orphans or hot100_missing:
+                raise MigrationParityError(
+                    f"hot-100 content mismatch: {hot100_orphans} chart_entries "
+                    f"row(s) have no matching hot100_entries source and "
+                    f"{hot100_missing} source row(s) were not backfilled "
+                    "(wrong song_id/rank/week despite matching counts)"
+                )
+
+            # billboard-200: symmetric round-trip on (chart_week_id, rank,
+            # album_id).
+            b200_orphans = _count(
+                cur,
+                "SELECT COUNT(*) FROM chart_entries ce "
+                "JOIN charts c ON c.id = ce.chart_id AND c.slug = 'billboard-200' "
+                "LEFT JOIN b200_entries b "
+                "ON b.chart_week_id = ce.chart_week_id "
+                "AND b.rank = ce.rank AND b.album_id = ce.album_id "
+                "WHERE b.id IS NULL;",
+            )
+            b200_missing = _count(
+                cur,
+                "SELECT COUNT(*) FROM b200_entries b "
+                "LEFT JOIN chart_entries ce "
+                "ON ce.chart_week_id = b.chart_week_id "
+                "AND ce.rank = b.rank AND ce.album_id = b.album_id "
+                "AND ce.chart_id = (SELECT id FROM charts WHERE slug = 'billboard-200') "
+                "WHERE ce.id IS NULL;",
+            )
+            if b200_orphans or b200_missing:
+                raise MigrationParityError(
+                    f"billboard-200 content mismatch: {b200_orphans} "
+                    f"chart_entries row(s) have no matching b200_entries source "
+                    f"and {b200_missing} source row(s) were not backfilled "
+                    "(wrong album_id/rank/week despite matching counts)"
                 )
 
             report["after"] = {
