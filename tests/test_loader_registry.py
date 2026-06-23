@@ -62,6 +62,13 @@ class FakeCursor:
             self._result = [(a["id"], a["name"]) for a in self._db.artists]
             return
 
+        # --- chart_id resolution: SELECT id FROM charts WHERE slug = %s --------
+        if norm.startswith("select id from charts where slug ="):
+            (slug,) = params
+            cid = self._db.chart_id(slug)
+            self._result = [(cid,)] if cid is not None else []
+            return
+
         # --- chart_weeks upsert (legacy: chart_type + chart_id) ----------------
         if norm.startswith("insert into chart_weeks"):
             self._result = [(self._db.upsert_chart_week(norm, params),)]
@@ -178,17 +185,28 @@ class FakeDB:
 
     # --- upserts ---------------------------------------------------------------
     def upsert_chart_week(self, norm, params):
-        """Upsert chart_weeks keyed by (chart_date, chart_type), setting chart_id.
+        """Upsert chart_weeks and return the week id.
 
-        The legacy upsert supplies chart_date, chart_type and chart_id; returns
-        the week id. A repeat (chart_date, chart_type) returns the existing id
-        and refreshes chart_id (the ``SET chart_id = EXCLUDED.chart_id`` path).
+        Handles BOTH week-insert shapes load_chart emits:
+
+        * LEGACY charts: ``(chart_date, chart_type, chart_id)`` -- upsert keyed on
+          (chart_date, chart_type), refreshing chart_id (the
+          ``SET chart_id = EXCLUDED.chart_id`` path).
+        * NEW charts: ``(chart_date, chart_id)`` -- a plain insert keyed by
+          chart_id + chart_date (no chart_type), used when legacy_table is None.
         """
-        # params order produced by load_chart's legacy week upsert:
-        # (chart_date, chart_type, chart_id)
-        chart_date, chart_type, chart_id = params
+        if len(params) == 3:
+            chart_date, chart_type, chart_id = params
+        else:
+            chart_date, chart_id = params
+            chart_type = None
+
         for w in self.chart_weeks:
-            if w["chart_date"] == chart_date and w["chart_type"] == chart_type:
+            if (
+                w["chart_date"] == chart_date
+                and w["chart_type"] == chart_type
+                and w["chart_id"] == chart_id
+            ):
                 w["chart_id"] = chart_id
                 return w["id"]
         wid = self._take("week")
