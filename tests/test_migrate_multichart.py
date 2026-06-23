@@ -1,0 +1,480 @@
+"""Fixture/mock-DB tests for the multi-chart migration (Plan 09-02).
+
+These tests run entirely against an in-memory fake DB layer mirroring
+tests/test_reconcile_artists.py. They make NO real database connection and NO
+network calls. The real-DB apply (dry-run -> snapshot -> apply -> verify parity
+-> verify v1.0 pages) is the operator runbook in Plan 03, not here.
+
+The migration is STRICTLY ADDITIVE and IDEMPOTENT: it applies the additive DDL
+(IF NOT EXISTS), seeds the charts registry (hot-100 -> entity_kind=song,
+billboard-200 -> entity_kind=album), backfills chart_weeks.chart_id from
+chart_type, and backfills chart_entries from hot100_entries (song_id) and
+b200_entries (album_id) -- exactly one entity FK per row so the
+num_nonnulls(...) = 1 CHECK holds. It runs in a single transaction and asserts
+row-count parity (per-chart equality + total), rolling back on any mismatch.
+
+Fidelity gaps the fake DB does NOT model (covered by the operator runbook, not
+here): real PostgreSQL num_nonnulls CHECK enforcement, real
+ON CONFLICT (chart_week_id, rank) arbitration across charts, and FK validation.
+The runner sets exactly one entity FK per backfilled row, which the tests assert
+directly.
+"""
+
+import copy
+import re
+import unittest
+
+from billboard_stats.etl import migrate_multichart
+from billboard_stats.etl.migrate_multichart import (
+    MigrationParityError,
+    migrate,
+)
+
+
+# ============================================================================
+# In-memory fake DB layer
+# ============================================================================
+class FakeCursor:
+    """A psycopg2-cursor-like stand-in interpreting the SQL migrate() emits.
+
+    It models charts / chart_weeks (chart_type + nullable chart_id) /
+    hot100_entries / b200_entries / chart_entries as plain Python structures and
+    executes the exact statement shapes migrate_multichart.py uses. No real
+    database is involved. DDL statements (CREATE TABLE IF NOT EXISTS, ALTER
+    TABLE, CREATE INDEX) are accepted as no-ops because the fake DB already
+    models the target shape.
+    """
+
+    def __init__(self, db):
+        self._db = db
+        self._result = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        norm = re.sub(r"\s+", " ", sql).strip().lower()
+        params = params or ()
+
+        # --- DDL: accepted as no-ops (the fake DB models the target shape) ----
+        if (
+            norm.startswith("create table")
+            or norm.startswith("alter table")
+            or norm.startswith("create index")
+        ):
+            self._result = None
+            return
+
+        # --- Seed: INSERT INTO charts ... ON CONFLICT (slug) DO NOTHING -------
+        if norm.startswith("insert into charts"):
+            slug, title, entity_kind, category, sort_order = params
+            self._db.seed_chart(slug, title, entity_kind, category, sort_order)
+            return
+
+        # --- chart_weeks.chart_id backfill ------------------------------------
+        if norm.startswith("update chart_weeks set chart_id"):
+            self._db.backfill_chart_weeks_chart_id()
+            return
+
+        # --- chart_entries backfill from hot100_entries -----------------------
+        if (
+            norm.startswith("insert into chart_entries")
+            and "from hot100_entries" in norm
+        ):
+            self._db.backfill_chart_entries("hot-100", "song")
+            return
+
+        # --- chart_entries backfill from b200_entries -------------------------
+        if (
+            norm.startswith("insert into chart_entries")
+            and "from b200_entries" in norm
+        ):
+            self._db.backfill_chart_entries("billboard-200", "album")
+            return
+
+        # --- COUNT(*) parity queries ------------------------------------------
+        if norm.startswith("select count(*) from hot100_entries"):
+            self._result = [(len(self._db.hot100_entries),)]
+            return
+
+        if norm.startswith("select count(*) from b200_entries"):
+            self._result = [(len(self._db.b200_entries),)]
+            return
+
+        if norm.startswith("select count(*) from chart_entries where chart_id ="):
+            (chart_id,) = params
+            self._result = [
+                (len([e for e in self._db.chart_entries if e["chart_id"] == chart_id]),)
+            ]
+            return
+
+        if norm.startswith("select count(*) from chart_entries"):
+            self._result = [(len(self._db.chart_entries),)]
+            return
+
+        # --- chart id lookup by slug ------------------------------------------
+        if norm.startswith("select id from charts where slug ="):
+            (slug,) = params
+            self._result = [(self._db.chart_id(slug),)] if self._db.chart_id(slug) else []
+            return
+
+        if norm.startswith("select id, slug from charts"):
+            self._result = [(c["id"], c["slug"]) for c in self._db.charts]
+            return
+
+        # --- chart_weeks.chart_id NULL check ----------------------------------
+        if norm.startswith("select count(*) from chart_weeks where chart_id is null"):
+            self._result = [
+                (len([w for w in self._db.chart_weeks if w["chart_id"] is None]),)
+            ]
+            return
+
+        raise AssertionError(f"FakeCursor: unhandled SQL: {norm!r}")
+
+    def fetchall(self):
+        return self._result
+
+    def fetchone(self):
+        return self._result[0] if self._result else None
+
+
+class FakeConn:
+    """A connection-like stand-in tracking commit/rollback and snapshotting."""
+
+    def __init__(self, db):
+        self._db = db
+        self.committed = False
+        self.rolled_back = False
+        self._snapshot = db.snapshot()
+
+    def cursor(self):
+        return FakeCursor(self._db)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+        self._db.restore(self._snapshot)
+
+
+class FakeDB:
+    """In-memory model of charts / chart_weeks / hot100_entries / b200_entries /
+    chart_entries for the migration."""
+
+    def __init__(
+        self,
+        chart_weeks=None,
+        hot100_entries=None,
+        b200_entries=None,
+        charts=None,
+        chart_entries=None,
+    ):
+        # chart_weeks: {"id": int, "chart_type": str, "chart_id": int|None}
+        self.chart_weeks = [dict(w) for w in (chart_weeks or [])]
+        # hot100_entries / b200_entries: full v1.0 entry rows
+        self.hot100_entries = [dict(e) for e in (hot100_entries or [])]
+        self.b200_entries = [dict(e) for e in (b200_entries or [])]
+        # charts: {"id", "slug", "title", "entity_kind", "category", "sort_order"}
+        self.charts = [dict(c) for c in (charts or [])]
+        # chart_entries: polymorphic rows
+        self.chart_entries = [dict(e) for e in (chart_entries or [])]
+        self._next_chart_id = (max((c["id"] for c in self.charts), default=0)) + 1
+        self._next_ce_id = (max((e["id"] for e in self.chart_entries), default=0)) + 1
+
+    # --- seed ------------------------------------------------------------------
+    def seed_chart(self, slug, title, entity_kind, category, sort_order):
+        """INSERT ... ON CONFLICT (slug) DO NOTHING."""
+        for c in self.charts:
+            if c["slug"] == slug:
+                return  # conflict -> do nothing
+        new_id = self._next_chart_id
+        self._next_chart_id += 1
+        self.charts.append(
+            {
+                "id": new_id,
+                "slug": slug,
+                "title": title,
+                "entity_kind": entity_kind,
+                "category": category,
+                "sort_order": sort_order,
+            }
+        )
+
+    def chart_id(self, slug):
+        for c in self.charts:
+            if c["slug"] == slug:
+                return c["id"]
+        return None
+
+    # --- backfills -------------------------------------------------------------
+    def backfill_chart_weeks_chart_id(self):
+        """UPDATE chart_weeks SET chart_id = (chart by slug) WHERE chart_id IS NULL."""
+        for w in self.chart_weeks:
+            if w["chart_id"] is None:
+                w["chart_id"] = self.chart_id(w["chart_type"])
+
+    def backfill_chart_entries(self, slug, entity_kind):
+        """INSERT INTO chart_entries ... ON CONFLICT (chart_week_id, rank) DO NOTHING.
+
+        Mirrors the migration: exactly one entity FK per row (song_id for
+        hot-100, album_id for billboard-200), conflict-skipping on
+        (chart_week_id, rank).
+        """
+        chart_id = self.chart_id(slug)
+        source = self.hot100_entries if entity_kind == "song" else self.b200_entries
+        entity_col = "song_id" if entity_kind == "song" else "album_id"
+        existing = {(e["chart_week_id"], e["rank"]) for e in self.chart_entries}
+        for src in source:
+            key = (src["chart_week_id"], src["rank"])
+            if key in existing:
+                continue  # ON CONFLICT (chart_week_id, rank) DO NOTHING
+            existing.add(key)
+            row = {
+                "id": self._next_ce_id,
+                "chart_id": chart_id,
+                "chart_week_id": src["chart_week_id"],
+                "song_id": None,
+                "album_id": None,
+                "artist_id": None,
+                "rank": src["rank"],
+                "peak_pos": src.get("peak_pos"),
+                "last_pos": src.get("last_pos"),
+                "weeks_on_chart": src.get("weeks_on_chart"),
+                "is_new": src.get("is_new", False),
+            }
+            row[entity_col] = src[entity_col]
+            self._next_ce_id += 1
+            self.chart_entries.append(row)
+
+    # --- snapshot --------------------------------------------------------------
+    def snapshot(self):
+        return copy.deepcopy(
+            {
+                "chart_weeks": self.chart_weeks,
+                "hot100_entries": self.hot100_entries,
+                "b200_entries": self.b200_entries,
+                "charts": self.charts,
+                "chart_entries": self.chart_entries,
+            }
+        )
+
+    def restore(self, snap):
+        snap = copy.deepcopy(snap)
+        self.chart_weeks = snap["chart_weeks"]
+        self.hot100_entries = snap["hot100_entries"]
+        self.b200_entries = snap["b200_entries"]
+        self.charts = snap["charts"]
+        self.chart_entries = snap["chart_entries"]
+
+
+def _fixture():
+    """A small fixture DB: 2 hot-100 weeks + 1 b200 week, no charts/chart_entries
+    yet (a pristine pre-migration v1.0 DB)."""
+    chart_weeks = [
+        {"id": 1, "chart_type": "hot-100", "chart_id": None},
+        {"id": 2, "chart_type": "hot-100", "chart_id": None},
+        {"id": 3, "chart_type": "billboard-200", "chart_id": None},
+    ]
+    hot100_entries = [
+        {"id": 1, "chart_week_id": 1, "song_id": 10, "rank": 1,
+         "peak_pos": 1, "last_pos": 2, "weeks_on_chart": 5, "is_new": False},
+        {"id": 2, "chart_week_id": 1, "song_id": 11, "rank": 2,
+         "peak_pos": 2, "last_pos": 1, "weeks_on_chart": 3, "is_new": False},
+        {"id": 3, "chart_week_id": 2, "song_id": 10, "rank": 1,
+         "peak_pos": 1, "last_pos": 1, "weeks_on_chart": 6, "is_new": False},
+    ]
+    b200_entries = [
+        {"id": 1, "chart_week_id": 3, "album_id": 20, "rank": 1,
+         "peak_pos": 1, "last_pos": None, "weeks_on_chart": 1, "is_new": True},
+        {"id": 2, "chart_week_id": 3, "album_id": 21, "rank": 2,
+         "peak_pos": 2, "last_pos": 2, "weeks_on_chart": 4, "is_new": False},
+    ]
+    return FakeDB(chart_weeks, hot100_entries, b200_entries)
+
+
+# ----------------------------------------------------------------------------
+# Parity / backfill success
+# ----------------------------------------------------------------------------
+class MigrateParityTests(unittest.TestCase):
+    def test_seed_and_backfill_parity_commits(self):
+        db = _fixture()
+        conn = FakeConn(db)
+
+        report = migrate(conn, dry_run=False)
+
+        # Registry seeded with the two charts (correct entity_kind).
+        hot100 = next(c for c in db.charts if c["slug"] == "hot-100")
+        b200 = next(c for c in db.charts if c["slug"] == "billboard-200")
+        self.assertEqual(hot100["entity_kind"], "song")
+        self.assertEqual(b200["entity_kind"], "album")
+
+        # Per-chart count parity: chart_entries(hot-100) == hot100_entries, etc.
+        hot100_ce = [e for e in db.chart_entries if e["chart_id"] == hot100["id"]]
+        b200_ce = [e for e in db.chart_entries if e["chart_id"] == b200["id"]]
+        self.assertEqual(len(hot100_ce), len(db.hot100_entries))
+        self.assertEqual(len(b200_ce), len(db.b200_entries))
+        # Total parity.
+        self.assertEqual(
+            len(db.chart_entries),
+            len(db.hot100_entries) + len(db.b200_entries),
+        )
+
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+        self.assertFalse(report["dry_run"])
+
+    def test_each_chart_entry_has_exactly_one_entity_id(self):
+        db = _fixture()
+        migrate(FakeConn(db), dry_run=False)
+        for e in db.chart_entries:
+            nonnull = sum(
+                1 for k in ("song_id", "album_id", "artist_id") if e[k] is not None
+            )
+            self.assertEqual(nonnull, 1, f"row {e} must set exactly one entity FK")
+
+    def test_hot100_rows_set_song_id_b200_rows_set_album_id(self):
+        db = _fixture()
+        migrate(FakeConn(db), dry_run=False)
+        hot100_id = db.chart_id("hot-100")
+        b200_id = db.chart_id("billboard-200")
+        for e in db.chart_entries:
+            if e["chart_id"] == hot100_id:
+                self.assertIsNotNone(e["song_id"])
+                self.assertIsNone(e["album_id"])
+                self.assertIsNone(e["artist_id"])
+            elif e["chart_id"] == b200_id:
+                self.assertIsNotNone(e["album_id"])
+                self.assertIsNone(e["song_id"])
+                self.assertIsNone(e["artist_id"])
+
+    def test_chart_weeks_chart_id_backfilled_chart_type_preserved(self):
+        db = _fixture()
+        migrate(FakeConn(db), dry_run=False)
+        for w in db.chart_weeks:
+            # chart_id is backfilled from chart_type for every week.
+            self.assertIsNotNone(w["chart_id"])
+            self.assertEqual(w["chart_id"], db.chart_id(w["chart_type"]))
+            # chart_type stays populated (Phase 15 retires it, not this migration).
+            self.assertIn(w["chart_type"], ("hot-100", "billboard-200"))
+
+
+# ----------------------------------------------------------------------------
+# Parity mismatch -> rollback
+# ----------------------------------------------------------------------------
+class MigrateRollbackTests(unittest.TestCase):
+    def test_parity_mismatch_rolls_back_and_raises(self):
+        # Force a backfilled count != source count by corrupting the backfill so
+        # one hot-100 row is dropped. The parity assertion must trip, rolling
+        # back and raising MigrationParityError; state is restored.
+        db = _fixture()
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        original = FakeDB.backfill_chart_entries
+
+        def broken_backfill(self_db, slug, entity_kind):
+            original(self_db, slug, entity_kind)
+            if slug == "hot-100" and self_db.chart_entries:
+                # Drop one freshly inserted hot-100 row to break parity.
+                self_db.chart_entries.pop()
+
+        FakeDB.backfill_chart_entries = broken_backfill
+        try:
+            with self.assertRaises(MigrationParityError):
+                migrate(conn, dry_run=False)
+        finally:
+            FakeDB.backfill_chart_entries = original
+
+        self.assertTrue(conn.rolled_back)
+        self.assertFalse(conn.committed)
+        # State restored to its pre-run snapshot.
+        self.assertEqual(db.snapshot(), before)
+
+
+# ----------------------------------------------------------------------------
+# Dry run
+# ----------------------------------------------------------------------------
+class MigrateDryRunTests(unittest.TestCase):
+    def test_dry_run_reports_but_writes_nothing(self):
+        db = _fixture()
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        report = migrate(conn, dry_run=True)
+
+        self.assertTrue(report["dry_run"])
+        # Planned counts are reported.
+        self.assertEqual(report["backfill"]["hot-100"], len(db.hot100_entries))
+        self.assertEqual(report["backfill"]["billboard-200"], len(db.b200_entries))
+        # Nothing was written and nothing was committed.
+        self.assertEqual(db.snapshot(), before)
+        self.assertFalse(conn.committed)
+
+
+# ----------------------------------------------------------------------------
+# Idempotent re-run
+# ----------------------------------------------------------------------------
+class MigrateIdempotencyTests(unittest.TestCase):
+    def test_second_run_is_noop_and_parity_still_holds(self):
+        db = _fixture()
+        migrate(FakeConn(db), dry_run=False)
+        snapshot_after_first = db.snapshot()
+
+        second = FakeConn(db)
+        report = migrate(second, dry_run=False)
+
+        # Zero new chart_entries, zero new charts on the second run.
+        self.assertEqual(report["backfill"]["hot-100"], 0)
+        self.assertEqual(report["backfill"]["billboard-200"], 0)
+        self.assertEqual(report["seeded_charts"], 0)
+        # State byte-for-byte identical to after the first run.
+        self.assertEqual(db.snapshot(), snapshot_after_first)
+        # The migration still COMMITS (parity holds on TOTAL counts even with
+        # zero inserts this run).
+        self.assertTrue(second.committed)
+        self.assertFalse(second.rolled_back)
+
+        # Parity is asserted on TOTAL post-backfill counts, so it still holds.
+        hot100_id = db.chart_id("hot-100")
+        b200_id = db.chart_id("billboard-200")
+        self.assertEqual(
+            len([e for e in db.chart_entries if e["chart_id"] == hot100_id]),
+            len(db.hot100_entries),
+        )
+        self.assertEqual(
+            len([e for e in db.chart_entries if e["chart_id"] == b200_id]),
+            len(db.b200_entries),
+        )
+
+
+# ----------------------------------------------------------------------------
+# Module hygiene: no top-level psycopg2 import
+# ----------------------------------------------------------------------------
+class MigratePostgresFreeTests(unittest.TestCase):
+    def test_module_has_no_top_level_psycopg_import(self):
+        import inspect
+
+        src = migrate_multichart  # module object
+        source = inspect.getsource(src)
+        lines = source.splitlines()
+        top_level = [
+            l for l in lines if l.startswith("import ") or l.startswith("from ")
+        ]
+        self.assertFalse(
+            any("psycopg" in l for l in top_level),
+            "psycopg2 must not be a top-level import",
+        )
+
+    def test_exports_migrate_main_and_error(self):
+        self.assertTrue(hasattr(migrate_multichart, "migrate"))
+        self.assertTrue(hasattr(migrate_multichart, "main"))
+        self.assertTrue(hasattr(migrate_multichart, "MigrationParityError"))
+        self.assertTrue(issubclass(MigrationParityError, RuntimeError))
+
+
+if __name__ == "__main__":
+    unittest.main()
