@@ -46,8 +46,9 @@ def parse_chart_file(file_path: str) -> Optional[List[Dict]]:
     all three shapes parse to the IDENTICAL normalized shape:
     ``rank, title, artist, peak_pos, last_pos, weeks, is_new, image``.
 
-    Every other field rule is unchanged from the v1.0 parsers: ``rank`` via
-    ``int(...)``, ``peak_pos``/``last_pos``/``weeks`` via :func:`_safe_int`,
+    Field rules: ``rank`` via :func:`_safe_int` (WR-06: tolerant, a non-numeric
+    rank drops that one row via the ``rank > 0`` gate instead of crashing the
+    whole file), ``peak_pos``/``last_pos``/``weeks`` via :func:`_safe_int`,
     ``is_new`` via ``bool(...)``, ``image`` via :func:`_clean_image_url`. An entry
     is kept only when ``rank > 0`` AND ``title`` AND ``artist``.
 
@@ -66,7 +67,15 @@ def parse_chart_file(file_path: str) -> Optional[List[Dict]]:
     entries = []
     for item in data:
         entry = {
-            "rank": int(item.get("rank", 0)),
+            # WR-06: parse rank with the tolerant _safe_int (like every other
+            # numeric field) instead of a bare int(...). A single malformed entry
+            # (e.g. "rank": "N/A" or JSON null) would otherwise raise inside this
+            # loop, uncaught (the try/except above wraps only the file open/load),
+            # crashing the whole week's parse and — since load_chart does not wrap
+            # parse_chart_file — the whole chart load. _safe_int returns None on a
+            # bad rank; `None or 0` -> 0, which the `rank > 0` validity gate below
+            # drops, so one bad row is skipped instead of aborting the file.
+            "rank": _safe_int(item.get("rank")) or 0,
             # title-or-album fallback: legacy hot100 + Phase-7 new charts use the
             # "title" key; legacy b200 uses "album". This is the ONLY shape
             # difference across the three on-disk sources.

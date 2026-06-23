@@ -176,6 +176,34 @@ class ParseChartFileNormalizedShapeTests(unittest.TestCase):
             self.assertEqual(result[0]["title"], "Keep")
 
 
+class ParseChartFileMalformedRankTests(unittest.TestCase):
+    """WR-06: a single non-numeric/null rank must drop THAT row, not crash the
+    whole file. _safe_int tolerates it; the rank>0 gate then drops it."""
+
+    def test_non_numeric_rank_drops_row_without_crashing(self):
+        rows = [
+            {"rank": "N/A", "title": "Bad String Rank", "artist": "X"},  # dropped
+            {"rank": None, "title": "Null Rank", "artist": "Y"},          # dropped
+            {"rank": 1, "title": "Keep Me", "artist": "Z"},               # valid
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "2024-01-06.json", rows)
+            result = parse_chart_file(path)  # must not raise
+            self.assertIsNotNone(result)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["title"], "Keep Me")
+            self.assertEqual(result[0]["rank"], 1)
+
+    def test_all_ranks_malformed_returns_none(self):
+        rows = [
+            {"rank": "N/A", "title": "A", "artist": "X"},
+            {"rank": None, "title": "B", "artist": "Y"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "2024-01-06.json", rows)
+            self.assertIsNone(parse_chart_file(path))
+
+
 class ParseChartFileInvalidFileTests(unittest.TestCase):
     def test_empty_list_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
