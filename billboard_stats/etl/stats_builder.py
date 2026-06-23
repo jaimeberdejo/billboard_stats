@@ -4,7 +4,21 @@ Handles phantom chart weeks: the billboard.py library returns the first
 real chart for any query date before the chart actually started. These
 phantom weeks are detected (ALL entries have is_new=true AND weeks_on_chart=1)
 and excluded from stats, keeping only the earliest such week per chart type.
+
+Two phantom-filter paths coexist here (Phase 9):
+
+* The v1.0 path (``_VALID_HOT100_WEEKS_CTE`` / ``_VALID_B200_WEEKS_CTE`` +
+  ``build_artist_stats``) hardcodes the phantom rule once per chart_type over the
+  bifurcated ``hot100_entries`` / ``b200_entries`` tables. It is KEPT UNCHANGED
+  for compatibility -- the unchanged v1.0 frontend still reads ``artist_stats``.
+  Phase 15 retires it, not this module.
+* The generalized path (``valid_weeks_cte`` + ``build_artist_chart_stats``)
+  expresses the SAME phantom rule as ONE parametric CTE keyed by ``chart_id`` over
+  the polymorphic ``chart_entries`` table, feeding the ``artist_chart_stats``
+  rollup (one ROW per artist x chart). Adding a chart adds rows, never columns.
 """
+
+from __future__ import annotations
 
 import logging
 
@@ -62,6 +76,93 @@ _VALID_B200_WEEKS_CTE = """
 """
 
 
+def valid_weeks_cte(name: str = "valid_weeks") -> str:
+    """Return the SQL body of a parametric valid-weeks CTE keyed by ``chart_id``.
+
+    This is the SINGLE parametric source the new multi-chart rollup path uses
+    (success criterion #5). It encodes the SAME phantom-week rule the two v1.0
+    literal CTEs (``_VALID_HOT100_WEEKS_CTE`` / ``_VALID_B200_WEEKS_CTE``) encode
+    -- a week is phantom when >= 95% of THAT CHART's ``chart_entries`` rows for the
+    week have ``is_new = true AND weeks_on_chart = 1`` -- but keyed by a
+    ``chart_id`` bind parameter over the polymorphic ``chart_entries`` table
+    instead of a hardcoded ``chart_type`` literal. The earliest phantom week is
+    kept as the real first chart; all later phantoms are excluded.
+
+    The returned text is a CTE *body* (no leading ``WITH``) producing a relation
+    ``<name>`` with a single ``id`` column = the valid ``chart_week_id`` values.
+    The ``chart_id`` is bound ONCE via a single ``%s`` placeholder in a leading
+    ``bound_<name>`` sub-CTE and referenced everywhere as
+    ``(SELECT chart_id FROM bound_<name>)`` -- so the whole CTE takes EXACTLY ONE
+    bind parameter (the chart_id). There is exactly ONE such CTE for ALL charts --
+    no sixth hardcoded copy.
+
+    Args:
+        name: The CTE relation name to emit (default ``valid_weeks``).
+
+    Returns:
+        SQL text for use as ``WITH <body> SELECT ...`` (or chained after other
+        CTEs with a leading comma). Bind a single ``chart_id`` param.
+    """
+    return f"""
+    bound_{name} AS (
+        SELECT %s::int AS chart_id
+    ),
+    phantom_{name} AS (
+        SELECT e.chart_week_id
+        FROM chart_entries e
+        WHERE e.chart_id = (SELECT chart_id FROM bound_{name})
+        GROUP BY e.chart_week_id
+        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
+               >= COUNT(*) * 95 / 100
+    ),
+    first_real_{name} AS (
+        SELECT cw.id
+        FROM phantom_{name} ph
+        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
+        ORDER BY cw.chart_date, cw.id
+        LIMIT 1
+    ),
+    {name} AS (
+        SELECT DISTINCT e.chart_week_id AS id
+        FROM chart_entries e
+        WHERE e.chart_id = (SELECT chart_id FROM bound_{name})
+          AND (e.chart_week_id NOT IN (SELECT chart_week_id FROM phantom_{name})
+               OR e.chart_week_id = (SELECT id FROM first_real_{name}))
+    )
+"""
+
+
+# Maps a chart's entity_kind to the join that resolves a chart_entries row to the
+# artist(s) it rolls up to, plus the entity-id column used for distinct counts.
+# The generalized rollup branches on these so the artist-entity chart path is
+# present now (drops in for free when Artist 100 is ingested in Phase 11).
+_ENTITY_ROLLUP = {
+    "song": {
+        "join": "JOIN song_artists ja ON ja.song_id = e.song_id",
+        "join2": "JOIN song_artists ja2 ON ja2.song_id = e2.song_id",
+        "artist_id": "ja.artist_id",
+        "artist_id2": "ja2.artist_id",
+        "entity_id": "e.song_id",
+    },
+    "album": {
+        "join": "JOIN album_artists ja ON ja.album_id = e.album_id",
+        "join2": "JOIN album_artists ja2 ON ja2.album_id = e2.album_id",
+        "artist_id": "ja.artist_id",
+        "artist_id2": "ja2.artist_id",
+        "entity_id": "e.album_id",
+    },
+    # Artist-entity charts (e.g. Artist 100) carry artist_id directly on the
+    # chart_entries row -- no join table needed.
+    "artist": {
+        "join": "",
+        "join2": "",
+        "artist_id": "e.artist_id",
+        "artist_id2": "e2.artist_id",
+        "entity_id": "e.artist_id",
+    },
+}
+
+
 def build_all_stats(conn):
     """Populate all stats tables. Call after all chart data is loaded."""
     logger.info("Building song stats...")
@@ -70,6 +171,11 @@ def build_all_stats(conn):
     build_album_stats(conn)
     logger.info("Building artist stats...")
     build_artist_stats(conn)
+    # Additive: the generalized per-chart rollup runs AFTER the v1.0 builds and
+    # does not touch artist_stats. Safe to run even when chart_entries is empty
+    # (it simply writes no rows for charts with no entries).
+    logger.info("Building artist_chart_stats rollup...")
+    build_artist_chart_stats(conn)
     logger.info("Stats build complete.")
 
 
@@ -313,5 +419,102 @@ def build_artist_stats(conn):
             ) sub
             WHERE ast.artist_id = sub.artist_id;
         """)
+
+    conn.commit()
+
+
+def build_artist_chart_stats(conn):
+    """Populate the generalized per-chart artist rollup ``artist_chart_stats``.
+
+    Writes ONE row per (artist_id, chart_id) -- adding a chart adds ROWS, never
+    columns -- by looping over the ``charts`` registry and, for each chart,
+    aggregating ``chart_entries`` under the SINGLE parametric phantom-week CTE
+    (``valid_weeks_cte``). The entity-to-artist resolution branches on the chart's
+    ``entity_kind``: song charts join ``song_artists``, album charts join
+    ``album_artists``, and artist-entity charts read ``artist_id`` directly off the
+    entry (so Artist 100 drops in for free in Phase 11).
+
+    Writes exactly the authoritative Plan-01 ``artist_chart_stats`` columns:
+    ``total_entries``, ``total_weeks``, ``number_ones``, ``best_peak``,
+    ``max_simultaneous``, ``first_date``, ``last_date``. Deterministic; this is a
+    DELETE + rebuild, so re-running yields identical rows.
+
+    Additive and independent of the v1.0 ``build_artist_stats`` path, which is left
+    untouched (compatibility; Phase 15 retires it).
+    """
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM artist_chart_stats;")
+
+        cur.execute("SELECT id, entity_kind FROM charts;")
+        charts = cur.fetchall()
+
+        for chart_id, entity_kind in charts:
+            rollup = _ENTITY_ROLLUP.get(entity_kind)
+            if rollup is None:
+                logger.warning(
+                    "Skipping chart %s: unknown entity_kind %r", chart_id, entity_kind
+                )
+                continue
+
+            join_clause = rollup["join"]
+            join2_clause = rollup["join2"]
+            artist_id_expr = rollup["artist_id"]
+            artist_id2_expr = rollup["artist_id2"]
+            entity_id_expr = rollup["entity_id"]
+
+            # One parametric INSERT per chart, bound to a single chart_id param.
+            # The phantom filter is the shared valid_weeks_cte; the per-(artist,
+            # week) entry counts feed max_simultaneous.
+            cur.execute(
+                f"""
+                WITH {valid_weeks_cte('valid_weeks')}
+                INSERT INTO artist_chart_stats (
+                    artist_id, chart_id, total_entries, total_weeks,
+                    number_ones, best_peak, max_simultaneous,
+                    first_date, last_date
+                )
+                SELECT
+                    agg.artist_id,
+                    (SELECT chart_id FROM bound_valid_weeks),
+                    agg.total_entries,
+                    agg.total_weeks,
+                    agg.number_ones,
+                    agg.best_peak,
+                    agg.max_simultaneous,
+                    agg.first_date,
+                    agg.last_date
+                FROM (
+                    SELECT
+                        {artist_id_expr} AS artist_id,
+                        COUNT(DISTINCT {entity_id_expr}) AS total_entries,
+                        COUNT(*) AS total_weeks,
+                        COUNT(DISTINCT {entity_id_expr})
+                            FILTER (WHERE e.rank = 1) AS number_ones,
+                        MIN(e.rank) AS best_peak,
+                        MIN(cw.chart_date) AS first_date,
+                        MAX(cw.chart_date) AS last_date,
+                        COALESCE(MAX(sim.week_count), 0) AS max_simultaneous
+                    FROM chart_entries e
+                    JOIN chart_weeks cw ON e.chart_week_id = cw.id
+                    {join_clause}
+                    LEFT JOIN (
+                        SELECT
+                            {artist_id2_expr} AS artist_id,
+                            e2.chart_week_id,
+                            COUNT(*) AS week_count
+                        FROM chart_entries e2
+                        {join2_clause}
+                        WHERE e2.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+                          AND e2.chart_week_id IN (SELECT id FROM valid_weeks)
+                        GROUP BY {artist_id2_expr}, e2.chart_week_id
+                    ) sim ON sim.artist_id = {artist_id_expr}
+                         AND sim.chart_week_id = e.chart_week_id
+                    WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+                      AND e.chart_week_id IN (SELECT id FROM valid_weeks)
+                    GROUP BY {artist_id_expr}
+                ) agg;
+                """,
+                (chart_id,),
+            )
 
     conn.commit()

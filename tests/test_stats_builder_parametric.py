@@ -78,11 +78,18 @@ class FakeCursor:
             self._result = [(c["id"], c["entity_kind"]) for c in self._db.charts]
             return
 
-        # The parametric rollup INSERT: one statement per chart, bound to a
-        # chart_id placeholder. The fake interprets it by computing the rollup
-        # rows for that chart using the parametric phantom filter.
-        if norm.startswith("insert into artist_chart_stats"):
+        # The parametric rollup INSERT: one statement per chart. It is a
+        # ``WITH <parametric phantom CTE> INSERT INTO artist_chart_stats ...``
+        # bound to a single chart_id placeholder. The fake interprets it by
+        # computing the rollup rows for that chart using the SAME parametric
+        # phantom filter the CTE encodes.
+        if "insert into artist_chart_stats" in norm:
+            # The single bind param is the chart_id (the bound_valid_weeks CTE
+            # carries exactly one %s placeholder).
             (chart_id,) = params
+            # Sanity: the statement must be driven by the parametric chart_id CTE
+            # over chart_entries -- never a hardcoded chart_type literal.
+            self._db._assert_parametric(norm)
             self._db.build_chart_rollup(chart_id)
             return
 
@@ -134,6 +141,18 @@ class FakeDB:
         self.album_artists = [dict(l) for l in (album_artists or [])]
         # artist_chart_stats: list of dicts keyed (artist_id, chart_id)
         self.artist_chart_stats = [dict(r) for r in (artist_chart_stats or [])]
+
+    # --- guard: the rollup INSERT must be parametric over chart_entries -------
+    def _assert_parametric(self, norm):
+        """Fail loudly if the rollup INSERT is not the single parametric CTE
+        keyed by chart_id over chart_entries (success criterion #5)."""
+        assert "chart_entries" in norm, "rollup must aggregate chart_entries"
+        assert "chart_id =" in norm, "rollup must filter by a chart_id bind"
+        # No hardcoded chart_type literal leaks into the generalized path.
+        assert "chart_type = 'hot-100'" not in norm
+        assert "chart_type = 'billboard-200'" not in norm
+        assert "from hot100_entries" not in norm
+        assert "from b200_entries" not in norm
 
     # --- parametric phantom-week filter (the SAME rule the production CTE
     #     encodes, now keyed by chart_id over chart_entries) -------------------
