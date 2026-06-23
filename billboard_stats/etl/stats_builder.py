@@ -176,7 +176,8 @@ _ENTITY_ROLLUP = {
 
 
 def build_all_stats(conn):
-    """Populate all stats tables. Call after all chart data is loaded.
+    """Populate all stats tables in a SINGLE transaction. Call after all chart
+    data is loaded.
 
     Runs BOTH stats paths during the transition (Plan 10-02):
 
@@ -192,22 +193,43 @@ def build_all_stats(conn):
     The rollup runs AFTER the v1.0 builds and does not touch ``artist_stats``;
     it is safe to run even when ``chart_entries`` is empty (it simply writes no
     rows for charts with no entries).
+
+    CR-02: every builder is a ``DELETE FROM <stats_table>`` + repopulate. They run
+    here with ``commit=False`` so the whole rebuild is ONE transaction committed
+    exactly once at the end. This protects the LIVE v1.0 site during the dual-write
+    transition: a concurrent reader sees the OLD stats until the final commit
+    atomically flips to the NEW set, never an empty/half-rebuilt ``artist_stats``
+    (or any other stats table) mid-rebuild. On any failure we roll back, leaving
+    the previous stats intact rather than freezing the site on an empty table.
     """
-    logger.info("Building song stats...")
-    build_song_stats(conn)
-    logger.info("Building album stats...")
-    build_album_stats(conn)
-    logger.info("Building artist stats...")
-    build_artist_stats(conn)
-    # Canonical multi-chart stats run: the generalized per-chart rollup loops the
-    # registry and is additive over the v1.0 builds above.
-    logger.info("Building artist_chart_stats rollup...")
-    build_artist_chart_stats(conn)
-    logger.info("Stats build complete.")
+    try:
+        logger.info("Building song stats...")
+        build_song_stats(conn, commit=False)
+        logger.info("Building album stats...")
+        build_album_stats(conn, commit=False)
+        logger.info("Building artist stats...")
+        build_artist_stats(conn, commit=False)
+        # Canonical multi-chart stats run: the generalized per-chart rollup loops
+        # the registry and is additive over the v1.0 builds above.
+        logger.info("Building artist_chart_stats rollup...")
+        build_artist_chart_stats(conn, commit=False)
+        # Single atomic flip: readers go straight from the old stats to the new.
+        conn.commit()
+        logger.info("Stats build complete.")
+    except Exception:
+        # Leave the previous stats intact rather than exposing an empty table.
+        conn.rollback()
+        logger.exception("Stats rebuild failed; rolled back (previous stats kept).")
+        raise
 
 
-def build_song_stats(conn):
-    """Populate song_stats from hot100_entries, excluding phantom weeks."""
+def build_song_stats(conn, commit=True):
+    """Populate song_stats from hot100_entries, excluding phantom weeks.
+
+    ``commit=False`` defers the commit so :func:`build_all_stats` can wrap the
+    whole multi-table rebuild in one transaction (CR-02); direct callers keep the
+    default per-build commit.
+    """
     with conn.cursor() as cur:
         cur.execute("DELETE FROM song_stats;")
         cur.execute(f"""
@@ -261,11 +283,16 @@ def build_song_stats(conn):
             WHERE ss.song_id = sub.song_id;
         """)
 
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def build_album_stats(conn):
-    """Populate album_stats from b200_entries, excluding phantom weeks."""
+def build_album_stats(conn, commit=True):
+    """Populate album_stats from b200_entries, excluding phantom weeks.
+
+    ``commit=False`` defers the commit for :func:`build_all_stats`'s single-
+    transaction rebuild (CR-02).
+    """
     with conn.cursor() as cur:
         cur.execute("DELETE FROM album_stats;")
         cur.execute(f"""
@@ -317,11 +344,17 @@ def build_album_stats(conn):
             WHERE ss.album_id = sub.album_id;
         """)
 
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def build_artist_stats(conn):
-    """Populate artist_stats with cross-chart career statistics, excluding phantom weeks."""
+def build_artist_stats(conn, commit=True):
+    """Populate artist_stats with cross-chart career statistics, excluding phantom weeks.
+
+    ``commit=False`` defers the commit for :func:`build_all_stats`'s single-
+    transaction rebuild (CR-02), so the live frontend never reads an empty
+    ``artist_stats`` mid-rebuild.
+    """
     with conn.cursor() as cur:
         cur.execute("DELETE FROM artist_stats;")
 
@@ -447,10 +480,11 @@ def build_artist_stats(conn):
             WHERE ast.artist_id = sub.artist_id;
         """)
 
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def build_artist_chart_stats(conn):
+def build_artist_chart_stats(conn, commit=True):
     """Populate the generalized per-chart artist rollup ``artist_chart_stats``.
 
     Writes ONE row per (artist_id, chart_id) -- adding a chart adds ROWS, never
@@ -468,6 +502,9 @@ def build_artist_chart_stats(conn):
 
     Additive and independent of the v1.0 ``build_artist_stats`` path, which is left
     untouched (compatibility; Phase 15 retires it).
+
+    ``commit=False`` defers the commit for :func:`build_all_stats`'s single-
+    transaction rebuild (CR-02).
     """
     with conn.cursor() as cur:
         cur.execute("DELETE FROM artist_chart_stats;")
@@ -553,4 +590,5 @@ def build_artist_chart_stats(conn):
                 (chart_id,),
             )
 
-    conn.commit()
+    if commit:
+        conn.commit()

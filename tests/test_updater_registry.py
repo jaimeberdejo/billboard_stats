@@ -319,5 +319,108 @@ class UpdaterPostgresFreeTests(unittest.TestCase):
         self.assertNotIn("_load_b200", src)
 
 
+# ----------------------------------------------------------------------------
+# CR-02: the combined weekly invocation rebuilds stats AT MOST ONCE
+# ----------------------------------------------------------------------------
+class _FakeConnectionModule:
+    """Stand-in for billboard_stats.db.connection so run_update's lazy import
+    resolves without psycopg2. Hands back a sentinel conn and records returns."""
+
+    def __init__(self):
+        self.conn = object()
+        self.returned = []
+
+    def get_conn(self):
+        return self.conn
+
+    def put_conn(self, conn):
+        self.returned.append(conn)
+
+
+class RunUpdateSingleRebuildTests(unittest.TestCase):
+    """run_update must rebuild stats EXACTLY ONCE across repair + update, and
+    pass rebuild_stats=False into each phase so neither rebuilds on its own."""
+
+    def setUp(self):
+        import sys
+
+        self._saved = {
+            "repair_gaps": updater.repair_gaps,
+            "update_charts": updater.update_charts,
+            "build_all_stats": updater.build_all_stats,
+            "conn_mod": sys.modules.get("billboard_stats.db.connection"),
+        }
+        self._sys = sys
+        self.fake_conn_mod = _FakeConnectionModule()
+        sys.modules["billboard_stats.db.connection"] = self.fake_conn_mod
+
+        self.repair_calls = []
+        self.update_calls = []
+        self.build_all_stats_calls = 0
+
+        def _fake_repair(conn, data_dir=None, rebuild_stats=True):
+            self.repair_calls.append({"rebuild_stats": rebuild_stats})
+            return {"hot-100": 1, "billboard-200": 0}  # repaired some
+
+        def _fake_update(conn, data_dir=None, rebuild_stats=True):
+            self.update_calls.append({"rebuild_stats": rebuild_stats})
+            return {"hot-100": 2}  # loaded some
+
+        def _fake_build_all_stats(conn):
+            self.build_all_stats_calls += 1
+
+        updater.repair_gaps = _fake_repair
+        updater.update_charts = _fake_update
+        updater.build_all_stats = _fake_build_all_stats
+
+    def tearDown(self):
+        updater.repair_gaps = self._saved["repair_gaps"]
+        updater.update_charts = self._saved["update_charts"]
+        updater.build_all_stats = self._saved["build_all_stats"]
+        if self._saved["conn_mod"] is not None:
+            self._sys.modules["billboard_stats.db.connection"] = self._saved["conn_mod"]
+        else:
+            self._sys.modules.pop("billboard_stats.db.connection", None)
+
+    def test_both_phases_rebuild_stats_once_not_twice(self):
+        updater.run_update(repair=True, update=True)
+        # Each phase ran with rebuild_stats=False (deferred to run_update).
+        self.assertEqual(self.repair_calls, [{"rebuild_stats": False}])
+        self.assertEqual(self.update_calls, [{"rebuild_stats": False}])
+        # And the single combined rebuild ran EXACTLY ONCE.
+        self.assertEqual(self.build_all_stats_calls, 1)
+
+    def test_no_rebuild_when_nothing_loaded(self):
+        updater.repair_gaps = lambda conn, data_dir=None, rebuild_stats=True: {
+            "hot-100": 0, "billboard-200": 0
+        }
+        updater.update_charts = lambda conn, data_dir=None, rebuild_stats=True: {}
+        updater.run_update(repair=True, update=True)
+        self.assertEqual(self.build_all_stats_calls, 0)
+
+    def test_update_only_path_rebuilds_once(self):
+        updater.run_update(repair=False, update=True)
+        self.assertEqual(self.repair_calls, [])
+        self.assertEqual(self.update_calls, [{"rebuild_stats": False}])
+        self.assertEqual(self.build_all_stats_calls, 1)
+
+
+class WeeklyEntrypointIncrementalOnlyTests(unittest.TestCase):
+    """CR-02: the weekly script (the cron path, no args) runs the INCREMENTAL
+    update only -- it must NOT default to repair + update."""
+
+    def test_run_weekly_etl_defaults_to_update_only(self):
+        import os
+
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        script = os.path.join(here, "scripts", "run_weekly_etl.sh")
+        with open(script) as f:
+            body = f.read()
+        # With no args the script forces --update (incremental-only), never the
+        # historical gap scan / double stats rebuild.
+        self.assertIn('set -- --update', body)
+        self.assertIn('"$#" -eq 0', body)
+
+
 if __name__ == "__main__":
     unittest.main()

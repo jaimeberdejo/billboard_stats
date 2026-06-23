@@ -117,7 +117,7 @@ def _new_on_disk_dates(folder: str, last_loaded, latest_valid_week) -> list:
     return new_dates
 
 
-def update_charts(conn, data_dir: str = None) -> dict:
+def update_charts(conn, data_dir: str = None, rebuild_stats: bool = True) -> dict:
     """Registry-driven incremental update over EVERY registered chart.
 
     ONE incremental path (replacing the hardcoded hot-100 / billboard-200
@@ -143,6 +143,10 @@ def update_charts(conn, data_dir: str = None) -> dict:
             tests). ``load_chart`` is imported lazily so this module stays
             psycopg2-free at import time.
         data_dir: Root data directory containing the per-chart subdirectories.
+        rebuild_stats: When True (default, the standalone path) rebuild stats
+            here after loading. The combined weekly path (:func:`run_update`)
+            passes False so stats are rebuilt EXACTLY ONCE at the end across both
+            repair + update, instead of twice (CR-02).
 
     Returns:
         ``{chart_slug: n_weeks_loaded}`` for every chart that loaded new weeks.
@@ -202,17 +206,23 @@ def update_charts(conn, data_dir: str = None) -> dict:
         loaded[chart.slug] = len(new_dates)
 
     # Rebuild BOTH v1.0 artist_stats AND artist_chart_stats when anything loaded.
-    if loaded:
+    # When rebuild_stats is False the caller (run_update) owns a single rebuild
+    # after repair + update both finish, so we never rebuild twice (CR-02).
+    if loaded and rebuild_stats:
         logger.info("Rebuilding stats (artist_stats + artist_chart_stats)...")
         build_all_stats(conn)
         logger.info("Stats rebuild complete.")
+    elif loaded:
+        logger.info("Loaded new data; stats rebuild deferred to caller.")
     else:
         logger.info("No new data loaded; skipping stats rebuild.")
 
     return loaded
 
 
-def repair_gaps(conn, data_dir: str = None, since_year: int = 2025) -> dict:
+def repair_gaps(
+    conn, data_dir: str = None, since_year: int = 2025, rebuild_stats: bool = True
+) -> dict:
     """Find and re-download genuinely missing historical data.
 
     LEGACY-ONLY scope: gap repair runs against the two core charts' legacy
@@ -225,6 +235,10 @@ def repair_gaps(conn, data_dir: str = None, since_year: int = 2025) -> dict:
         conn: Database connection.
         data_dir: Root data directory.
         since_year: Only look for gaps from this year onward.
+        rebuild_stats: When True (default, the standalone repair path) rebuild
+            stats here after repair. The combined weekly path
+            (:func:`run_update`) passes False so stats are rebuilt EXACTLY ONCE
+            at the end across both repair + update (CR-02).
     """
     # Lazy import: the legacy-folder compat shims live in loader (which imports
     # psycopg2 at top level); keep this module psycopg2-free at import time.
@@ -276,16 +290,33 @@ def repair_gaps(conn, data_dir: str = None, since_year: int = 2025) -> dict:
                 _load_b200(conn, b200_dir, only_dates=set(loaded))
                 repaired["billboard-200"] = len(loaded)
 
-    # Rebuild stats if anything was repaired
-    if any(v > 0 for v in repaired.values()):
+    # Rebuild stats if anything was repaired. When rebuild_stats is False the
+    # caller (run_update) owns a single rebuild after repair + update both
+    # finish, so we never rebuild twice in one weekly invocation (CR-02).
+    if any(v > 0 for v in repaired.values()) and rebuild_stats:
         logger.info("Rebuilding stats after gap repair...")
         build_all_stats(conn)
+    elif any(v > 0 for v in repaired.values()):
+        logger.info("Repaired data; stats rebuild deferred to caller.")
 
     return repaired
 
 
 def run_update(data_dir: str = None, repair: bool = True, update: bool = True) -> dict:
     """CLI entry point: runs gap repair and/or the registry-driven update.
+
+    CR-02: when BOTH phases run in one invocation they each load data that feeds
+    the SAME stats tables, so this rebuilds stats EXACTLY ONCE at the end (passing
+    ``rebuild_stats=False`` into each phase) instead of twice. A single rebuild
+    halves the window during which the live v1.0 frontend could read a
+    mid-rebuild stats table, and avoids a second DELETE+INSERT that could fail
+    after the first already mutated prod. The rebuild itself is transactional
+    (see :func:`billboard_stats.etl.stats_builder.build_all_stats`).
+
+    The weekly cron points at the incremental-only ``--update`` path
+    (scripts/run_weekly_etl.sh): gap repair is an operator action, not a weekly
+    one. This entry point still supports running both for an operator who wants a
+    repair + update in one shot.
 
     Args:
         data_dir: Root data directory.
@@ -299,12 +330,26 @@ def run_update(data_dir: str = None, repair: bool = True, update: bool = True) -
     conn = get_conn()
     try:
         results = {}
+        loaded_anything = False
         if repair:
             logger.info("=== Gap Repair ===")
-            results["repair"] = repair_gaps(conn, data_dir)
+            repaired = repair_gaps(conn, data_dir, rebuild_stats=False)
+            results["repair"] = repaired
+            loaded_anything = loaded_anything or any(v > 0 for v in repaired.values())
         if update:
             logger.info("=== Incremental Update (registry-driven) ===")
-            results["update"] = update_charts(conn, data_dir)
+            updated = update_charts(conn, data_dir, rebuild_stats=False)
+            results["update"] = updated
+            loaded_anything = loaded_anything or bool(updated)
+
+        # Single transactional stats rebuild after ALL loading (CR-02).
+        if loaded_anything:
+            logger.info("Rebuilding stats once (artist_stats + artist_chart_stats)...")
+            build_all_stats(conn)
+            logger.info("Stats rebuild complete.")
+        else:
+            logger.info("No new data loaded; skipping stats rebuild.")
+
         return results
     finally:
         put_conn(conn)

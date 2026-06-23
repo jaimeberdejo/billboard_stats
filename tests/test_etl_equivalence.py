@@ -259,5 +259,75 @@ class StatsRegistryLoopTests(unittest.TestCase):
         )
 
 
+# ============================================================================
+# CR-02: build_all_stats is a SINGLE transaction (one commit; rollback on error)
+# ============================================================================
+class _CountingCursor:
+    """Accepts any SQL (DELETE/INSERT/UPDATE/SELECT) as a no-op. Returns an empty
+    result for the registry SELECT so build_artist_chart_stats loops zero charts."""
+
+    def __init__(self, fail_on=None):
+        self._fail_on = fail_on
+        self._result = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        norm = " ".join(sql.split()).lower()
+        if self._fail_on and self._fail_on in norm:
+            raise RuntimeError("boom")
+        # SELECT id, entity_kind FROM charts -> no charts (rollup loops nothing).
+        self._result = []
+
+    def fetchall(self):
+        return self._result
+
+    def fetchone(self):
+        return None
+
+
+class _CountingConn:
+    def __init__(self, fail_on=None):
+        self.commits = 0
+        self.rollbacks = 0
+        self._fail_on = fail_on
+
+    def cursor(self):
+        return _CountingCursor(fail_on=self._fail_on)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+
+class BuildAllStatsTransactionTests(unittest.TestCase):
+    def test_build_all_stats_commits_exactly_once(self):
+        from billboard_stats.etl.stats_builder import build_all_stats
+
+        conn = _CountingConn()
+        build_all_stats(conn)
+        # The four DELETE+INSERT builders run with commit=False; build_all_stats
+        # commits ONCE at the end so the live site flips atomically (CR-02).
+        self.assertEqual(conn.commits, 1)
+        self.assertEqual(conn.rollbacks, 0)
+
+    def test_build_all_stats_rolls_back_on_failure(self):
+        from billboard_stats.etl.stats_builder import build_all_stats
+
+        # Fail inside the album_stats DELETE -> no partial commit, full rollback,
+        # so the previous stats stay intact instead of an empty table.
+        conn = _CountingConn(fail_on="delete from album_stats")
+        with self.assertRaises(RuntimeError):
+            build_all_stats(conn)
+        self.assertEqual(conn.commits, 0)
+        self.assertEqual(conn.rollbacks, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

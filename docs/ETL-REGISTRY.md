@@ -47,17 +47,30 @@ of two hardcoded calls.
   only. The dual-write keeps the **live v1.0 frontend fed** (it still reads the
   old tables until the Phase 13 read-path cutover); the legacy writes are retired
   in **Phase 15**.
-- **Both stats sets.** After loading, `build_all_stats` rebuilds BOTH the v1.0
-  `artist_stats` AND the new per-chart `artist_chart_stats`.
-- **Weekly = registry-driven + INCREMENTAL-ONLY.** `update_charts` loops the
-  registry and, per chart, derives the delta window from that chart's
-  `last_loaded_date` (the day after, through the latest publishable chart week),
-  fetches just the delta with the chart-appropriate downloader, and calls
-  `load_chart` (dual-write) for the new weeks. It **never** triggers the
-  multi-decade backfill; a chart that has never been loaded
+- **Both stats sets, ONE atomic rebuild.** After loading, `build_all_stats`
+  rebuilds BOTH the v1.0 `artist_stats` AND the new per-chart
+  `artist_chart_stats`. The whole multi-table rebuild now runs in a **single
+  transaction** (the per-table `DELETE`+repopulate builders defer their commit;
+  `build_all_stats` commits once at the end and rolls back on any error). A
+  concurrent reader on the **live v1.0 site** sees the OLD stats until the final
+  commit atomically flips to the new set — never an empty/half-rebuilt stats
+  table, and a crash mid-rebuild leaves the previous stats intact rather than
+  freezing the site (CR-02).
+- **Weekly = registry-driven + INCREMENTAL-ONLY, single stats rebuild.**
+  `update_charts` loops the registry and, per chart, derives the delta window
+  from that chart's `last_loaded_date` (the day after, through the latest
+  publishable chart week), fetches just the delta with the chart-appropriate
+  downloader, and calls `load_chart` (dual-write) for the new weeks. It **never**
+  triggers the multi-decade backfill; a chart that has never been loaded
   (`last_loaded_date IS NULL`) is **skipped** by the weekly path (its first full
   load is `run_etl`'s / Phase 11's job), and an absent/partial on-disk folder is
-  logged and skipped, never a crash.
+  logged and skipped, never a crash. **The weekly cron runs `--update` ONLY.**
+  `scripts/run_weekly_etl.sh` with no args (the cron path) now defaults to
+  `--update`, so the weekly job is incremental-only and never runs the historical
+  gap scan or rebuilds stats twice. Gap repair is an **operator** action: run
+  `bash scripts/run_weekly_etl.sh --repair` (or `--repair --update`) by hand. When
+  an operator does run both phases in one invocation, stats are rebuilt **exactly
+  once** at the end across repair + update, not twice (CR-02).
 
 **It DROPS, RENAMES, or NARROWS no v1.0 object.** Because the frontend is
 unchanged and still reads the old tables, **"v1.0 pages still render" holds by
