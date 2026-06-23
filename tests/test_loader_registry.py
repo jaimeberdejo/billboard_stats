@@ -368,20 +368,28 @@ def _new_chart_record():
 
 class _LoaderHarness:
     """Patch the loader's parse_chart_file/list_chart_files/execute_values so
-    load_chart runs over an in-memory parsed-entry fixture."""
+    load_chart runs over an in-memory parsed-entry fixture.
 
-    def __init__(self, entries, chart_id):
+    ``chart_date_offset`` shifts the single stubbed week file's date so multiple
+    ``_load`` passes for the SAME chart produce DISTINCT chart_weeks (they would
+    otherwise collide on the (chart_date, chart_type) upsert key).
+    """
+
+    def __init__(self, entries, chart_date_offset=0):
         self._entries = entries
-        self._chart_id = chart_id
+        self._offset = chart_date_offset
         self._saved = {}
 
     def __enter__(self):
+        from datetime import timedelta
+
+        d = date(2020, 1, 1) + timedelta(days=self._offset)
         self._saved["parse"] = loader.parse_chart_file
         self._saved["list"] = loader.list_chart_files
         self._saved["ev"] = loader.execute_values
         loader.parse_chart_file = lambda path: list(self._entries)
         loader.list_chart_files = lambda directory: [
-            (date(2020, 1, 1), "/fake/2020-01-01.json")
+            (d, f"/fake/{d.isoformat()}.json")
         ]
         loader.execute_values = _fake_execute_values
         return self
@@ -393,9 +401,9 @@ class _LoaderHarness:
         return False
 
 
-def _load(db, chart, entries):
+def _load(db, chart, entries, chart_date_offset=0):
     conn = FakeConn(db)
-    with _LoaderHarness(entries, db.chart_id(chart.slug)):
+    with _LoaderHarness(entries, chart_date_offset=chart_date_offset):
         loader.load_chart(conn, chart)
     return conn
 

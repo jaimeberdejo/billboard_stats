@@ -176,16 +176,31 @@ _ENTITY_ROLLUP = {
 
 
 def build_all_stats(conn):
-    """Populate all stats tables. Call after all chart data is loaded."""
+    """Populate all stats tables. Call after all chart data is loaded.
+
+    Runs BOTH stats paths during the transition (Plan 10-02):
+
+    * The v1.0 literal path (``build_song_stats`` / ``build_album_stats`` /
+      ``build_artist_stats``) over the bifurcated hot100_entries/b200_entries
+      tables -- KEPT byte-unchanged so the unchanged v1.0 frontend keeps reading
+      ``artist_stats``. Phase 15 retires it.
+    * The generalized registry-loop rollup (``build_artist_chart_stats``), which
+      is the canonical multi-chart stats run: it loops the ``charts`` registry
+      and, per chart, aggregates the polymorphic ``chart_entries`` under the
+      single parametric phantom CTE -- adding a chart adds ROWS, never columns.
+
+    The rollup runs AFTER the v1.0 builds and does not touch ``artist_stats``;
+    it is safe to run even when ``chart_entries`` is empty (it simply writes no
+    rows for charts with no entries).
+    """
     logger.info("Building song stats...")
     build_song_stats(conn)
     logger.info("Building album stats...")
     build_album_stats(conn)
     logger.info("Building artist stats...")
     build_artist_stats(conn)
-    # Additive: the generalized per-chart rollup runs AFTER the v1.0 builds and
-    # does not touch artist_stats. Safe to run even when chart_entries is empty
-    # (it simply writes no rows for charts with no entries).
+    # Canonical multi-chart stats run: the generalized per-chart rollup loops the
+    # registry and is additive over the v1.0 builds above.
     logger.info("Building artist_chart_stats rollup...")
     build_artist_chart_stats(conn)
     logger.info("Stats build complete.")
