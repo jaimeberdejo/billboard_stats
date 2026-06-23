@@ -287,11 +287,14 @@ def _upsert_chart_week(cur, chart_date, legacy_table, chart_id):
 
     For LEGACY charts the upsert keys on the existing UNIQUE(chart_date,
     chart_type) -- supplying chart_type (derived from the legacy table mapping)
-    AND setting chart_id = EXCLUDED.chart_id so both phantom CTEs resolve. Do NOT
-    attempt a chart_id-keyed week upsert here: there is no UNIQUE on chart_id.
+    AND setting chart_id = EXCLUDED.chart_id so both phantom CTEs resolve.
 
-    The new-chart branch (no chart_type) is structurally present for Phase 11 but
-    NOT exercised this phase (only the two legacy charts run).
+    For NEW charts (no legacy_table -> no chart_type) the upsert keys on the
+    additive partial unique index uq_chart_weeks_chart_id_date
+    (chart_id, chart_date) WHERE chart_id IS NOT NULL, so re-loading a new-chart
+    week is idempotent (CR-01) rather than inserting a duplicate week. Only the
+    two legacy charts run in Phase 10; the new-chart branch is exercised by the
+    fixture tests and ships ready for Phase 11.
     """
     if legacy_table is not None:
         chart_type = _legacy_chart_type(legacy_table)
@@ -305,13 +308,20 @@ def _upsert_chart_week(cur, chart_date, legacy_table, chart_id):
         )
         return cur.fetchone()[0]
 
-    # New-chart path (NOT exercised in Phase 10): the week is identified by
-    # chart_id + chart_date. There is no UNIQUE(chart_id, chart_date) yet, so
-    # this branch is reserved for the Phase 11 ingest (which adds the constraint
-    # / dedicated path). Kept structurally present per the plan.
+    # New-chart path: the week is identified by chart_id + chart_date (there is
+    # no chart_type for a non-legacy chart). It is made IDEMPOTENT (CR-01) by the
+    # additive partial unique index uq_chart_weeks_chart_id_date
+    # (chart_id, chart_date) WHERE chart_id IS NOT NULL — declared in schema.sql
+    # and migration 001. Without the ON CONFLICT, re-loading a new-chart week (a
+    # re-run, or a re-fetched partial week) would INSERT a DUPLICATE chart_weeks
+    # row, and the duplicate week id would let duplicate chart_entries escape the
+    # (chart_week_id, rank) idempotency. The conflict target repeats the index's
+    # partial predicate so Postgres selects that partial index as the arbiter.
     cur.execute(
         "INSERT INTO chart_weeks (chart_date, chart_id) "
         "VALUES (%s, %s) "
+        "ON CONFLICT (chart_id, chart_date) WHERE chart_id IS NOT NULL "
+        "DO UPDATE SET chart_id = EXCLUDED.chart_id "
         "RETURNING id;",
         (chart_date, chart_id),
     )

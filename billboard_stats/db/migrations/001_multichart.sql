@@ -47,6 +47,17 @@ CREATE TABLE IF NOT EXISTS charts (
 -- Wire chart_weeks to the registry. NULLABLE FK (additive); KEEP chart_type.
 ALTER TABLE chart_weeks ADD COLUMN IF NOT EXISTS chart_id INT REFERENCES charts(id);
 
+-- New-chart week idempotency (CR-01, additive; mirrors db/schema.sql). Keys
+-- NEW-chart weeks (chart_id set, chart_type NULL) on (chart_id, chart_date) so a
+-- re-load conflict-updates instead of inserting a duplicate week. PARTIAL
+-- (WHERE chart_id IS NOT NULL) so it never constrains a row with a NULL chart_id
+-- and never touches the legacy UNIQUE(chart_date, chart_type). Strictly additive
+-- and idempotent (IF NOT EXISTS); for the two legacy charts every existing week
+-- already has a single chart_id per (chart_date), so backfilling chart_id (step
+-- 3) cannot violate it.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chart_weeks_chart_id_date
+    ON chart_weeks(chart_id, chart_date) WHERE chart_id IS NOT NULL;
+
 -- Unified, polymorphic weekly entries (DATA-02). Exactly one of
 -- song_id / album_id / artist_id is set per row (num_nonnulls CHECK).
 CREATE TABLE IF NOT EXISTS chart_entries (

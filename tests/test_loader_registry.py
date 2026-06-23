@@ -185,30 +185,50 @@ class FakeDB:
 
     # --- upserts ---------------------------------------------------------------
     def upsert_chart_week(self, norm, params):
-        """Upsert chart_weeks and return the week id.
+        """Upsert chart_weeks and return the week id, modeling the REAL Postgres
+        conflict keys (CR-01) -- NOT a chart_id-aware match that masks duplicates.
 
-        Handles BOTH week-insert shapes load_chart emits:
+        Handles BOTH week-insert shapes load_chart emits, each with its OWN
+        conflict arbiter exactly as real Postgres applies it:
 
-        * LEGACY charts: ``(chart_date, chart_type, chart_id)`` -- upsert keyed on
-          (chart_date, chart_type), refreshing chart_id (the
-          ``SET chart_id = EXCLUDED.chart_id`` path).
-        * NEW charts: ``(chart_date, chart_id)`` -- a plain insert keyed by
-          chart_id + chart_date (no chart_type), used when legacy_table is None.
+        * LEGACY charts: ``(chart_date, chart_type, chart_id)`` -- ON CONFLICT on
+          the existing ``UNIQUE(chart_date, chart_type)``. The dedup key is
+          (chart_date, chart_type) ONLY; chart_id is NOT part of the key. On a
+          conflict the row's chart_id is refreshed (``SET chart_id =
+          EXCLUDED.chart_id``).
+        * NEW charts: ``(chart_date, chart_id)`` -- ON CONFLICT on the partial
+          unique index ``uq_chart_weeks_chart_id_date (chart_id, chart_date)
+          WHERE chart_id IS NOT NULL``. The dedup key is (chart_id, chart_date)
+          ONLY (no chart_type). This makes a new-chart re-load idempotent instead
+          of inserting a duplicate week.
+
+        Matching the real keys here is what lets the new-chart idempotency test
+        actually exercise the dedup: an earlier chart_id-aware match key agreed
+        with real Postgres only by luck (chart_id is constant per chart in tests)
+        and silently masked the duplicate-week bug.
         """
         if len(params) == 3:
+            # Legacy: dedup on (chart_date, chart_type) ONLY.
             chart_date, chart_type, chart_id = params
+            for w in self.chart_weeks:
+                if (
+                    w["chart_date"] == chart_date
+                    and w["chart_type"] == chart_type
+                ):
+                    w["chart_id"] = chart_id  # SET chart_id = EXCLUDED.chart_id
+                    return w["id"]
         else:
+            # New chart: dedup on (chart_id, chart_date) ONLY (chart_type NULL).
             chart_date, chart_id = params
             chart_type = None
+            for w in self.chart_weeks:
+                if (
+                    w["chart_id"] == chart_id
+                    and w["chart_date"] == chart_date
+                ):
+                    w["chart_id"] = chart_id  # SET chart_id = EXCLUDED.chart_id
+                    return w["id"]
 
-        for w in self.chart_weeks:
-            if (
-                w["chart_date"] == chart_date
-                and w["chart_type"] == chart_type
-                and w["chart_id"] == chart_id
-            ):
-                w["chart_id"] = chart_id
-                return w["id"]
         wid = self._take("week")
         self.chart_weeks.append(
             {
@@ -473,6 +493,58 @@ class LoadChartDualWriteTests(unittest.TestCase):
         # ZERO legacy rows for a new chart.
         self.assertEqual(db.hot100_entries, [])
         self.assertEqual(db.b200_entries, [])
+
+    def test_new_chart_reload_is_idempotent_no_duplicate_weeks_or_entries(self):
+        # CR-01: re-loading the SAME new-chart (legacy_table=None) week must NOT
+        # duplicate chart_weeks or chart_entries. The new-chart week insert keys
+        # on (chart_id, chart_date) via the partial unique index, so the second
+        # load conflict-resolves to the existing week id and the chart_entries
+        # ON CONFLICT (chart_week_id, rank) then skips the duplicate rows. Using
+        # the SAME chart_date_offset on both passes targets the SAME week.
+        db = self._base_db()
+        chart = _new_chart_record()  # entity_kind="song", legacy_table=None
+        _load(db, chart, _NEW_CHART_ENTRIES, chart_date_offset=0)
+        _load(db, chart, _NEW_CHART_ENTRIES, chart_date_offset=0)
+
+        # Exactly ONE chart_weeks row for the new chart (no duplicate week).
+        new_weeks = [w for w in db.chart_weeks if w["chart_id"] == 3]
+        self.assertEqual(len(new_weeks), 1)
+        self.assertIsNone(new_weeks[0]["chart_type"])  # new chart -> no chart_type
+
+        # chart_entries not duplicated: still exactly one row per fixture entry.
+        new_ce = [e for e in db.chart_entries if e["chart_id"] == 3]
+        self.assertEqual(len(new_ce), len(_NEW_CHART_ENTRIES))
+        # And still zero legacy rows.
+        self.assertEqual(db.hot100_entries, [])
+        self.assertEqual(db.b200_entries, [])
+
+    def test_new_artist_chart_reload_is_idempotent(self):
+        # CR-01, artist-entity path: exercise the genuinely new-chart (artist)
+        # branch (entity_kind="artist", legacy_table=None) and prove re-loading
+        # the same week stays idempotent end-to-end through the artist resolve +
+        # chart_entries.artist_id path.
+        db = FakeDB(
+            charts=[{"id": 7, "slug": "artist-100", "entity_kind": "artist"}]
+        )
+        chart = ChartRecord(
+            slug="artist-100", entity_kind="artist", folder="/fake/artist-100",
+            last_loaded_date=None, legacy_table=None,
+        )
+        entries = [
+            {"rank": 1, "title": "", "artist": "Artist Solo", "peak_pos": 1,
+             "last_pos": None, "weeks": 1, "is_new": True, "image": None},
+        ]
+        _load(db, chart, entries, chart_date_offset=0)
+        _load(db, chart, entries, chart_date_offset=0)
+
+        weeks = [w for w in db.chart_weeks if w["chart_id"] == 7]
+        self.assertEqual(len(weeks), 1)
+        artist_ce = [e for e in db.chart_entries if e["chart_id"] == 7]
+        self.assertEqual(len(artist_ce), len(entries))
+        for e in artist_ce:
+            self.assertIsNotNone(e["artist_id"])
+            self.assertIsNone(e["song_id"])
+            self.assertIsNone(e["album_id"])
 
     def test_chart_weeks_chart_id_set_on_load(self):
         db = self._base_db()

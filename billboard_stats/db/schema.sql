@@ -112,9 +112,22 @@ CREATE TABLE IF NOT EXISTS charts (
 
 -- Wire chart_weeks to the registry. NULLABLE FK (additive); backfilled in
 -- Plan 02 from the existing chart_type. The chart_type column + its CHECK are
--- KEPT (do NOT drop/narrow — Phase 15 retires them). Do NOT add NOT NULL or a
--- UNIQUE(chart_id, chart_date) constraint here.
+-- KEPT (do NOT drop/narrow — Phase 15 retires them). Do NOT add NOT NULL here.
 ALTER TABLE chart_weeks ADD COLUMN IF NOT EXISTS chart_id INT REFERENCES charts(id);
+
+-- New-chart week idempotency (CR-01, additive). The legacy charts dedup a week
+-- on UNIQUE(chart_date, chart_type); NEW charts (chart_type NULL, chart_id set)
+-- have no chart_type key, so without this they would INSERT a DUPLICATE
+-- chart_weeks row on any re-load — and the duplicate week id lets duplicate
+-- chart_entries escape the (chart_week_id, rank) idempotency. This PARTIAL
+-- unique index keys new-chart weeks on (chart_id, chart_date) ONLY where
+-- chart_id IS NOT NULL, giving the new-chart INSERT ... ON CONFLICT
+-- (chart_id, chart_date) a conflict target. It is STRICTLY ADDITIVE: it does NOT
+-- touch the legacy UNIQUE(chart_date, chart_type) and does NOT constrain the
+-- legacy charts beyond what they already obey (one chart_id per (chart_date,
+-- chart_type) week). Phase 15 owns any further narrowing.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chart_weeks_chart_id_date
+    ON chart_weeks(chart_id, chart_date) WHERE chart_id IS NOT NULL;
 
 -- Unified, polymorphic weekly entries (DATA-02). One table for all charts;
 -- exactly one of song_id / album_id / artist_id is set per row, enforced by the
