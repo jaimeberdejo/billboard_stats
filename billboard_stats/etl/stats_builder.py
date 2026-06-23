@@ -499,6 +499,15 @@ def build_artist_chart_stats(conn):
                     SELECT
                         {artist_id_expr} AS artist_id,
                         COUNT(DISTINCT {entity_id_expr}) AS total_entries,
+                        -- total_weeks is "summed entity-weeks of presence",
+                        -- NOT distinct calendar weeks: one entry contributes 1
+                        -- per linked artist, so an artist with two entities
+                        -- charting in the SAME week counts +2. This matches the
+                        -- v1.0 build_artist_stats COUNT(*) over the same join
+                        -- (total_hot100_weeks / total_b200_weeks) exactly, so
+                        -- the two paths stay consistent (WR-01). Use
+                        -- COUNT(DISTINCT e.chart_week_id) only if the semantic
+                        -- is deliberately changed in BOTH paths.
                         COUNT(*) AS total_weeks,
                         COUNT(DISTINCT {entity_id_expr})
                             FILTER (WHERE e.rank = 1) AS number_ones,

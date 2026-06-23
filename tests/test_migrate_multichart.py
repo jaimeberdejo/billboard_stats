@@ -95,6 +95,24 @@ class FakeCursor:
             self._db.backfill_chart_entries("billboard-200", "album")
             return
 
+        # --- WR-04 dry-run conflict-aware planned counts ----------------------
+        # Source rows whose (chart_week_id, rank) is NOT already in
+        # chart_entries -- the same conflict semantics the real backfill uses.
+        if (
+            norm.startswith("select count(*) from hot100_entries h")
+            and "where not exists" in norm
+        ):
+            self._result = [(self._db.count_source_not_yet_inserted("hot-100"),)]
+            return
+        if (
+            norm.startswith("select count(*) from b200_entries b")
+            and "where not exists" in norm
+        ):
+            self._result = [
+                (self._db.count_source_not_yet_inserted("billboard-200"),)
+            ]
+            return
+
         # --- COUNT(*) parity queries ------------------------------------------
         # Bare source counts only (the WR-03 reverse anti-joins also start with
         # "select count(*) from hot100_entries h LEFT JOIN ..." -- exclude those
@@ -102,6 +120,7 @@ class FakeCursor:
         if (
             norm.startswith("select count(*) from hot100_entries")
             and "left join" not in norm
+            and "where not exists" not in norm
         ):
             self._result = [(len(self._db.hot100_entries),)]
             return
@@ -109,6 +128,7 @@ class FakeCursor:
         if (
             norm.startswith("select count(*) from b200_entries")
             and "left join" not in norm
+            and "where not exists" not in norm
         ):
             self._result = [(len(self._db.b200_entries),)]
             return
@@ -308,6 +328,17 @@ class FakeDB:
             row[entity_col] = src[entity_col]
             self._next_ce_id += 1
             self.chart_entries.append(row)
+
+    # --- WR-04 dry-run conflict-aware planned-count modeling ------------------
+    def count_source_not_yet_inserted(self, slug):
+        """Source rows whose (chart_week_id, rank) is NOT already present in
+        chart_entries -- mirrors ON CONFLICT (chart_week_id, rank) DO NOTHING,
+        regardless of chart_id (the real conflict key is week+rank)."""
+        source = self.hot100_entries if slug == "hot-100" else self.b200_entries
+        present = {(e["chart_week_id"], e["rank"]) for e in self.chart_entries}
+        return sum(
+            1 for s in source if (s["chart_week_id"], s["rank"]) not in present
+        )
 
     # --- WR-03 content-parity modeling ----------------------------------------
     def count_bad_polymorphism(self):
@@ -604,6 +635,38 @@ class MigrateDryRunTests(unittest.TestCase):
         self.assertEqual(report["backfill"]["hot-100"], len(db.hot100_entries))
         self.assertEqual(report["backfill"]["billboard-200"], len(db.b200_entries))
         # Nothing was written and nothing was committed.
+        self.assertEqual(db.snapshot(), before)
+        self.assertFalse(conn.committed)
+
+    def test_dry_run_planned_count_uses_conflict_semantics(self):
+        # WR-04: with some rows ALREADY present at (chart_week_id, rank), the
+        # dry-run planned count must report only the source rows that WOULD
+        # insert (conflict-aware), not max(total - chart_id_count, 0).
+        db = _fixture()
+        # Pre-seed the charts + one already-migrated hot-100 row at (week 1,
+        # rank 1) so it would conflict-skip.
+        db.seed_chart("hot-100", "Billboard Hot 100", "song", "core", 1)
+        db.seed_chart("billboard-200", "Billboard 200", "album", "core", 2)
+        db.chart_entries.append(
+            {
+                "id": 999, "chart_id": db.chart_id("hot-100"),
+                "chart_week_id": 1, "song_id": 10, "album_id": None,
+                "artist_id": None, "rank": 1, "peak_pos": 1, "last_pos": None,
+                "weeks_on_chart": 5, "is_new": False,
+            }
+        )
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        report = migrate(conn, dry_run=True)
+
+        # 3 hot-100 source rows, 1 already present at (1,1) -> 2 would insert.
+        self.assertEqual(report["backfill"]["hot-100"], 2)
+        # No billboard-200 rows present yet -> all source rows would insert.
+        self.assertEqual(
+            report["backfill"]["billboard-200"], len(db.b200_entries)
+        )
+        # Still writes nothing.
         self.assertEqual(db.snapshot(), before)
         self.assertFalse(conn.committed)
 

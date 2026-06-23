@@ -187,23 +187,39 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                         planned_seeds += 1
                 report["seeded_charts"] = planned_seeds
 
-                # Planned backfill = source rows not already migrated. With a
-                # pristine pre-migration DB (no chart_entries) this is the full
-                # source count; a re-run reports 0.
+                # Planned backfill = source rows that would actually INSERT,
+                # using the SAME conflict semantics the real backfill uses
+                # (ON CONFLICT (chart_week_id, rank) DO NOTHING) rather than a
+                # chart_id-count subtraction (WR-04). The previous
+                # `max(total - count(chart_entries WHERE chart_id=slug), 0)`
+                # silently assumed every existing chart_entries row corresponds
+                # to a source row that would conflict-skip; that diverges from
+                # the real ON CONFLICT count whenever the table already holds
+                # rows at (chart_week_id, rank) pairs not in the source (or vice
+                # versa), mis-reporting the operator's go/no-go number. Counting
+                # source rows whose (chart_week_id, rank) is not yet present
+                # matches the real insert exactly. With a pristine DB this is the
+                # full source count; a re-run reports 0.
+                planned_backfill = {
+                    "hot-100": _count(
+                        cur,
+                        "SELECT COUNT(*) FROM hot100_entries h "
+                        "WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM chart_entries ce "
+                        "  WHERE ce.chart_week_id = h.chart_week_id "
+                        "    AND ce.rank = h.rank);",
+                    ),
+                    "billboard-200": _count(
+                        cur,
+                        "SELECT COUNT(*) FROM b200_entries b "
+                        "WHERE NOT EXISTS ("
+                        "  SELECT 1 FROM chart_entries ce "
+                        "  WHERE ce.chart_week_id = b.chart_week_id "
+                        "    AND ce.rank = b.rank);",
+                    ),
+                }
                 for slug, _src, _col in _BACKFILL_SOURCES:
-                    cid = _chart_id(cur, slug)
-                    if cid is None:
-                        # Chart not seeded yet -> all source rows are planned.
-                        planned = src_hot100 if slug == "hot-100" else src_b200
-                    else:
-                        existing = _count(
-                            cur,
-                            "SELECT COUNT(*) FROM chart_entries WHERE chart_id = %s;",
-                            (cid,),
-                        )
-                        total = src_hot100 if slug == "hot-100" else src_b200
-                        planned = max(total - existing, 0)
-                    report["backfill"][slug] = planned
+                    report["backfill"][slug] = planned_backfill[slug]
 
                 logger.info(
                     "Dry run: %d chart(s) to seed, backfill +%d hot-100 / +%d "

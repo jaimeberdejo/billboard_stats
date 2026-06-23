@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS artist_chart_stats (
     artist_id        INT  NOT NULL REFERENCES artists(id),
     chart_id         INT  NOT NULL REFERENCES charts(id),
     total_entries    INT  NOT NULL DEFAULT 0,   -- songs OR albums OR direct artist entries on this chart
-    total_weeks      INT  NOT NULL DEFAULT 0,   -- summed weeks_on_chart presence on this chart
+    total_weeks      INT  NOT NULL DEFAULT 0,   -- summed entity-weeks of presence (NOT distinct weeks): COUNT(*) of valid entries rolled up to this artist; one entity charting per week = +1, two entities same week = +2. Matches v1.0 total_hot100_weeks/total_b200_weeks. (WR-01)
     number_ones      INT  NOT NULL DEFAULT 0,   -- count of #1 placements on this chart
     best_peak        SMALLINT,                  -- best (lowest) rank achieved on this chart
     max_simultaneous INT  NOT NULL DEFAULT 0,   -- max concurrent entries in a single week

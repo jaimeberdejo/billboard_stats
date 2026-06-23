@@ -236,7 +236,39 @@ psql "host=$PGHOST port=$PGPORT dbname=$PGDATABASE user=$PGUSER" -c \
      GROUP BY c.slug ORDER BY c.slug;"
 ```
 
-**e. Manual UI check — every v1.0 page still renders.** The additive invariant
+**e. Stat-path agreement — `artist_chart_stats` must match `artist_stats`.**
+The repo's automated suite runs against a fixture DB and **cannot** prove the
+generalized parametric rollup (`build_artist_chart_stats` →
+`artist_chart_stats`) agrees with the v1.0 path (`build_artist_stats` →
+`artist_stats`) on **real** data — the two paths share the phantom-week and
+first-real-week rules (both now use `MIN(chart_weeks.id)` after CR-01), but only
+a real-Postgres diff confirms they agree. On the **Neon branch**, before
+applying to the production primary, diff a sample of the new per-chart rollup
+against the v1.0 career stats for both core charts and confirm zero
+discrepancies — e.g. hot-100 total weeks / number-ones / first-and-last dates:
+
+```bash
+psql "host=$PGHOST port=$PGPORT dbname=$PGDATABASE user=$PGUSER" -c \
+  "SELECT acs.artist_id,
+          acs.total_weeks, ast.total_hot100_weeks,
+          acs.number_ones, ast.hot100_number_ones,
+          acs.best_peak,   ast.best_hot100_peak,
+          acs.first_date,  ast.first_chart_date
+     FROM artist_chart_stats acs
+     JOIN charts c     ON c.id = acs.chart_id AND c.slug = 'hot-100'
+     JOIN artist_stats ast ON ast.artist_id = acs.artist_id
+    WHERE acs.total_weeks    IS DISTINCT FROM ast.total_hot100_weeks
+       OR acs.number_ones    IS DISTINCT FROM ast.hot100_number_ones
+       OR acs.best_peak      IS DISTINCT FROM ast.best_hot100_peak
+    LIMIT 50;"
+```
+
+Expect **zero rows** (and repeat for `billboard-200` against the `*_b200_*`
+columns). Any discrepancy means the two stat paths disagree on production data —
+treat it as a failure, do **not** apply to the primary, and investigate before
+proceeding (this is the exact silent-divergence class CR-01 guards against).
+
+**f. Manual UI check — every v1.0 page still renders.** The additive invariant
 means the unchanged frontend reads the **untouched old tables**, so this is a
 confirmation, not a migration of the read path. Manually confirm:
 
