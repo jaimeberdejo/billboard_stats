@@ -118,6 +118,12 @@ def run_etl(data_dir: str = None):
         register_new_charts(conn)
         conn.commit()
 
+        # Snapshot the EXISTING artist ids BEFORE the load loop so the Phase 12
+        # enrichment stage can scope to ONLY artists inserted by THIS run (the
+        # weekly delta; W-2). On a first FULL load this set is empty, so the
+        # delta naturally becomes "every artist this load created".
+        pre_load_artist_ids = _snapshot_artist_ids(conn)
+
         logger.info("Loading charts from registry...")
         for chart in iter_charts(conn, data_dir=data_dir):
             if not Path(chart.folder).is_dir():
@@ -130,12 +136,65 @@ def run_etl(data_dir: str = None):
             logger.info("Loading chart %s (%s)...", chart.slug, chart.entity_kind)
             load_chart(conn, chart, data_dir=data_dir)
 
+        # >>> Phase 12 enrichment stage: enrich gender for the NEWLY-INSERTED
+        #     artists (the post-load minus pre-load id delta), AFTER the load
+        #     loop and BEFORE build_all_stats. It NEVER blocks ingest.
+        _enrich_new_artists(conn, pre_load_artist_ids)
+        # <<<
+
         logger.info("Building pre-computed stats...")
         build_all_stats(conn)
 
         logger.info("ETL complete.")
     finally:
         put_conn(conn)
+
+
+def _snapshot_artist_ids(conn):
+    """Return the set of artist ids currently in the DB (pre/post-load snapshot).
+
+    Used by the Phase 12 enrichment stage to compute the new-artist delta. Reads
+    only; does not commit. Returns an empty set on a fresh first load.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM artists;")
+        return {row[0] for row in cur.fetchall()}
+
+
+def _enrich_new_artists(conn, pre_load_artist_ids):
+    """Phase 12 ETL stage: enrich gender for newly-inserted artists. NEVER blocks.
+
+    Runs AFTER the load loop and BEFORE build_all_stats. Computes the new-artist
+    delta (post-load ids minus the ``pre_load_artist_ids`` snapshot) and passes a
+    NON-None ``only_artist_ids`` to :func:`enrich`, so the weekly path touches
+    ONLY artists inserted by THIS load run — even if pre-existing rows are still
+    ``gender='unknown'`` (W-2: delta-scoping by the passed id-diff, not merely the
+    enricher's unknown-gate).
+
+    Transaction ownership (W-1): :func:`enrich` OWNS its own commit/rollback. This
+    hook therefore does NOT manage the transaction — it ONLY wraps the call in a
+    try/except that LOGS and CONTINUES. It MUST NOT call ``conn.rollback()``
+    itself: the enricher already rolled back its own failed unit, and the
+    per-chart load rows committed inside :func:`load_chart` are durable and MUST
+    remain committed. The stage MUST NEVER raise out of ``run_etl`` (never blocks
+    ingest).
+    """
+    logger.info("Enriching artist gender...")
+    try:
+        # Lazy import so loader.py stays import-clean in the psycopg2/network-free
+        # test env (mirrors register_new_charts importing CURATED_CHARTS inside
+        # the function).
+        from billboard_stats.etl.gender_enricher import enrich
+
+        post_load_artist_ids = _snapshot_artist_ids(conn)
+        new_artist_ids = post_load_artist_ids - set(pre_load_artist_ids)
+        # Pass a NON-None delta even when empty so enrich() scopes strictly to
+        # the new-artist set (an empty set is a clean no-op).
+        enrich(conn, only_artist_ids=new_artist_ids)
+    except Exception:
+        # Never block ingest: log and continue to build_all_stats. Do NOT call
+        # conn.rollback() here — the enricher owns its own rollback (W-1).
+        logger.exception("Gender enrichment failed; continuing ETL.")
 
 
 def register_new_charts(conn):

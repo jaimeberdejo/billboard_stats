@@ -705,6 +705,206 @@ class DefensiveParsingTests(unittest.TestCase):
 
 
 # ============================================================================
+# ETL hook contract: never-block (W-1) + delta-scoping (W-2)
+# ============================================================================
+class EtlEnrichmentStageTests(unittest.TestCase):
+    """Exercise loader._enrich_new_artists — the run_etl enrichment stage helper.
+
+    The stage runs AFTER the load loop and BEFORE build_all_stats; these tests
+    prove the never-block (W-1) and delta-scoping (W-2) contracts offline,
+    monkeypatching the enricher (and time.sleep) so no DB/network is touched.
+    """
+
+    def setUp(self):
+        from billboard_stats.etl import loader
+
+        self.loader = loader
+        self._orig_enrich = getattr(loader, "enrich", None)
+
+    def test_w1a_successful_enrich_commits_its_own_work(self):
+        # The stage delegates to enrich(), which commits its own successful work
+        # (W-1a). Use the REAL enrich() against the fake conn + mocked HTTP.
+        gender_enricher.time.sleep = lambda *_a, **_k: None
+        try:
+            db = FakeDB([{"id": 1, "name": "Beyoncé"}])
+            conn = FakeConn(db)
+
+            http = FakeHttpClient(
+                [
+                    _route_search_returns("Beyoncé", (200, MB_SEARCH_BEYONCE)),
+                    _route_lookup(MB_LOOKUP_BEYONCE["id"], (200, MB_LOOKUP_BEYONCE)),
+                ]
+            )
+
+            # Patch the lazily-imported enrich to inject our fake http while
+            # keeping the REAL enrich semantics (commit on success).
+            import billboard_stats.etl.gender_enricher as ge
+
+            real_enrich = ge.enrich
+
+            def patched_enrich(c, **kwargs):
+                kwargs.setdefault("http", http)
+                kwargs.setdefault("delay", 0)
+                return real_enrich(c, **kwargs)
+
+            ge.enrich = patched_enrich
+            try:
+                # pre_load empty -> artist 1 is "new".
+                self.loader._enrich_new_artists(conn, set())
+            finally:
+                ge.enrich = real_enrich
+
+            self.assertEqual(db.by_id(1)["gender"], "female")
+            self.assertTrue(conn.committed)
+        finally:
+            pass
+
+    def test_w1b_error_in_enrichment_preserves_load_rows_and_reaches_stats(self):
+        # Simulate load rows that were committed BEFORE the stage (loader:348).
+        db = FakeDB(
+            [{"id": 1, "name": "Drake", "gender": "unknown"}]
+        )
+        conn = FakeConn(db)
+        # The committed load snapshot (what per-chart commits left durable).
+        committed_snapshot = db.snapshot()
+
+        import billboard_stats.etl.gender_enricher as ge
+
+        real_enrich = ge.enrich
+
+        def boom_enrich(c, **kwargs):
+            raise RuntimeError("enrichment exploded")
+
+        # Track whether build_all_stats is still reached after the stage.
+        calls = {"build": 0}
+
+        def fake_build(c):
+            calls["build"] += 1
+
+        orig_build = self.loader.build_all_stats
+        ge.enrich = boom_enrich
+        self.loader.build_all_stats = fake_build
+        try:
+            # The stage must swallow the error (never raise).
+            self.loader._enrich_new_artists(conn, set())
+            # Then ETL proceeds to stats (we call it here to mirror run_etl flow).
+            self.loader.build_all_stats(conn)
+        finally:
+            ge.enrich = real_enrich
+            self.loader.build_all_stats = orig_build
+
+        self.assertEqual(calls["build"], 1, "build_all_stats must still be reached")
+        # The pre-committed load rows are intact (not discarded by the hook).
+        self.assertEqual(db.snapshot(), committed_snapshot)
+
+    def test_w1c_hook_does_not_issue_its_own_rollback(self):
+        # An enrich that raises WITHOUT rolling back: the hook must NOT rollback.
+        conn = FakeConn(FakeDB([{"id": 1, "name": "X"}]))
+
+        import billboard_stats.etl.gender_enricher as ge
+
+        real_enrich = ge.enrich
+
+        def boom_no_rollback(c, **kwargs):
+            raise RuntimeError("enrichment exploded before any rollback")
+
+        ge.enrich = boom_no_rollback
+        try:
+            self.loader._enrich_new_artists(conn, set())
+        finally:
+            ge.enrich = real_enrich
+
+        self.assertEqual(
+            conn.rollback_count, 0,
+            "the ETL hook must NOT call conn.rollback() — the enricher owns it",
+        )
+
+    def test_w2_delta_scopes_to_new_artists_only(self):
+        # A pre-existing 'unknown' artist (id=1) and a NEW 'unknown' artist
+        # (id=2) inserted by the load. The stage must pass only_artist_ids={2}
+        # so the pre-existing unknown row is NOT re-enriched (delta-scoping by
+        # the passed id-diff, not the unknown-gate).
+        db = FakeDB(
+            [
+                {"id": 1, "name": "Pre Existing", "gender": "unknown"},
+                {"id": 2, "name": "New Artist", "gender": "unknown"},
+            ]
+        )
+        conn = FakeConn(db)
+        pre_load = {1}  # id 1 existed before the load loop
+
+        import billboard_stats.etl.gender_enricher as ge
+
+        real_enrich = ge.enrich
+        captured = {}
+
+        def spy_enrich(c, **kwargs):
+            captured["only_artist_ids"] = kwargs.get("only_artist_ids")
+            return {"selected": 0}
+
+        ge.enrich = spy_enrich
+        try:
+            self.loader._enrich_new_artists(conn, pre_load)
+        finally:
+            ge.enrich = real_enrich
+
+        self.assertIsNotNone(
+            captured["only_artist_ids"],
+            "run_etl MUST pass a NON-None only_artist_ids delta (W-2)",
+        )
+        self.assertEqual(set(captured["only_artist_ids"]), {2})
+        self.assertNotIn(
+            1, set(captured["only_artist_ids"]),
+            "pre-existing 'unknown' artist must NOT be in the delta",
+        )
+
+    def test_w2_pre_existing_unknown_not_reenriched_end_to_end(self):
+        # End-to-end through the stage with the REAL enrich + mocked HTTP: the
+        # pre-existing unknown row (id=1) stays unknown because it is excluded by
+        # only_artist_ids, even though its gender IS still 'unknown'.
+        gender_enricher.time.sleep = lambda *_a, **_k: None
+        db = FakeDB(
+            [
+                {"id": 1, "name": "Drake", "gender": "unknown"},
+                {"id": 2, "name": "Beyoncé", "gender": "unknown"},
+            ]
+        )
+        conn = FakeConn(db)
+        pre_load = {1}
+
+        http = FakeHttpClient(
+            [
+                _route_search_returns("Beyoncé", (200, MB_SEARCH_BEYONCE)),
+                _route_lookup(MB_LOOKUP_BEYONCE["id"], (200, MB_LOOKUP_BEYONCE)),
+                # Drake routes intentionally ABSENT: any attempt to resolve the
+                # pre-existing row would raise "unrouted call".
+            ]
+        )
+
+        import billboard_stats.etl.gender_enricher as ge
+
+        real_enrich = ge.enrich
+
+        def patched_enrich(c, **kwargs):
+            kwargs.setdefault("http", http)
+            kwargs.setdefault("delay", 0)
+            return real_enrich(c, **kwargs)
+
+        ge.enrich = patched_enrich
+        try:
+            self.loader._enrich_new_artists(conn, pre_load)
+        finally:
+            ge.enrich = real_enrich
+
+        self.assertEqual(db.by_id(2)["gender"], "female")  # new artist enriched
+        self.assertEqual(db.by_id(1)["gender"], "unknown")  # pre-existing untouched
+        # No Drake search was ever attempted (delta excluded it).
+        self.assertFalse(
+            any("drake" in p.get("query", "").lower() for _u, p in http.calls)
+        )
+
+
+# ============================================================================
 # Import hygiene: no top-level psycopg2 / requests
 # ============================================================================
 class EnricherPostgresFreeTests(unittest.TestCase):
