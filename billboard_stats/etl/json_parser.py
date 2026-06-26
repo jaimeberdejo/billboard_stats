@@ -31,7 +31,9 @@ def list_chart_files(directory: str) -> List[Tuple[date, str]]:
     return results
 
 
-def parse_chart_file(file_path: str) -> Optional[List[Dict]]:
+def parse_chart_file(
+    file_path: str, entity_kind: Optional[str] = None
+) -> Optional[List[Dict]]:
     """Parse ANY Billboard chart JSON file into the normalized entry shape.
 
     This is the single parametric parser that collapses ``parse_hot100_file`` and
@@ -49,8 +51,17 @@ def parse_chart_file(file_path: str) -> Optional[List[Dict]]:
     Field rules: ``rank`` via :func:`_safe_int` (WR-06: tolerant, a non-numeric
     rank drops that one row via the ``rank > 0`` gate instead of crashing the
     whole file), ``peak_pos``/``last_pos``/``weeks`` via :func:`_safe_int`,
-    ``is_new`` via ``bool(...)``, ``image`` via :func:`_clean_image_url`. An entry
-    is kept only when ``rank > 0`` AND ``title`` AND ``artist``.
+    ``is_new`` via ``bool(...)``, ``image`` via :func:`_clean_image_url`.
+
+    Validity gate (Phase 11 / CHARTS-03): the kept-entry rule is entity-kind
+    aware. The on-disk JSON does NOT encode ``entity_kind``, so the caller
+    (``load_chart``) supplies it from the chart registry:
+
+    * ``entity_kind == "artist"``: the ranked entity IS the artist, so an entry
+      is kept when ``rank > 0`` AND ``artist`` (the title may be empty — ~4.3% of
+      real artist-100 rows carry an empty title and must NOT be dropped).
+    * every other kind, INCLUDING the default ``None``: keep the existing
+      ``rank > 0`` AND ``title`` AND ``artist`` gate, byte-for-byte unchanged.
 
     Returns None if the file is invalid, malformed, missing, non-list, or empty
     (exactly as the v1.0 parsers did).
@@ -87,7 +98,14 @@ def parse_chart_file(file_path: str) -> Optional[List[Dict]]:
             "is_new": bool(item.get("isNew", False)),
             "image": _clean_image_url(item.get("image")),
         }
-        if entry["rank"] > 0 and entry["title"] and entry["artist"]:
+        # Entity-kind-aware validity gate (CHARTS-03): for an artist chart the
+        # ranked entity IS the artist, so an empty title is valid; every other
+        # kind (and the default None) keeps the title-AND-artist requirement.
+        if entity_kind == "artist":
+            valid = entry["rank"] > 0 and entry["artist"]
+        else:
+            valid = entry["rank"] > 0 and entry["title"] and entry["artist"]
+        if valid:
             entries.append(entry)
 
     return entries if entries else None

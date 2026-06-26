@@ -214,7 +214,7 @@ def load_chart(conn, chart, only_dates=None, data_dir=None):
     entity_cache = {}  # (title, artist_credit) -> entity_id (song/album)
 
     for i, (chart_date, file_path) in enumerate(files):
-        entries = parse_chart_file(file_path)
+        entries = parse_chart_file(file_path, entity_kind=chart.entity_kind)
         if entries is None:
             logger.warning("Skipping invalid file: %s", file_path)
             continue

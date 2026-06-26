@@ -243,5 +243,106 @@ class CompatShimTests(unittest.TestCase):
             self.assertEqual(parse_b200_file(path), parse_chart_file(path))
 
 
+class ParseChartFileEntityKindGateTests(unittest.TestCase):
+    """Phase 11 / CHARTS-03: the validity gate is entity-kind-aware.
+
+    For ``entity_kind="artist"`` the ranked entity IS the artist, so a row with
+    ``rank > 0`` and a non-empty ``artist`` is KEPT even when its ``title`` is
+    empty (~4.3% of real artist-100 rows carry an empty title). For every other
+    kind (and the no-arg default) the existing ``rank > 0 AND title AND artist``
+    gate is preserved byte-for-byte.
+    """
+
+    # An artist-chart file mirroring the real artist-100 shape: rank present,
+    # artist non-empty, title EMPTY. The on-disk JSON does not encode entity_kind
+    # (it is supplied by the caller).
+    _ARTIST_ROWS = [
+        {
+            "rank": 1,
+            "title": "",  # empty title — the artist is the entity
+            "artist": "Taylor Swift",
+            "peakPos": 1,
+            "lastPos": 1,
+            "weeks": 50,
+            "isNew": False,
+            "image": None,
+        },
+        {
+            "rank": 2,
+            "title": "",
+            "artist": "",  # no artist -> dropped even on an artist chart
+            "peakPos": 2,
+            "lastPos": 3,
+            "weeks": 10,
+            "isNew": False,
+            "image": None,
+        },
+    ]
+
+    def test_artist_kind_keeps_empty_title_row_with_artist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "2024-01-06.json", self._ARTIST_ROWS)
+            result = parse_chart_file(path, entity_kind="artist")
+        self.assertIsNotNone(result)
+        # Only the rank-1 row survives: empty title is fine for an artist chart,
+        # but the rank-2 row has an empty artist and must still be dropped.
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["rank"], 1)
+        self.assertEqual(result[0]["title"], "")
+        self.assertEqual(result[0]["artist"], "Taylor Swift")
+
+    def test_artist_kind_drops_empty_artist_row(self):
+        rows = [
+            {"rank": 1, "title": "anything", "artist": "", "peakPos": None,
+             "lastPos": None, "weeks": None, "isNew": False, "image": None},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "2024-01-06.json", rows)
+            result = parse_chart_file(path, entity_kind="artist")
+        # Empty artist -> nothing valid -> None (artist is the required field).
+        self.assertIsNone(result)
+
+    def test_song_kind_still_drops_empty_title_row(self):
+        # Same empty-title rows, but as a SONG chart: title IS required, so the
+        # empty-title row is dropped exactly as before.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "2024-01-06.json", self._ARTIST_ROWS)
+            result = parse_chart_file(path, entity_kind="song")
+        self.assertIsNone(result)
+
+    def test_default_no_arg_unchanged_drops_empty_title(self):
+        # No entity_kind argument -> behaves exactly like today (title required).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "2024-01-06.json", self._ARTIST_ROWS)
+            result = parse_chart_file(path)
+        self.assertIsNone(result)
+
+    def test_song_kind_byte_equal_to_default_on_normal_file(self):
+        # entity_kind="song" must be byte-for-byte equal to the no-arg default on
+        # a normal song file (no behavior change for song/album/None).
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "2024-01-06.json", _HOT100_ROWS)
+            self.assertEqual(
+                parse_chart_file(path, entity_kind="song"),
+                parse_chart_file(path),
+            )
+
+    def test_album_kind_drops_missing_album_row(self):
+        # Album charts use the "album" key; a row missing it (empty title) drops.
+        rows = [
+            {"rank": 1, "album": "Real Album", "artist": "Some Artist",
+             "peakPos": 1, "lastPos": 1, "weeks": 2, "isNew": False,
+             "image": None},
+            {"rank": 2, "artist": "Other Artist", "peakPos": 2, "lastPos": 2,
+             "weeks": 1, "isNew": False, "image": None},  # no album key
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _write(tmp, "2024-01-06.json", rows)
+            result = parse_chart_file(path, entity_kind="album")
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["title"], "Real Album")
+
+
 if __name__ == "__main__":
     unittest.main()

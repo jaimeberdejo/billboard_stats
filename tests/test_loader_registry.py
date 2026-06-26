@@ -407,7 +407,10 @@ class _LoaderHarness:
         self._saved["parse"] = loader.parse_chart_file
         self._saved["list"] = loader.list_chart_files
         self._saved["ev"] = loader.execute_values
-        loader.parse_chart_file = lambda path: list(self._entries)
+        # Accept and ignore the entity_kind kwarg load_chart now passes
+        # (parse_chart_file(file_path, entity_kind=chart.entity_kind), Plan 11-01)
+        # so every stubbed _load(...) call site keeps returning the fixture list.
+        loader.parse_chart_file = lambda path, entity_kind=None: list(self._entries)
         loader.list_chart_files = lambda directory: [
             (d, f"/fake/{d.isoformat()}.json")
         ]
