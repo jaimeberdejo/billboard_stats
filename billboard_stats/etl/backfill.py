@@ -159,6 +159,7 @@ def run_backfill(
     sidecar_path: Optional[str] = None,
     smoke_weeks: int = DEFAULT_SMOKE_WEEKS,
     delay: float = 1.5,
+    empty_tolerance: int = 1,
     allow: bool = False,
     env: Optional[dict] = None,
 ) -> dict:
@@ -241,6 +242,7 @@ def run_backfill(
                 chart_slug,
                 data_dir=data_dir,
                 delay=delay,
+                empty_tolerance=empty_tolerance,
             )
 
     return results
@@ -292,6 +294,25 @@ def _build_arg_parser():
         help="Number of recent Saturdays for smoke mode (default ~4).",
     )
     parser.add_argument(
+        "--delay",
+        type=float,
+        default=1.5,
+        help=(
+            "Polite seconds between requests (default 1.5). Raise (~4) for a "
+            "conservative sequential re-run that avoids re-triggering throttling."
+        ),
+    )
+    parser.add_argument(
+        "--empty-tolerance",
+        type=int,
+        default=1,
+        help=(
+            "Consecutive empty/not-found weeks that mark the debut in full mode "
+            "(default 1). Raise (~6-8) so sporadic transient 404s or short data "
+            "gaps don't falsely end the backward walk before the true debut."
+        ),
+    )
+    parser.add_argument(
         "--data-dir",
         default=None,
         help="Data directory override.",
@@ -314,6 +335,8 @@ def main(argv=None) -> int:
             slug=args.slug,
             data_dir=args.data_dir,
             smoke_weeks=args.smoke_weeks,
+            delay=args.delay,
+            empty_tolerance=args.empty_tolerance,
             allow=args.allow,
         )
     except BackfillGuardrailError as exc:
