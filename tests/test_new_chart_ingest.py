@@ -268,6 +268,36 @@ class ArtistChartIngestTests(unittest.TestCase):
         self.assertEqual(parsed[0]["title"], "")
         self.assertEqual(parsed[0]["artist"], "Taylor Swift")
 
+    def test_collaborative_credit_unsplit_via_real_parser_gate(self):
+        # WR-03: prove the NO-collaboration-splitting criterion (CHARTS-03)
+        # through the REAL parse_chart_file, not the stubbed loader parser. Write
+        # a temp JSON file with an artist-100-style row whose credit LOOKS
+        # collaborative (slash + colon + ampersand + comma) and an empty title,
+        # then assert the real parser keeps the WHOLE credit as one unsplit
+        # artist string. This closes the false-green window where a future change
+        # to parse_chart_file could split or mangle credits unnoticed.
+        import json
+        import os
+
+        collab_credit = "HUNTR/X: EJAE, Audrey Nuna & REI AMI"
+        rows = [
+            {"rank": 1, "title": "", "artist": collab_credit, "peakPos": 1,
+             "lastPos": None, "weeks": 1, "isNew": True, "image": None},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "2024-01-06.json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(rows, f)
+            parsed = parse_chart_file(path, entity_kind="artist")
+
+        self.assertIsNotNone(parsed)
+        # ONE entry — the collaborative-looking credit is NOT exploded into
+        # multiple rows.
+        self.assertEqual(len(parsed), 1)
+        # The full credit is preserved byte-for-byte (no split on /, :, &, or ,).
+        self.assertEqual(parsed[0]["artist"], collab_credit)
+        self.assertEqual(parsed[0]["title"], "")
+
     def test_empty_title_artist_row_loads_to_artist_id(self):
         # End-to-end: an empty-title artist entry produces a chart_entries row
         # with artist_id set (proving the gate + the artist dispatch together).
