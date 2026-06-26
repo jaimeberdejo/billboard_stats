@@ -14,6 +14,38 @@ CREATE TABLE artists (
     image_url   TEXT
 );
 
+-- ============================================================
+-- Phase 12: Artist gender enrichment (additive)
+-- ============================================================
+-- Adds three first-class gender columns to the artists table above. They are
+-- STRICTLY ADDITIVE: the v1.0 artists shape (id, name, image_url) and the GIN
+-- trigram index on name are kept verbatim. The fresh CREATE TABLE artists above
+-- does NOT list these columns; the ALTER ... ADD COLUMN IF NOT EXISTS form below
+-- is what reconciles a fresh install with an existing one (mirror how Phase 9
+-- kept schema.sql and 001_multichart.sql in lockstep). This block is
+-- byte-for-byte consistent (after whitespace normalization) with
+-- db/migrations/002_gender.sql and migrate_gender._DDL_STATEMENTS; a test
+-- enforces that lockstep (W-3). 'unknown' is a FIRST-CLASS default value, not a
+-- missing sentinel; population of real values is the Phase 12 enricher's job,
+-- not this schema.
+
+-- gender: the first-class act-type/gender attribute. 'unknown' is a real value
+-- (the default), not a missing sentinel. Existing rows backfill to 'unknown'.
+ALTER TABLE artists ADD COLUMN IF NOT EXISTS gender VARCHAR(8) NOT NULL DEFAULT 'unknown';
+
+-- gender_source: provenance of the match (musicbrainz|wikidata|manual or NULL).
+ALTER TABLE artists ADD COLUMN IF NOT EXISTS gender_source VARCHAR(16);
+
+-- gender_source_id: the stable ID used for the match — an MBID (36 chars) or a
+-- Wikidata QID. Persisting the ID (not the raw name) is what makes the enricher
+-- idempotent and re-runnable.
+ALTER TABLE artists ADD COLUMN IF NOT EXISTS gender_source_id VARCHAR(64);
+
+-- Constrain gender to the 5-value vocabulary, added idempotently. Postgres has
+-- no ADD CONSTRAINT IF NOT EXISTS, so guard on pg_constraint by the
+-- deterministic name artists_gender_check before adding it.
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'artists_gender_check') THEN ALTER TABLE artists ADD CONSTRAINT artists_gender_check CHECK (gender IN ('female', 'male', 'group', 'mixed', 'unknown')); END IF; END $$;
+
 -- Unique songs (identified by title + raw credit)
 CREATE TABLE songs (
     id              SERIAL PRIMARY KEY,
