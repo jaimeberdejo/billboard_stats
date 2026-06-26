@@ -108,8 +108,15 @@ def run_etl(data_dir: str = None):
         # the load loop, so iter_charts yields them on this very first full load
         # (CONTEXT decision: registration happens "as part of the load path,"
         # not via a prior migration). Idempotent — re-runs add zero rows.
+        #
+        # WR-02: run_etl owns the transaction boundary. register_new_charts only
+        # stages the INSERTs; run_etl commits them here so registration is
+        # durable before the load loop reads the registry via iter_charts. The
+        # helper no longer self-commits, keeping it composable into a larger
+        # transaction by other callers.
         logger.info("Registering new charts...")
         register_new_charts(conn)
+        conn.commit()
 
         logger.info("Loading charts from registry...")
         for chart in iter_charts(conn, data_dir=data_dir):
@@ -142,6 +149,12 @@ def register_new_charts(conn):
     (``INSERT ... ON CONFLICT (slug) DO NOTHING``, mirroring
     ``migrate_multichart.py``). Re-running adds zero rows.
 
+    WR-02: this helper does NOT commit. It only stages the INSERTs on the
+    borrowed connection; the CALLER owns the transaction boundary (``run_etl``
+    commits immediately after calling this, before the load loop reads the
+    registry). Keeping the commit out of here makes the helper composable into
+    a larger transaction.
+
     All writes are parameterized (``%s`` placeholders) — never string-interpolated
     chart data. The ``entity_kind`` (song|album|artist) satisfies the charts
     CHECK constraint. ``sort_order`` is omitted so the column default applies;
@@ -173,7 +186,7 @@ def register_new_charts(conn):
                     chart["category"],
                 ),
             )
-    conn.commit()
+    # WR-02: no conn.commit() here — run_etl owns the transaction boundary.
 
 
 def _create_schema(conn):
