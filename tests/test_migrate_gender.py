@@ -18,11 +18,16 @@ This enforces the 001<->schema.sql lockstep convention by TEST (it replaces a
 bare grep, which counts presence but not byte-for-byte agreement).
 """
 
+import copy
 import os
 import re
 import unittest
 
 from billboard_stats.etl import migrate_gender
+from billboard_stats.etl.migrate_gender import (
+    GenderMigrationError,
+    migrate,
+)
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MIGRATION_SQL = os.path.join(
@@ -184,6 +189,318 @@ class GenderDdlByteConsistencyTests(unittest.TestCase):
         self.assertNotIn("rename ", body)
         self.assertNotIn("alter column", body)
         self.assertNotIn(" type ", body)
+
+
+# ============================================================================
+# In-memory fake DB layer (mirrors test_migrate_multichart.py)
+# ============================================================================
+class FakeCursor:
+    """A psycopg2-cursor-like stand-in interpreting the SQL migrate() emits.
+
+    Models the artists table (id, name, plus the gender columns once added) and
+    executes the exact statement shapes migrate_gender.py uses. DDL ALTERs are
+    interpreted to actually add the modeled columns (defaulting gender to
+    'unknown') so the additive default behavior is ASSERTED, not assumed. Any
+    unhandled statement raises AssertionError so drift is caught.
+    """
+
+    def __init__(self, db):
+        self._db = db
+        self._result = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        norm = re.sub(r"\s+", " ", sql).strip().lower()
+        params = params or ()
+
+        # --- DDL: ADD COLUMN ALTERs actually add the modeled column ----------
+        if norm.startswith("alter table artists add column if not exists gender_source_id"):
+            self._db.add_gender_column("gender_source_id")
+            return
+        if norm.startswith("alter table artists add column if not exists gender_source"):
+            self._db.add_gender_column("gender_source")
+            return
+        if norm.startswith("alter table artists add column if not exists gender"):
+            self._db.add_gender_column("gender")  # backfills 'unknown'
+            return
+
+        # --- DO-block CHECK guard: no-op in the fake DB ----------------------
+        if norm.startswith("do $$") or norm.startswith("do$$"):
+            self._result = None
+            return
+
+        # --- existence check against the catalog -----------------------------
+        if norm.startswith(
+            "select column_name from information_schema.columns"
+        ):
+            (wanted,) = params
+            present = [c for c in wanted if c in self._db.gender_columns]
+            self._result = [(c,) for c in present]
+            return
+
+        # --- artist row count ------------------------------------------------
+        if norm.startswith("select count(*) from artists where gender is null"):
+            self._result = [(self._db.count_null_gender(),)]
+            return
+
+        if norm.startswith("select count(*) from artists"):
+            self._result = [(len(self._db.artists),)]
+            return
+
+        raise AssertionError(f"FakeCursor: unhandled SQL: {norm!r}")
+
+    def fetchall(self):
+        return self._result
+
+    def fetchone(self):
+        return self._result[0] if self._result else None
+
+
+class FakeConn:
+    """A connection-like stand-in tracking commit/rollback and snapshotting."""
+
+    def __init__(self, db):
+        self._db = db
+        self.committed = False
+        self.rolled_back = False
+        self._snapshot = db.snapshot()
+
+    def cursor(self):
+        return FakeCursor(self._db)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        self.rolled_back = True
+        self._db.restore(self._snapshot)
+
+
+class FakeDB:
+    """In-memory model of the artists table for the gender migration."""
+
+    def __init__(self, artists, gender_columns=None):
+        # artists: list of {"id": int, "name": str, ...gender fields once added}
+        self.artists = [dict(a) for a in artists]
+        # which gender columns currently exist (start empty = pre-migration)
+        self.gender_columns = list(gender_columns or [])
+
+    def add_gender_column(self, col):
+        """ADD COLUMN IF NOT EXISTS: idempotent; gender backfills 'unknown'."""
+        if col in self.gender_columns:
+            return  # IF NOT EXISTS -> no-op
+        self.gender_columns.append(col)
+        default = "unknown" if col == "gender" else None
+        for a in self.artists:
+            a[col] = default
+
+    def count_null_gender(self):
+        if "gender" not in self.gender_columns:
+            return 0
+        return sum(1 for a in self.artists if a.get("gender") is None)
+
+    def snapshot(self):
+        return copy.deepcopy(
+            {"artists": self.artists, "gender_columns": self.gender_columns}
+        )
+
+    def restore(self, snap):
+        snap = copy.deepcopy(snap)
+        self.artists = snap["artists"]
+        self.gender_columns = snap["gender_columns"]
+
+
+def _fixture():
+    """A small pre-migration v1.0 artists table: 3 rows, no gender columns."""
+    return FakeDB(
+        artists=[
+            {"id": 1, "name": "Beyoncé", "image_url": None},
+            {"id": 2, "name": "Queen", "image_url": None},
+            {"id": 3, "name": "Drake", "image_url": None},
+        ],
+        gender_columns=[],
+    )
+
+
+# ----------------------------------------------------------------------------
+# Additive apply: columns added with 'unknown' default + row-count parity
+# ----------------------------------------------------------------------------
+class GenderMigrateApplyTests(unittest.TestCase):
+    def test_apply_adds_three_columns_with_unknown_default_and_commits(self):
+        db = _fixture()
+        before_rows = len(db.artists)
+        conn = FakeConn(db)
+
+        report = migrate(conn, dry_run=False)
+
+        # All three columns now exist.
+        self.assertIn("gender", db.gender_columns)
+        self.assertIn("gender_source", db.gender_columns)
+        self.assertIn("gender_source_id", db.gender_columns)
+        # Every pre-existing row survives with gender backfilled to 'unknown'.
+        self.assertEqual(len(db.artists), before_rows)
+        for a in db.artists:
+            self.assertEqual(a["gender"], "unknown")
+            self.assertIsNone(a["gender_source"])
+            self.assertIsNone(a["gender_source_id"])
+        # Report reflects the three added columns + row-count parity.
+        self.assertEqual(
+            sorted(report["added_columns"]),
+            ["gender", "gender_source", "gender_source_id"],
+        )
+        self.assertEqual(report["before"]["artists"], before_rows)
+        self.assertEqual(report["after"]["artists"], before_rows)
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+        self.assertFalse(report["dry_run"])
+
+
+# ----------------------------------------------------------------------------
+# Idempotent re-run: a second apply is a byte-equal no-op
+# ----------------------------------------------------------------------------
+class GenderMigrateIdempotencyTests(unittest.TestCase):
+    def test_second_run_is_byte_equal_noop_and_still_commits(self):
+        db = _fixture()
+        migrate(FakeConn(db), dry_run=False)
+        snapshot_after_first = db.snapshot()
+
+        second = FakeConn(db)
+        report = migrate(second, dry_run=False)
+
+        # Zero columns added on the second run; state byte-for-byte identical.
+        self.assertEqual(report["added_columns"], [])
+        self.assertEqual(db.snapshot(), snapshot_after_first)
+        # Still commits (additive assertions hold even with zero adds this run).
+        self.assertTrue(second.committed)
+        self.assertFalse(second.rolled_back)
+
+
+# ----------------------------------------------------------------------------
+# Dry run: reports planned adds, writes nothing
+# ----------------------------------------------------------------------------
+class GenderMigrateDryRunTests(unittest.TestCase):
+    def test_dry_run_reports_planned_adds_but_writes_nothing(self):
+        db = _fixture()
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        report = migrate(conn, dry_run=True)
+
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(
+            sorted(report["added_columns"]),
+            ["gender", "gender_source", "gender_source_id"],
+        )
+        # Nothing written, nothing committed.
+        self.assertEqual(db.snapshot(), before)
+        self.assertEqual(db.gender_columns, [])
+        self.assertFalse(conn.committed)
+
+    def test_dry_run_on_already_migrated_db_reports_zero_adds(self):
+        db = _fixture()
+        migrate(FakeConn(db), dry_run=False)  # apply first
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        report = migrate(conn, dry_run=True)
+
+        self.assertTrue(report["dry_run"])
+        self.assertEqual(report["added_columns"], [])
+        self.assertEqual(db.snapshot(), before)
+        self.assertFalse(conn.committed)
+
+
+# ----------------------------------------------------------------------------
+# Assertion failure -> rollback
+# ----------------------------------------------------------------------------
+class GenderMigrateRollbackTests(unittest.TestCase):
+    def test_row_count_change_rolls_back_and_raises(self):
+        # Force the additive-only assertion to trip by mutating the artist row
+        # count between the before/after reads (a column-add that also added a
+        # row would be non-additive). The migration must roll back + raise.
+        db = _fixture()
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        original = FakeDB.add_gender_column
+
+        def row_adding_add(self_db, col):
+            original(self_db, col)
+            if col == "gender":
+                # Simulate a non-additive DDL that inserted a stray row.
+                self_db.artists.append(
+                    {"id": 999, "name": "STRAY", "image_url": None,
+                     "gender": "unknown", "gender_source": None,
+                     "gender_source_id": None}
+                )
+
+        FakeDB.add_gender_column = row_adding_add
+        try:
+            with self.assertRaises(GenderMigrationError) as ctx:
+                migrate(conn, dry_run=False)
+        finally:
+            FakeDB.add_gender_column = original
+
+        self.assertIn("row-count changed", str(ctx.exception))
+        self.assertTrue(conn.rolled_back)
+        self.assertFalse(conn.committed)
+        # State restored to its pre-run snapshot.
+        self.assertEqual(db.snapshot(), before)
+
+    def test_null_gender_after_migration_rolls_back_and_raises(self):
+        # If a row somehow ends up with a NULL gender (the default failed to
+        # backfill), the assertion must trip -> rollback + raise.
+        db = _fixture()
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        original = FakeDB.add_gender_column
+
+        def null_gender_add(self_db, col):
+            original(self_db, col)
+            if col == "gender" and self_db.artists:
+                self_db.artists[0]["gender"] = None  # break the default backfill
+
+        FakeDB.add_gender_column = null_gender_add
+        try:
+            with self.assertRaises(GenderMigrationError) as ctx:
+                migrate(conn, dry_run=False)
+        finally:
+            FakeDB.add_gender_column = original
+
+        self.assertIn("NULL gender", str(ctx.exception))
+        self.assertTrue(conn.rolled_back)
+        self.assertFalse(conn.committed)
+        self.assertEqual(db.snapshot(), before)
+
+
+# ----------------------------------------------------------------------------
+# Module hygiene: no top-level psycopg2 import + exports
+# ----------------------------------------------------------------------------
+class GenderMigratePostgresFreeTests(unittest.TestCase):
+    def test_module_has_no_top_level_psycopg_import(self):
+        import inspect
+
+        source = inspect.getsource(migrate_gender)
+        top_level = [
+            l for l in source.splitlines()
+            if l.startswith("import ") or l.startswith("from ")
+        ]
+        self.assertFalse(
+            any("psycopg" in l for l in top_level),
+            "psycopg2 must not be a top-level import",
+        )
+
+    def test_exports_migrate_main_and_error(self):
+        self.assertTrue(hasattr(migrate_gender, "migrate"))
+        self.assertTrue(hasattr(migrate_gender, "main"))
+        self.assertTrue(hasattr(migrate_gender, "GenderMigrationError"))
+        self.assertTrue(issubclass(GenderMigrationError, RuntimeError))
 
 
 if __name__ == "__main__":
