@@ -32,6 +32,21 @@ from pathlib import Path
 # Scope: 4 genre SONG charts, the 4 mirrored genre ALBUM charts, and Artist 100.
 # Hot 100 / Billboard 200 are intentionally EXCLUDED (already on disk via the
 # existing path). Component charts (Streaming/Radio/Sales) are deferred.
+#
+# Two distinct grouping fields (WR-01):
+#   * ``category`` -- the COARSE UI bucket that mirrors the documented
+#     ``charts.category`` vocabulary 'core' | 'genre' | 'artist' (schema.sql:107,
+#     migration 001_multichart.sql:41). The legacy hot-100 / billboard-200 seed
+#     uses 'core'; every curated genre song/album chart is 'genre' and Artist 100
+#     is 'artist'. This is the value ``register_new_charts`` writes into the
+#     ``charts.category`` COLUMN so a "group charts by category" query produces a
+#     coherent core/genre/artist grouping rather than mixing two vocabularies.
+#   * ``genre`` -- the FINE-GRAINED genre family ('country' | 'r-b-hip-hop' |
+#     'rock' | 'latin'), ``None`` for non-genre charts (Artist 100). Kept HERE in
+#     the curated list (the genre name is NOT lost) for future routing; there is
+#     no ``charts.genre`` DB column yet and adding one is out of scope for this
+#     build+test phase. If a genre-family column is needed later, seed it from
+#     this field.
 
 CURATED_CHARTS = [
     # --- Genre song charts (4) ---
@@ -39,28 +54,32 @@ CURATED_CHARTS = [
         "slug": "country-songs",
         "title": "Hot Country Songs",
         "entity_kind": "song",
-        "category": "country",
+        "category": "genre",
+        "genre": "country",
         "candidate": True,
     },
     {
         "slug": "r-b-hip-hop-songs",
         "title": "Hot R&B/Hip-Hop Songs",
         "entity_kind": "song",
-        "category": "r-b-hip-hop",
+        "category": "genre",
+        "genre": "r-b-hip-hop",
         "candidate": True,
     },
     {
         "slug": "rock-songs",
         "title": "Hot Rock & Alternative Songs",
         "entity_kind": "song",
-        "category": "rock",
+        "category": "genre",
+        "genre": "rock",
         "candidate": True,
     },
     {
         "slug": "latin-songs",
         "title": "Hot Latin Songs",
         "entity_kind": "song",
-        "category": "latin",
+        "category": "genre",
+        "genre": "latin",
         "candidate": True,
     },
     # --- Genre album charts (4, mirroring the same genres) ---
@@ -68,28 +87,32 @@ CURATED_CHARTS = [
         "slug": "country-albums",
         "title": "Top Country Albums",
         "entity_kind": "album",
-        "category": "country",
+        "category": "genre",
+        "genre": "country",
         "candidate": True,
     },
     {
         "slug": "r-b-hip-hop-albums",
         "title": "Top R&B/Hip-Hop Albums",
         "entity_kind": "album",
-        "category": "r-b-hip-hop",
+        "category": "genre",
+        "genre": "r-b-hip-hop",
         "candidate": True,
     },
     {
         "slug": "rock-albums",
         "title": "Top Rock & Alternative Albums",
         "entity_kind": "album",
-        "category": "rock",
+        "category": "genre",
+        "genre": "rock",
         "candidate": True,
     },
     {
         "slug": "latin-albums",
         "title": "Top Latin Albums",
         "entity_kind": "album",
-        "category": "latin",
+        "category": "genre",
+        "genre": "latin",
         "candidate": True,
     },
     # --- Artist chart (1) ---
@@ -97,7 +120,8 @@ CURATED_CHARTS = [
         "slug": "artist-100",
         "title": "Artist 100",
         "entity_kind": "artist",
-        "category": "overall",
+        "category": "artist",
+        "genre": None,
         "candidate": True,
     },
 ]

@@ -147,6 +147,14 @@ def register_new_charts(conn):
     CHECK constraint. ``sort_order`` is omitted so the column default applies;
     the new charts sorting after the 2 legacy charts (registry orders by
     sort_order then id) is acceptable.
+
+    WR-01: ``charts.category`` carries the documented COARSE UI bucket
+    ('core' | 'genre' | 'artist'), matching the legacy seed ('core' for
+    hot-100 / billboard-200). The curated genre charts write 'genre' and
+    Artist 100 writes 'artist'. The FINE-GRAINED genre family ('country',
+    'rock', ...) lives in ``CURATED_CHARTS[*]["genre"]`` (there is no DB
+    column for it yet — see charts.py), so it is NOT lost but also NOT
+    written here.
     """
     # Imported inside the function so loader.py still imports cleanly in the
     # psycopg2-free test env (charts.py imports fetcher.DATA_DIR, import-safe).

@@ -108,6 +108,39 @@ class RegisterNewChartsTests(unittest.TestCase):
         self.assertEqual(by_slug["country-songs"]["entity_kind"], "song")
         self.assertEqual(by_slug["country-albums"]["entity_kind"], "album")
 
+    def test_category_uses_documented_bucket_vocabulary(self):
+        # WR-01: charts.category must carry the documented COARSE UI bucket
+        # ('core' | 'genre' | 'artist'), NOT the fine-grained genre family. The
+        # 8 genre charts seed 'genre'; Artist 100 seeds 'artist'. The genre
+        # family lives in CURATED_CHARTS[*]["genre"] instead.
+        db = RegisteringFakeDB(charts=[])
+        conn = RegisteringFakeConn(db)
+        loader.register_new_charts(conn)
+
+        by_slug = {c["slug"]: c for c in db.charts}
+        self.assertEqual(by_slug["artist-100"]["category"], "artist")
+        for slug in (
+            "country-songs", "r-b-hip-hop-songs", "rock-songs", "latin-songs",
+            "country-albums", "r-b-hip-hop-albums", "rock-albums", "latin-albums",
+        ):
+            self.assertEqual(
+                by_slug[slug]["category"], "genre",
+                f"{slug} must seed category='genre', not a genre-family name",
+            )
+        # No row carries a fine-grained genre name in the category COLUMN.
+        written_categories = {c["category"] for c in db.charts}
+        self.assertEqual(written_categories, {"genre", "artist"})
+
+    def test_curated_charts_keep_fine_grained_genre_field(self):
+        # WR-01: the fine-grained genre family is preserved on CURATED_CHARTS
+        # (not lost when category became the coarse bucket).
+        by_slug = {c["slug"]: c for c in CURATED_CHARTS}
+        self.assertEqual(by_slug["country-songs"]["genre"], "country")
+        self.assertEqual(by_slug["rock-albums"]["genre"], "rock")
+        self.assertEqual(by_slug["r-b-hip-hop-songs"]["genre"], "r-b-hip-hop")
+        self.assertEqual(by_slug["latin-albums"]["genre"], "latin")
+        self.assertIsNone(by_slug["artist-100"]["genre"])
+
     def test_second_call_inserts_zero_rows_idempotent(self):
         db = RegisteringFakeDB(charts=[])
         conn = RegisteringFakeConn(db)
