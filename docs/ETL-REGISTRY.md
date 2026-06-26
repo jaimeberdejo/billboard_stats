@@ -285,3 +285,30 @@ The full run and the weekly updater both conflict-skip already-present
 DELETE+rebuild, so a second run inserts **zero** new rows and reproduces the same
 stats. It is always safe to re-run §3 (full), §5 (weekly), and the §4 parity
 checks to confirm a clean state on a branch before the production cutover.
+
+---
+
+## 9. Loading the 9 new charts (DEFERRED prod step — Phase 11)
+
+Phase 11 ships the **loader code + offline fixture tests** for the **9 new charts**
+(Artist 100 + the genre **song**/**album** charts: country, R&B/Hip-Hop, rock,
+latin). The 9 new charts are registered into the `charts` registry table by
+`loader.register_new_charts(conn)`, which `run_etl` now calls **after**
+`_create_schema` and **before** the `iter_charts` load loop — so the very first
+full `run_etl` both registers and loads them. Registration is idempotent
+(`ON CONFLICT (slug) DO NOTHING`); new charts carry `legacy_table=None` and write
+only `chart_entries` (no `hot100_entries` / `b200_entries`). Artist 100 loads as
+an `entity_kind=artist` chart: weekly rows link directly to `artists.id` with
+**no collaboration-splitting** (CHARTS-03), and empty-title artist rows are kept
+by the entity-kind-aware `parse_chart_file` gate. Song/album charts dedup against
+existing `songs`/`albums` rows across charts (CHARTS-01/02).
+
+> **DEFERRED, gated operator step — run AFTER this code lands.** The actual
+> production load of the 9 new charts against Neon — and the full 8→9→10→11
+> migration-stack validation — is performed by a human operator on a **throwaway
+> Neon branch first** (exactly the §1–§6 sequence above: point `PG*` at a branch,
+> snapshot, run `run_etl`, parity/idempotency checks, then cut over). The weekly
+> updater then picks up the 9 new charts incrementally with no updater change.
+> Until that operator step runs, the 9 new charts exist only as on-disk JSON +
+> the offline-verified loader code; nothing is written to the production DB by
+> shipping Phase 11.
