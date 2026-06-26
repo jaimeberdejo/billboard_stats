@@ -83,7 +83,8 @@ _ENTITY_DISPATCH = {
 def run_etl(data_dir: str = None):
     """Run the full registry-driven ETL pipeline.
 
-    Creates the schema, then loops the chart registry
+    Creates the schema, then calls :func:`register_new_charts` to seed the 9
+    curated new charts into the registry, then loops the chart registry
     (:func:`iter_charts`) calling :func:`load_chart` per chart (replacing the two
     hardcoded ``_load_hot100`` / ``_load_b200`` calls), then builds BOTH the v1.0
     ``artist_stats`` and the new ``artist_chart_stats`` via :func:`build_all_stats`.
@@ -103,6 +104,13 @@ def run_etl(data_dir: str = None):
         logger.info("Creating database schema...")
         _create_schema(conn)
 
+        # Register the 9 curated new charts into the charts registry table BEFORE
+        # the load loop, so iter_charts yields them on this very first full load
+        # (CONTEXT decision: registration happens "as part of the load path,"
+        # not via a prior migration). Idempotent — re-runs add zero rows.
+        logger.info("Registering new charts...")
+        register_new_charts(conn)
+
         logger.info("Loading charts from registry...")
         for chart in iter_charts(conn, data_dir=data_dir):
             if not Path(chart.folder).is_dir():
@@ -121,6 +129,43 @@ def run_etl(data_dir: str = None):
         logger.info("ETL complete.")
     finally:
         put_conn(conn)
+
+
+def register_new_charts(conn):
+    """Idempotently register the 9 curated new charts into the charts table.
+
+    The charts table is the registry SOURCE for :func:`iter_charts`; Phase 9 only
+    seeded the 2 legacy charts. This inserts the 9 curated new charts (genre song
+    + album charts and Artist 100) read verbatim from
+    :data:`billboard_stats.etl.charts.CURATED_CHARTS` — no inline slug
+    re-declaration — using the established idempotent idiom
+    (``INSERT ... ON CONFLICT (slug) DO NOTHING``, mirroring
+    ``migrate_multichart.py``). Re-running adds zero rows.
+
+    All writes are parameterized (``%s`` placeholders) — never string-interpolated
+    chart data. The ``entity_kind`` (song|album|artist) satisfies the charts
+    CHECK constraint. ``sort_order`` is omitted so the column default applies;
+    the new charts sorting after the 2 legacy charts (registry orders by
+    sort_order then id) is acceptable.
+    """
+    # Imported inside the function so loader.py still imports cleanly in the
+    # psycopg2-free test env (charts.py imports fetcher.DATA_DIR, import-safe).
+    from billboard_stats.etl.charts import CURATED_CHARTS
+
+    with conn.cursor() as cur:
+        for chart in CURATED_CHARTS:
+            cur.execute(
+                "INSERT INTO charts (slug, title, entity_kind, category) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (slug) DO NOTHING;",
+                (
+                    chart["slug"],
+                    chart["title"],
+                    chart["entity_kind"],
+                    chart["category"],
+                ),
+            )
+    conn.commit()
 
 
 def _create_schema(conn):
