@@ -72,3 +72,82 @@ export function genreFamily(slug: string, category: string | null): ChartFamily 
   // Unknown/future chart: keep it visible in nav rather than throwing.
   return "Core";
 }
+
+// ---------------------------------------------------------------------------
+// Synchronous chart metadata (depth + entity_kind), seeded from the registry.
+//
+// SOURCE OF TRUTH — keep in lockstep with:
+//   billboard_stats/etl/charts.py CURATED_CHARTS + the legacy core seed.
+//
+// The async read paths (records.ts, /api/records, charts.ts) resolve depth +
+// entity_kind from the `charts` registry row directly. But the NLQ interpreter
+// (src/lib/nlq/interpret.ts) MUST stay PURE / SYNCHRONOUS / offline-testable —
+// it cannot do a DB round-trip. This static map is the registry-derived,
+// no-DB source the interpreter uses to generalize its chart-depth + entity_kind
+// guards off the closed two-chart universe (it replaces the hardcoded
+// `chart === "hot-100" ? 100 : 200` and `chart === "billboard-200"` branches).
+//
+// Depth = the chart's rank count (max position): Hot 100 = 100, Billboard 200
+// = 200, Artist 100 = 100, and the curated genre song/album charts publish a
+// top-50. The `-songs`/`-albums` genre charts are matched by slug prefix so a
+// new `<genre>-songs` / `<genre>-albums` chart inherits the right entity_kind +
+// depth without a code change. Unknown future charts fall back to a safe
+// song-entity / depth-100 default rather than throwing.
+// ---------------------------------------------------------------------------
+
+export type ChartEntityKind = "song" | "album" | "artist";
+
+interface ChartMeta {
+  entityKind: ChartEntityKind;
+  depth: number;
+}
+
+/** Exact-slug metadata for the non-genre-prefixed charts. */
+const CHART_META_BY_SLUG: Record<string, ChartMeta> = {
+  "hot-100": { entityKind: "song", depth: 100 },
+  "billboard-200": { entityKind: "album", depth: 200 },
+  "artist-100": { entityKind: "artist", depth: 100 },
+};
+
+/**
+ * Genre-prefix metadata. The curated genre charts are deliberately named
+ * `<genre>-songs` / `<genre>-albums` (country / r-b-hip-hop / rock / latin), all
+ * top-50, so a prefix rule covers each genre's song+album pair with one entry.
+ */
+const GENRE_SUFFIX_META: Array<{ suffix: string; meta: ChartMeta }> = [
+  { suffix: "-songs", meta: { entityKind: "song", depth: 50 } },
+  { suffix: "-albums", meta: { entityKind: "album", depth: 50 } },
+];
+
+const DEFAULT_CHART_META: ChartMeta = { entityKind: "song", depth: 100 };
+
+function lookupChartMeta(slug: string): ChartMeta {
+  const exact = CHART_META_BY_SLUG[slug];
+  if (exact) {
+    return exact;
+  }
+  for (const { suffix, meta } of GENRE_SUFFIX_META) {
+    if (slug.endsWith(suffix)) {
+      return meta;
+    }
+  }
+  return DEFAULT_CHART_META;
+}
+
+/**
+ * The chart's rank count (max position) — the registry-derived replacement for
+ * the hardcoded `chart === "hot-100" ? 100 : 200`. Used for position-range
+ * validation bounds in the records API and the NLQ interpreter.
+ */
+export function chartDepth(slug: string): number {
+  return lookupChartMeta(slug).depth;
+}
+
+/**
+ * The ranked entity type for a chart, derived synchronously from its slug —
+ * the registry-derived replacement for the `chart === "hot-100"` /
+ * `chart === "billboard-200"` entity guards in the NLQ interpreter.
+ */
+export function chartEntityKind(slug: string): ChartEntityKind {
+  return lookupChartMeta(slug).entityKind;
+}

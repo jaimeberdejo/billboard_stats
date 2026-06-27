@@ -1,51 +1,78 @@
 import { type ChartType } from "@/lib/charts";
 import { getSql } from "@/lib/db";
+import { validWeeksCte, resolveChart, type ChartRow } from "@/lib/valid-weeks";
 
-const VALID_HOT100_WEEKS_CTE = `
-    phantom_hot100 AS (
-        SELECT e.chart_week_id
-        FROM hot100_entries e
-        GROUP BY e.chart_week_id
-        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
-               >= COUNT(*) * 95 / 100
-    ),
-    first_real_hot100 AS (
-        SELECT MIN(cw.id) AS id
-        FROM phantom_hot100 ph
-        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
-        WHERE cw.chart_type = 'hot-100'
-    ),
-    valid_hot100_weeks AS (
-        SELECT cw.id
-        FROM chart_weeks cw
-        WHERE cw.chart_type = 'hot-100'
-          AND (cw.id NOT IN (SELECT chart_week_id FROM phantom_hot100)
-               OR cw.id = (SELECT id FROM first_real_hot100))
-    )
-`;
+/**
+ * Registry-driven entity-shape lookup for the records SQL builder.
+ *
+ * The records subsystem reads the polymorphic `chart_entries` table filtered by
+ * `chart_id` (bound `$N`) through the SHARED parametric `validWeeksCte` — there
+ * is NO `hot100_entries` / `b200_entries` table reference and NO
+ * `isHot100 = chart === "hot-100"` 2-way switch. The entity table / stats table /
+ * id column / artist-link table are derived from the chart's `entity_kind`
+ * (resolved from the registry), NOT from a hardcoded two-chart literal. All
+ * strings here are CODE CONSTANTS keyed by entity_kind — never user input. The
+ * only bound values remain `$N` params (chart_id, dates, filter values, limit).
+ *
+ * NOTE: the v1.0 pre-computed stats tables (song_stats / album_stats /
+ * artist_stats) are entity-keyed (song_stats by song_id, album_stats by
+ * album_id), so the song-entity charts share song_stats and the album-entity
+ * charts share album_stats. artist_stats keeps its v1.0 hot100_/b200_ columns
+ * (Phase 15 generalizes the artist rollup onto artist_chart_stats); the
+ * artist-rollup presets pick the song- vs album-side column by entity_kind.
+ */
+interface RecordsEntityShape {
+  /** Entity row table joined to chart_entries (songs / albums). */
+  itemTable: string;
+  /** Pre-computed per-entity stats table (song_stats / album_stats). */
+  statsTable: string;
+  /** chart_entries entity-id column for this entity_kind (song_id / album_id). */
+  idCol: "song_id" | "album_id";
+  /** Artist link table (song_artists / album_artists). */
+  artistLinkTable: string;
+  /** Artist link table entity-id column. */
+  artistLinkIdCol: "song_id" | "album_id";
+}
 
-const VALID_B200_WEEKS_CTE = `
-    phantom_b200 AS (
-        SELECT e.chart_week_id
-        FROM b200_entries e
-        GROUP BY e.chart_week_id
-        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
-               >= COUNT(*) * 95 / 100
-    ),
-    first_real_b200 AS (
-        SELECT MIN(cw.id) AS id
-        FROM phantom_b200 ph
-        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
-        WHERE cw.chart_type = 'billboard-200'
-    ),
-    valid_b200_weeks AS (
-        SELECT cw.id
-        FROM chart_weeks cw
-        WHERE cw.chart_type = 'billboard-200'
-          AND (cw.id NOT IN (SELECT chart_week_id FROM phantom_b200)
-               OR cw.id = (SELECT id FROM first_real_b200))
-    )
-`;
+/**
+ * Resolve the records entity shape from a chart's entity_kind. Artist-entity
+ * charts (Artist 100) have no song/album-keyed stats rollup in the v1.0 records
+ * subsystem, so they map onto the song shape defensively (the api/records layer
+ * gates which charts reach here); the entity-kind switch never hardcodes a
+ * chart slug.
+ */
+function recordsEntityShape(entityKind: ChartRow["entity_kind"]): RecordsEntityShape {
+  if (entityKind === "album") {
+    return {
+      itemTable: "albums",
+      statsTable: "album_stats",
+      idCol: "album_id",
+      artistLinkTable: "album_artists",
+      artistLinkIdCol: "album_id",
+    };
+  }
+  // song (and defensive default for artist) entity charts.
+  return {
+    itemTable: "songs",
+    statsTable: "song_stats",
+    idCol: "song_id",
+    artistLinkTable: "song_artists",
+    artistLinkIdCol: "song_id",
+  };
+}
+
+/**
+ * Resolve a chart slug to its registry row for the records builders. Throws on
+ * an unknown slug — callers (the api/records route) validate the slug via
+ * parseChartType before reaching here, so this is a defensive invariant.
+ */
+async function resolveRecordsChart(chart: ChartType): Promise<ChartRow> {
+  const row = await resolveChart(chart);
+  if (!row) {
+    throw new Error(`Unknown chart slug: ${chart}`);
+  }
+  return row;
+}
 
 export type RecordPreset =
   | "most-weeks-at-number-one"
@@ -247,16 +274,21 @@ function mapSimultaneousWeeks(
 
 function getUnsupportedMessage(
   record: RecordPreset,
-  chart: ChartType,
+  entityKind: ChartRow["entity_kind"],
 ): string | null {
-  if (record === "most-simultaneous-entries" && chart === "billboard-200") {
-    return "This record is only tracked for the Hot 100.";
+  // Compatibility guards expressed in entity_kind terms (not the hot-100 /
+  // billboard-200 literals): the "songs" records apply to song-entity charts,
+  // the "albums" record applies to album-entity charts. simultaneous-entries +
+  // #1-songs are song-side records (unsupported on album charts); #1-albums is
+  // an album-side record (unsupported on song charts).
+  if (record === "most-simultaneous-entries" && entityKind !== "song") {
+    return "This record is only tracked for song charts.";
   }
-  if (record === "most-number-one-songs-by-artist" && chart === "billboard-200") {
-    return "This record is only available for the Hot 100.";
+  if (record === "most-number-one-songs-by-artist" && entityKind !== "song") {
+    return "This record is only available for song charts.";
   }
-  if (record === "most-number-one-albums-by-artist" && chart === "hot-100") {
-    return "This record is only available for the Billboard 200.";
+  if (record === "most-number-one-albums-by-artist" && entityKind !== "album") {
+    return "This record is only available for album charts.";
   }
   return null;
 }
@@ -278,7 +310,11 @@ export async function getPresetRecords(
   chart: ChartType,
   limit = 50,
 ): Promise<PresetRecordsPayload> {
-  const unsupportedMessage = getUnsupportedMessage(record, chart);
+  const chartRow = await resolveRecordsChart(chart);
+  const entityKind = chartRow.entity_kind;
+  const isSongChart = entityKind === "song";
+
+  const unsupportedMessage = getUnsupportedMessage(record, entityKind);
   if (unsupportedMessage) {
     return {
       mode: "preset",
@@ -296,7 +332,7 @@ export async function getPresetRecords(
 
   switch (record) {
     case "most-weeks-at-number-one":
-      if (chart === "hot-100") {
+      if (isSongChart) {
         rows = await sql.query(
           `SELECT s.title, s.artist_credit, ss.weeks_at_number_one AS value, s.id AS song_id
            FROM song_stats ss
@@ -319,7 +355,7 @@ export async function getPresetRecords(
       }
       break;
     case "longest-chart-runs":
-      if (chart === "hot-100") {
+      if (isSongChart) {
         rows = await sql.query(
           `SELECT s.title, s.artist_credit, ss.total_weeks AS value, s.id AS song_id
            FROM song_stats ss
@@ -340,31 +376,35 @@ export async function getPresetRecords(
       }
       break;
     case "most-top-10-weeks":
-      if (chart === "hot-100") {
+      // chart_id-keyed read over the polymorphic chart_entries table through the
+      // shared validWeeksCte; the entity JOIN/SELECT branch on entity_kind only.
+      if (isSongChart) {
         rows = await sql.query(
-          `WITH ${VALID_HOT100_WEEKS_CTE}
+          `WITH ${validWeeksCte("valid_weeks", "$2")}
            SELECT s.title, s.artist_credit, COUNT(*) AS value, s.id AS song_id
-           FROM hot100_entries e
+           FROM chart_entries e
            JOIN songs s ON e.song_id = s.id
-           WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+           WHERE e.chart_id = $2
+             AND e.chart_week_id IN (SELECT id FROM valid_weeks)
              AND e.rank <= 10
            GROUP BY s.id, s.title, s.artist_credit
            ORDER BY value DESC, s.title
            LIMIT $1`,
-          [limit],
+          [limit, chartRow.id],
         );
       } else {
         rows = await sql.query(
-          `WITH ${VALID_B200_WEEKS_CTE}
+          `WITH ${validWeeksCte("valid_weeks", "$2")}
            SELECT a.title, a.artist_credit, COUNT(*) AS value, a.id AS album_id
-           FROM b200_entries e
+           FROM chart_entries e
            JOIN albums a ON e.album_id = a.id
-           WHERE e.chart_week_id IN (SELECT id FROM valid_b200_weeks)
+           WHERE e.chart_id = $2
+             AND e.chart_week_id IN (SELECT id FROM valid_weeks)
              AND e.rank <= 10
            GROUP BY a.id, a.title, a.artist_credit
            ORDER BY value DESC, a.title
            LIMIT $1`,
-          [limit],
+          [limit, chartRow.id],
         );
       }
       break;
@@ -397,7 +437,10 @@ export async function getPresetRecords(
       );
       break;
     case "most-entries-by-artist":
-      if (chart === "hot-100") {
+      // Legacy artist rollup (artist_stats) is keyed by the song- vs album-side
+      // career column, picked by entity_kind. Phase 15 generalizes this onto
+      // artist_chart_stats; until then the entity_kind branch is the contract.
+      if (isSongChart) {
         rows = await sql.query(
           `SELECT a.name AS title, a.name AS artist_credit,
                   ast.total_hot100_songs AS value, a.id AS artist_id
@@ -422,7 +465,7 @@ export async function getPresetRecords(
       }
       break;
     case "most-total-chart-weeks-by-artist":
-      if (chart === "hot-100") {
+      if (isSongChart) {
         rows = await sql.query(
           `SELECT a.name AS title, a.name AS artist_credit,
                   ast.total_hot100_weeks AS value, a.id AS artist_id
@@ -447,13 +490,15 @@ export async function getPresetRecords(
       }
       break;
     case "most-simultaneous-entries":
+      // Song-side record (gated above); chart_id-keyed chart_entries read.
       rows = await sql.query(
-        `WITH ${VALID_HOT100_WEEKS_CTE},
+        `WITH ${validWeeksCte("valid_weeks", "$2")},
          artist_week_counts AS (
            SELECT sa.artist_id, e.chart_week_id, COUNT(*) AS cnt
-           FROM hot100_entries e
+           FROM chart_entries e
            JOIN song_artists sa ON e.song_id = sa.song_id
-           WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+           WHERE e.chart_id = $2
+             AND e.chart_week_id IN (SELECT id FROM valid_weeks)
            GROUP BY sa.artist_id, e.chart_week_id
          )
          SELECT a.name AS title, a.name AS artist_credit,
@@ -463,7 +508,7 @@ export async function getPresetRecords(
          JOIN chart_weeks cw ON awc.chart_week_id = cw.id
          ORDER BY awc.cnt DESC, cw.chart_date DESC, a.name
          LIMIT $1`,
-        [limit],
+        [limit, chartRow.id],
       );
       break;
   }
@@ -501,17 +546,26 @@ export async function getCustomRecords(
   } = input;
 
   const sql = getSql();
-  const isHot100 = chart === "hot-100";
-  const entryTable = isHot100 ? "hot100_entries" : "b200_entries";
-  const itemTable = isHot100 ? "songs" : "albums";
-  const statsTable = isHot100 ? "song_stats" : "album_stats";
-  const idCol = isHot100 ? "song_id" : "album_id";
-  const validWeeksCte = isHot100 ? VALID_HOT100_WEEKS_CTE : VALID_B200_WEEKS_CTE;
-  const validWeeksTable = isHot100 ? "valid_hot100_weeks" : "valid_b200_weeks";
+  const chartRow = await resolveRecordsChart(chart);
+  const entityKind = chartRow.entity_kind;
+  const isSongChart = entityKind === "song";
+  const shape = recordsEntityShape(entityKind);
+  // Polymorphic chart_entries read keyed by chart_id ($1), filtered through the
+  // shared validWeeksCte (also bound to $1). The legacy hot100_entries /
+  // b200_entries tables and the isHot100 boolean switch are gone — entity tables
+  // derive from entity_kind, the chart is selected by chart_id.
+  const chartId = chartRow.id;
+  const itemTable = shape.itemTable;
+  const statsTable = shape.statsTable;
+  const idCol = shape.idCol;
+  // The valid-weeks relation is bound to chart_id at $1; entry reads filter
+  // chart_entries by the same chart_id ($1) AND membership in valid_weeks.
+  const validWeeksCteBody = validWeeksCte("valid_weeks", "$1");
+  const validWeeksTable = "valid_weeks";
   const orderDir = sortDir === "asc" ? "ASC" : "DESC";
   const hasYearFilter = startYear != null || endYear != null;
-  const artistLinkTable = isHot100 ? "song_artists" : "album_artists";
-  const artistLinkIdCol = isHot100 ? "song_id" : "album_id";
+  const artistLinkTable = shape.artistLinkTable;
+  const artistLinkIdCol = shape.artistLinkIdCol;
 
   let rows: Record<string, unknown>[] = [];
   let valueLabel = "Value";
@@ -583,14 +637,17 @@ export async function getCustomRecords(
   };
 
   if (entity === "artists" && !hasYearFilter) {
-    const roleFilter = creditScope === "lead" ? "AND role = 'primary'" : "";
+    const roleFilter = creditScope === "lead" ? "AND link.role = 'primary'" : "";
     const params: Array<string | number> = [];
     const filters: string[] = [];
-    const placeholder = () => `$${params.length + 2}`;
+    // No chart discriminator param: the entity arm is chosen in code by
+    // entity_kind, so placeholders are 1-based (was 2-based behind the removed
+    // `$1 = 'hot-100'` UNION discriminator).
+    const placeholder = () => `$${params.length + 1}`;
 
     if (artistNames && artistNames.length > 0) {
       const artistValues = artistNames.map((name) => `%${name}%`);
-      const artistClause = artistValues.map((_, index) => `a.name ILIKE $${index + 2}`);
+      const artistClause = artistValues.map((_, index) => `a.name ILIKE $${index + 1}`);
       filters.push(`(${artistClause.join(" OR ")})`);
       params.push(...artistValues);
     }
@@ -609,25 +666,21 @@ export async function getCustomRecords(
       valueSql = "aggregated.entry_count";
       filters.push(`${valueSql} > 0`);
     } else {
-      valueLabel = isHot100 ? "#1 Songs" : "#1 Albums";
+      valueLabel = isSongChart ? "#1 Songs" : "#1 Albums";
       valueSql = "aggregated.number_one_count";
       filters.push(`${valueSql} > 0`);
     }
 
     const filterSql = filters.length > 0 ? `WHERE ${filters.join(" AND ")}` : "";
     params.push(limit);
+    // Single entity-kind-keyed arm over the entity's artist-link + stats tables
+    // (code constants from `shape`); replaces the 2-arm UNION discriminator.
     rows = await sql.query(
       `WITH selected_entries AS (
-         SELECT sa.artist_id,
-                sa.song_id AS item_id
-         FROM song_artists sa
-         WHERE $1 = 'hot-100'
-           ${roleFilter}
-         UNION ALL
-         SELECT aa.artist_id,
-                aa.album_id AS item_id
-         FROM album_artists aa
-         WHERE $1 = 'billboard-200'
+         SELECT link.artist_id,
+                link.${artistLinkIdCol} AS item_id
+         FROM ${artistLinkTable} link
+         WHERE true
            ${roleFilter}
        ),
        aggregated AS (
@@ -647,13 +700,15 @@ export async function getCustomRecords(
        JOIN artists a ON aggregated.artist_id = a.id
        ${filterSql}
        ORDER BY ${valueSql} ${orderDir}, a.name
-       LIMIT $${params.length + 1}`,
-      [chart, ...params],
+       LIMIT $${params.length}`,
+      params,
     );
   } else if (entity === "artists" && hasYearFilter) {
     const roleFilter = creditScope === "lead" ? "WHERE link.role = 'primary'" : "";
-    const yearFilter = buildYearFilter();
-    const params: Array<string | number> = [...yearFilter.params];
+    // $1 = chart_id (the validWeeksCte bind + the chart_entries filter). All
+    // other params start at offset 1.
+    const yearFilter = buildYearFilter(1);
+    const params: Array<string | number> = [chartId, ...yearFilter.params];
     const filters: string[] = [];
     const placeholder = () => `$${params.length + 1}`;
 
@@ -683,7 +738,7 @@ export async function getCustomRecords(
       valueSql = "aggregated.entry_count";
       filters.push(`${valueSql} > 0`);
     } else {
-      valueLabel = isHot100 ? "#1 Songs" : "#1 Albums";
+      valueLabel = isSongChart ? "#1 Songs" : "#1 Albums";
       valueSql = "aggregated.number_one_count";
       filters.push(`${valueSql} > 0`);
     }
@@ -692,14 +747,15 @@ export async function getCustomRecords(
     params.push(limit);
 
     rows = await sql.query(
-      `WITH ${validWeeksCte},
+      `WITH ${validWeeksCteBody},
        filtered_entries AS (
          SELECT e.${idCol} AS item_id,
                 e.rank,
                 cw.chart_date
-         FROM ${entryTable} e
+         FROM chart_entries e
          JOIN chart_weeks cw ON cw.id = e.chart_week_id
-         WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
+         WHERE e.chart_id = $1
+           AND e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
        ),
        item_stats AS (
          SELECT fe.item_id,
@@ -759,46 +815,53 @@ export async function getCustomRecords(
       params,
     );
   } else if (!hasYearFilter) {
-    const { params, filterSql } = buildFilters(1);
+    // $1 = chart_id (validWeeksCte bind + chart_entries filter); $2 = rankByParam;
+    // filters start at offset 2.
+    const { params, filterSql } = buildFilters(2);
     const rankFilter =
-      rankBy === "weeks-at-position" ? "e.rank = $1" : "e.rank <= $1";
+      rankBy === "weeks-at-position" ? "e.rank = $2" : "e.rank <= $2";
     valueLabel =
       rankBy === "weeks-at-position" ? `Wks @#${rankByParam}` : `Wks Top ${rankByParam}`;
 
     rows = await sql.query(
-      `WITH ${validWeeksCte}
+      `WITH ${validWeeksCteBody}
        SELECT i.title,
               i.artist_credit,
               COUNT(*) AS value,
               i.id AS ${idCol}
-       FROM ${entryTable} e
+       FROM chart_entries e
        JOIN ${itemTable} i ON e.${idCol} = i.id
        JOIN ${statsTable} st ON st.${idCol} = i.id
-       WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})
+       WHERE e.chart_id = $1
+         AND e.chart_week_id IN (SELECT id FROM ${validWeeksTable})
          AND ${rankFilter}${filterSql}
        GROUP BY i.id, i.title, i.artist_credit
        ORDER BY value ${orderDir}, i.title
-       LIMIT $${params.length + 2}`,
-      [rankByParam, ...params, limit],
+       LIMIT $${params.length + 3}`,
+      [chartId, rankByParam, ...params, limit],
     );
   } else if (rankBy === "total-weeks" || rankBy === "weeks-at-number-one") {
-    const yearFilter = buildYearFilter();
-    const { params: filterParams, filterSql } = buildFilters(yearFilter.params.length);
+    // $1 = chart_id; yearFilter + filters start at offset 1.
+    const yearFilter = buildYearFilter(1);
+    const { params: filterParams, filterSql } = buildFilters(
+      1 + yearFilter.params.length,
+    );
     const valueCol = rankBy === "total-weeks" ? "total_weeks" : "weeks_at_number_one";
     valueLabel = rankBy === "total-weeks" ? "Total Wks" : "Wks #1";
     const valueFilter =
       rankBy === "weeks-at-number-one" ? ` AND st.${valueCol} > 0` : "";
-    const params = [...yearFilter.params, ...filterParams, limit];
+    const params = [chartId, ...yearFilter.params, ...filterParams, limit];
 
     rows = await sql.query(
-      `WITH ${validWeeksCte},
+      `WITH ${validWeeksCteBody},
        filtered_entries AS (
          SELECT e.${idCol} AS item_id,
                 e.rank,
                 cw.chart_date
-         FROM ${entryTable} e
+         FROM chart_entries e
          JOIN chart_weeks cw ON cw.id = e.chart_week_id
-         WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
+         WHERE e.chart_id = $1
+           AND e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
        ),
        item_stats AS (
          SELECT fe.item_id,
@@ -829,25 +892,28 @@ export async function getCustomRecords(
       params,
     );
   } else {
-    const yearFilter = buildYearFilter(1);
+    // $1 = chart_id; $2 = rankByParam; yearFilter starts at offset 2; filters
+    // start after yearFilter.
+    const yearFilter = buildYearFilter(2);
     const { params: filterParams, filterSql } = buildFilters(
-      yearFilter.params.length + 1,
+      2 + yearFilter.params.length,
     );
     const rankFilter =
-      rankBy === "weeks-at-position" ? "fe.rank = $1" : "fe.rank <= $1";
+      rankBy === "weeks-at-position" ? "fe.rank = $2" : "fe.rank <= $2";
     valueLabel =
       rankBy === "weeks-at-position" ? `Wks @#${rankByParam}` : `Wks Top ${rankByParam}`;
-    const params = [rankByParam, ...yearFilter.params, ...filterParams, limit];
+    const params = [chartId, rankByParam, ...yearFilter.params, ...filterParams, limit];
 
     rows = await sql.query(
-      `WITH ${validWeeksCte},
+      `WITH ${validWeeksCteBody},
        filtered_entries AS (
          SELECT e.${idCol} AS item_id,
                 e.rank,
                 cw.chart_date
-         FROM ${entryTable} e
+         FROM chart_entries e
          JOIN chart_weeks cw ON cw.id = e.chart_week_id
-         WHERE e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
+         WHERE e.chart_id = $1
+           AND e.chart_week_id IN (SELECT id FROM ${validWeeksTable})${yearFilter.filterSql}
        ),
        item_stats AS (
          SELECT fe.item_id,
@@ -896,7 +962,10 @@ export async function getArtistRecordDrilldown(
   artistId: number,
   chartDate?: string,
 ): Promise<DrilldownPayload> {
-  const unsupportedMessage = getUnsupportedMessage(record, chart);
+  const chartRow = await resolveRecordsChart(chart);
+  const entityKind = chartRow.entity_kind;
+  const isSongChart = entityKind === "song";
+  const unsupportedMessage = getUnsupportedMessage(record, entityKind);
   const artistName = await getArtistName(artistId);
   if (unsupportedMessage) {
     return {
@@ -940,7 +1009,7 @@ export async function getArtistRecordDrilldown(
       );
       break;
     case "most-entries-by-artist":
-      if (chart === "hot-100") {
+      if (isSongChart) {
         rows = await sql.query(
           `SELECT s.title, s.artist_credit, ss.total_weeks AS value, s.id AS song_id
            FROM song_stats ss
@@ -963,7 +1032,7 @@ export async function getArtistRecordDrilldown(
       }
       break;
     case "most-total-chart-weeks-by-artist":
-      if (chart === "hot-100") {
+      if (isSongChart) {
         rows = await sql.query(
           `SELECT s.title, s.artist_credit, ss.total_weeks AS value, s.id AS song_id
            FROM song_stats ss
@@ -986,14 +1055,18 @@ export async function getArtistRecordDrilldown(
       }
       break;
     case "most-simultaneous-entries":
+      // Song-side record (gated via getUnsupportedMessage); chart_id-keyed
+      // chart_entries read through the shared validWeeksCte. $1 = artistId,
+      // $2 = chartDate, $3 = chart_id.
       rows = await sql.query(
-        `WITH ${VALID_HOT100_WEEKS_CTE},
+        `WITH ${validWeeksCte("valid_weeks", "$3")},
          week_counts AS (
            SELECT e.chart_week_id, COUNT(*) AS cnt
-           FROM hot100_entries e
+           FROM chart_entries e
            JOIN song_artists sa ON e.song_id = sa.song_id
            WHERE sa.artist_id = $1
-             AND e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+             AND e.chart_id = $3
+             AND e.chart_week_id IN (SELECT id FROM valid_weeks)
            GROUP BY e.chart_week_id
          )
          SELECT cw.chart_date::text AS chart_date,
@@ -1004,13 +1077,14 @@ export async function getArtistRecordDrilldown(
                 s.id AS song_id
          FROM week_counts
          JOIN chart_weeks cw ON week_counts.chart_week_id = cw.id
-         JOIN hot100_entries e ON e.chart_week_id = week_counts.chart_week_id
+         JOIN chart_entries e ON e.chart_week_id = week_counts.chart_week_id
+              AND e.chart_id = $3
          JOIN songs s ON e.song_id = s.id
          JOIN song_artists sa ON s.id = sa.song_id
          WHERE sa.artist_id = $1
            AND ($2::date IS NULL OR cw.chart_date = $2::date)
          ORDER BY week_counts.cnt DESC, cw.chart_date DESC, e.rank ASC`,
-        [artistId, chartDate ?? null],
+        [artistId, chartDate ?? null, chartRow.id],
       );
       break;
     default:
