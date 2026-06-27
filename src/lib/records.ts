@@ -727,7 +727,7 @@ export async function getGenderLeaderboard(
   const rows = await sql.query(
     `WITH ${validWeeksCte("valid_weeks", "$1")},
      per_artist AS (
-       SELECT a.id AS artist_id,
+       SELECT link.artist_id AS artist_id,
               a.name,
               COALESCE(a.gender, 'unknown') AS gender,
               COUNT(*) AS weeks
@@ -736,7 +736,7 @@ export async function getGenderLeaderboard(
        LEFT JOIN artists a ON link.artist_id = a.id
        WHERE e.chart_id = $1
          AND e.chart_week_id IN (SELECT id FROM valid_weeks)
-       GROUP BY a.id, a.name, COALESCE(a.gender, 'unknown')
+       GROUP BY link.artist_id, a.name, COALESCE(a.gender, 'unknown')
      ),
      coverage AS (
        SELECT COUNT(*) AS total_artists,
@@ -770,14 +770,14 @@ export async function getGenderLeaderboard(
     const coverageOnly = await sql.query(
       `WITH ${validWeeksCte("valid_weeks", "$1")},
        per_artist AS (
-         SELECT a.id AS artist_id,
+         SELECT link.artist_id AS artist_id,
                 COALESCE(a.gender, 'unknown') AS gender
          FROM chart_entries e
          JOIN ${linkTable} link ON e.${linkIdCol} = link.${linkIdCol}
          LEFT JOIN artists a ON link.artist_id = a.id
          WHERE e.chart_id = $1
            AND e.chart_week_id IN (SELECT id FROM valid_weeks)
-         GROUP BY a.id, COALESCE(a.gender, 'unknown')
+         GROUP BY link.artist_id, COALESCE(a.gender, 'unknown')
        )
        SELECT COUNT(*) AS total_artists,
               COUNT(*) FILTER (WHERE gender <> 'unknown') AS matched_artists,
