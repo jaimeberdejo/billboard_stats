@@ -170,9 +170,22 @@ export async function parseChartType(
   return chart ? chart.slug : null;
 }
 
-/** ISO date string validation (YYYY-MM-DD). */
+/**
+ * ISO date string validation (YYYY-MM-DD).
+ *
+ * Format-checks the shape AND verifies the date is a real calendar date by
+ * round-tripping through `Date`: impossible dates like `2024-02-31` or
+ * `2024-13-45` would roll over (Feb 31 -> Mar 2) and fail the round-trip
+ * equality check. This rejects such inputs at the route with a 400 rather than
+ * letting them reach the Postgres `$N::date` cast (which raises "date/time field
+ * value out of range" and surfaces as a misleading 500). Pure, no side effects.
+ */
 export function isValidISODate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return false;
+  }
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
 }
 
 // ---------------------------------------------------------------------------
