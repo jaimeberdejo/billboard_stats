@@ -164,14 +164,38 @@ def _map_wikidata(p31: Set[str], p21: Optional[str]) -> str:
 # ----------------------------------------------------------------------------
 # Resolution: MusicBrainz primary, Wikidata fallback (defensive parsing)
 # ----------------------------------------------------------------------------
+class _MBMatchedUnmappable(Exception):
+    """A confident MusicBrainz identity match whose gender has no 5-value bucket.
+
+    Raised by :func:`mb_resolve` when MB CONFIDENTLY identifies the artist (score
+    above threshold) but the resulting gender is unmappable (e.g. a Non-binary
+    Person). This is a TERMINAL outcome (WR-01): the caller must leave the row
+    ``'unknown'`` and must NOT fall through to Wikidata — we already have a
+    confident identity; re-querying Wikidata's coarser P21 data risks
+    misattributing the artist as male/female (RESEARCH A1 anti-pattern).
+
+    The matched MBID is carried so the caller can record provenance
+    (``gender_source='musicbrainz'``, ``gender_source_id=<mbid>``) on the
+    unknown-gender row.
+    """
+
+    def __init__(self, mbid: str):
+        super().__init__(f"confident MB match {mbid} has unmappable gender")
+        self.mbid = mbid
+
+
 def mb_resolve(
     http, name: str, *, contact: Optional[str] = None,
     min_score: int = DEFAULT_MIN_SCORE, limit: int = 5,
 ) -> Optional[Tuple[str, str]]:
     """Resolve a name via MusicBrainz search -> lookup.
 
-    Returns ``(gender, mbid)`` on a confident match, else ``None``. The Lucene
-    name is passed via ``params`` (urllib-encoded by the client), never
+    Returns ``(gender, mbid)`` on a confident, mappable match; ``None`` when there
+    is NO confident match (the caller then tries Wikidata); and raises
+    :class:`_MBMatchedUnmappable` when MB confidently matched but the gender has no
+    5-value bucket (WR-01: terminal -> stay 'unknown', do NOT fall through).
+
+    The Lucene name is passed via ``params`` (urllib-encoded by the client), never
     string-concatenated into the query; ``fmt=json`` is always set. Defensive
     parsing throughout — the response body is untrusted JSON.
     """
@@ -200,10 +224,13 @@ def mb_resolve(
         return None
     gender = _map_gender(art.get("type"), art.get("gender"))
     if gender == "unknown":
-        # A confident MB id but an unmappable gender (e.g. Non-binary) — leave
-        # the row unknown WITHOUT falling through to Wikidata (we DID get a
-        # confident match; the gender simply has no 5-value bucket).
-        return None
+        # A confident MB id but an unmappable gender (e.g. Non-binary): TERMINAL.
+        # Do NOT fall through to Wikidata — we DID get a confident identity match;
+        # the gender simply has no 5-value bucket. Raising a distinct sentinel
+        # (rather than returning None, which means "no MB match -> try Wikidata")
+        # is what short-circuits the Wikidata fallthrough that would otherwise
+        # risk misattributing a non-binary artist as male/female (WR-01).
+        raise _MBMatchedUnmappable(mbid)
     return gender, mbid
 
 
@@ -285,10 +312,21 @@ def _resolve_gender(
 ) -> Optional[Tuple[str, str, str]]:
     """MB primary, Wikidata fallback. Returns (gender, source, source_id) | None.
 
-    ``None`` means no confident match -> the caller leaves the row 'unknown'.
-    Wikidata is queried ONLY when MusicBrainz returns no confident match.
+    ``None`` means no confident match -> the caller leaves the row 'unknown' with
+    no provenance. Wikidata is queried ONLY when MusicBrainz returns NO confident
+    match.
+
+    WR-01: a confident MB identity match whose gender is unmappable (e.g.
+    Non-binary) is TERMINAL — it returns ``('unknown', 'musicbrainz', <mbid>)`` so
+    the row stays 'unknown' but RECORDS the MB match as provenance, and Wikidata is
+    NOT consulted (no misattribution).
     """
-    mb = mb_resolve(http, name, contact=contact, min_score=min_score)
+    try:
+        mb = mb_resolve(http, name, contact=contact, min_score=min_score)
+    except _MBMatchedUnmappable as matched:
+        # Confident MB match, unmappable gender -> stay 'unknown' WITHOUT Wikidata,
+        # but preserve provenance of the confident identity match.
+        return "unknown", "musicbrainz", matched.mbid
     if mb is not None:
         gender, mbid = mb
         return gender, "musicbrainz", mbid
@@ -397,7 +435,14 @@ def enrich(
                     continue
 
                 gender, source, source_id = resolved
-                report["matched"] += 1
+                # WR-01: a confident-but-unmappable MB match resolves to
+                # gender='unknown' WITH provenance. It is NOT a usable gender match
+                # (count it as unmatched), but we still persist the provenance so
+                # the row records the confident MB identity.
+                if gender == "unknown":
+                    report["unmatched"] += 1
+                else:
+                    report["matched"] += 1
                 report["updated"].append(
                     {
                         "id": artist_id,

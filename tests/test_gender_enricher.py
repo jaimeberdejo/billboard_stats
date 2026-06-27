@@ -25,9 +25,11 @@ import unittest
 from billboard_stats.etl import gender_enricher
 from billboard_stats.etl.gender_enricher import (
     HttpClient,
+    _MBMatchedUnmappable,
     _map_gender,
     _map_wikidata,
     enrich,
+    mb_resolve,
 )
 
 
@@ -468,17 +470,65 @@ class EnrichTests(unittest.TestCase):
         self.assertEqual(db.by_id(1)["gender_source_id"], MB_LOOKUP_QUEEN["id"])
 
     def test_nonbinary_person_maps_to_unknown(self):
+        # WR-01: a CONFIDENT MB match on a Non-binary Person is TERMINAL — the row
+        # stays 'unknown' and Wikidata MUST NOT be consulted (its coarser P21 could
+        # misattribute the artist as male/female). This test would FAIL (gender
+        # would become 'female') if the MB->Wikidata fallthrough fired, so it
+        # proves the row is 'unknown' for the RIGHT reason, not because an unrouted
+        # call was swallowed by the per-artist except.
         db = FakeDB([{"id": 1, "name": "Sam Smith"}])
         conn = FakeConn(db)
         http = FakeHttpClient(
             [
                 _route_search_returns("Sam Smith", (200, MB_SEARCH_NB)),
                 _route_lookup(MB_LOOKUP_NB["id"], (200, MB_LOOKUP_NB)),
+                # Wikidata routes ARE present and would resolve to FEMALE. If the
+                # fallthrough (incorrectly) fired, the row would become 'female'
+                # and the assertions below would fail.
+                (_wd_action("wbsearchentities"), (200, WD_SEARCH_FEMALE)),
+                (_wd_action("wbgetentities"), (200, WD_ENTITY_FEMALE)),
             ]
         )
-        enrich(conn, http=http, delay=0)
+        report = enrich(conn, http=http, delay=0)
+
         # Non-binary -> 'unknown'; row stays unknown (no misattribution).
         self.assertEqual(db.by_id(1)["gender"], "unknown")
+        # Wikidata MUST NOT have been queried (terminal MB match).
+        self.assertFalse(
+            http.touched_wikidata(),
+            "WR-01: a confident MB non-binary match must NOT fall through to "
+            "Wikidata",
+        )
+        # No resolution error occurred (the terminal path is NOT an exception
+        # swallowed by the per-artist except — errors stays 0).
+        self.assertEqual(report["errors"], 0)
+        # Provenance of the confident MB identity match IS recorded even though the
+        # gender bucket is 'unknown'.
+        self.assertEqual(db.by_id(1)["gender_source"], "musicbrainz")
+        self.assertEqual(db.by_id(1)["gender_source_id"], MB_LOOKUP_NB["id"])
+        # Counted as unmatched (no usable gender), not matched.
+        self.assertEqual(report["matched"], 0)
+        self.assertEqual(report["unmatched"], 1)
+
+    def test_mb_resolve_raises_sentinel_on_confident_nonbinary(self):
+        # WR-01 at the unit level: mb_resolve raises the terminal sentinel (it must
+        # NOT return None, which would mean "no MB match -> try Wikidata").
+        http = FakeHttpClient(
+            [
+                _route_search_returns("Sam Smith", (200, MB_SEARCH_NB)),
+                _route_lookup(MB_LOOKUP_NB["id"], (200, MB_LOOKUP_NB)),
+            ]
+        )
+        with self.assertRaises(_MBMatchedUnmappable) as ctx:
+            mb_resolve(http, "Sam Smith")
+        self.assertEqual(ctx.exception.mbid, MB_LOOKUP_NB["id"])
+
+    def test_mb_resolve_returns_none_on_genuine_no_match(self):
+        # An empty search is a genuine no-match -> None (caller tries Wikidata).
+        http = FakeHttpClient(
+            [_route_search_returns("Nobody", (200, MB_SEARCH_EMPTY))]
+        )
+        self.assertIsNone(mb_resolve(http, "Nobody"))
 
     def test_low_score_search_leaves_unknown_and_tries_wikidata(self):
         # MB best score below threshold -> MB no-match -> Wikidata fallback.
