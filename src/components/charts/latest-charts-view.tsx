@@ -13,6 +13,10 @@ interface LatestChartsViewProps {
 
 const EMPTY_SNAPSHOT: ChartSnapshot = {
   chartType: "hot-100",
+  chartSlug: "hot-100",
+  chartTitle: null,
+  chartFamily: null,
+  entityKind: null,
   selectedDate: "",
   latestDate: "",
   availableDates: [],

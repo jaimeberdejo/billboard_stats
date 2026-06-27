@@ -1,8 +1,8 @@
 import Link from "next/link";
-import type { ChartEntry } from "@/lib/charts";
+import type { ChartEntry, ChartType } from "@/lib/charts";
 
 interface ChartTableProps {
-  chartType: "hot-100" | "billboard-200";
+  chartType: ChartType;
   entries: ChartEntry[];
 }
 

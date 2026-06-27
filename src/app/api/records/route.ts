@@ -90,9 +90,11 @@ function maxPositionForChart(chart: ChartType): number {
 export async function GET(request: NextRequest): Promise<Response> {
   const { searchParams } = request.nextUrl;
   const mode = searchParams.get("mode");
-  const chart = parseChartType(searchParams.get("chart"));
+  const chart = await parseChartType(searchParams.get("chart"));
 
-  if (!chart) {
+  // The legacy records subsystem (artist_stats) only covers the two core charts.
+  // Phase 15 generalizes it onto artist_chart_stats; until then restrict here.
+  if (!chart || (chart !== "hot-100" && chart !== "billboard-200")) {
     return Response.json(
       { error: 'Invalid or missing "chart" parameter. Must be "hot-100" or "billboard-200".' },
       { status: 400 },
