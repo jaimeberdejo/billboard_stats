@@ -263,8 +263,10 @@ function toIsoDate(value: unknown): string | null {
 function mapRows(rows: Record<string, unknown>[]): RecordLeaderboardRow[] {
   return rows.map((row, index) => ({
     rank: index + 1,
-    title: row.title as string,
-    artist_credit: row.artist_credit as string,
+    // Coalesce nullable text columns (WR-04) — a data gap must not render
+    // "null" or throw downstream; matches the ?? defensive idiom used elsewhere.
+    title: (row.title as string | null) ?? "",
+    artist_credit: (row.artist_credit as string | null) ?? "",
     value: Number(row.value ?? 0),
     song_id: (row.song_id as number | null) ?? null,
     album_id: (row.album_id as number | null) ?? null,
@@ -276,8 +278,8 @@ function mapRows(rows: Record<string, unknown>[]): RecordLeaderboardRow[] {
 function mapDrilldownRows(rows: Record<string, unknown>[]): RecordDrilldownRow[] {
   return rows.map((row, index) => ({
     rank: index + 1,
-    title: row.title as string,
-    artist_credit: row.artist_credit as string,
+    title: (row.title as string | null) ?? "",
+    artist_credit: (row.artist_credit as string | null) ?? "",
     value: Number(row.value ?? 0),
     song_id: (row.song_id as number | null) ?? null,
     album_id: (row.album_id as number | null) ?? null,
@@ -305,8 +307,8 @@ function mapSimultaneousWeeks(
     const existing = grouped.get(chartDate);
     const nextEntry: RecordDrilldownRow = {
       rank: Number(row.entry_rank ?? 0),
-      title: row.title as string,
-      artist_credit: row.artist_credit as string,
+      title: (row.title as string | null) ?? "",
+      artist_credit: (row.artist_credit as string | null) ?? "",
       value: Number(row.entry_rank ?? 0),
       song_id: (row.song_id as number | null) ?? null,
       album_id: (row.album_id as number | null) ?? null,
