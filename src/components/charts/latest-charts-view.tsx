@@ -4,11 +4,17 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
 import { ChartControls } from "@/components/charts/chart-controls";
 import { ChartTable } from "@/components/charts/chart-table";
-import type { ChartSnapshot, ChartType } from "@/lib/charts";
+import type { ChartRegistryRow, ChartSnapshot, ChartType } from "@/lib/charts";
 
 interface LatestChartsViewProps {
   initialSnapshot: ChartSnapshot | null;
   initialError: string | null;
+  /**
+   * Optional SSR-passed registry list. When provided, the selector renders
+   * fully on first paint (no client loading flash); otherwise the list is
+   * fetched from /api/charts/list on mount.
+   */
+  initialCharts?: ChartRegistryRow[];
 }
 
 const EMPTY_SNAPSHOT: ChartSnapshot = {
@@ -78,13 +84,43 @@ async function fetchSnapshot(chartType: ChartType, date?: string): Promise<Chart
 export function LatestChartsView({
   initialSnapshot,
   initialError,
+  initialCharts,
 }: LatestChartsViewProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [snapshot, setSnapshot] = useState<ChartSnapshot>(initialSnapshot ?? EMPTY_SNAPSHOT);
   const [error, setError] = useState<string | null>(initialError);
+  const [charts, setCharts] = useState<ChartRegistryRow[]>(initialCharts ?? []);
   const [isPending, startTransition] = useTransition();
+
+  // Load the active chart registry list for the two-level selector. Skipped
+  // when the list was SSR-passed (no client flash). Unknown/failed loads leave
+  // `charts` empty — the selector then degrades to a disabled shell.
+  useEffect(() => {
+    if (initialCharts && initialCharts.length > 0) {
+      return;
+    }
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/charts/list", { cache: "no-store" });
+        const payload = (await response.json()) as
+          | { charts: ChartRegistryRow[] }
+          | { error?: string };
+        if (!cancelled && response.ok && "charts" in payload) {
+          setCharts(payload.charts);
+        }
+      } catch {
+        // Non-fatal: selector renders disabled until the list is available.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialCharts]);
 
   const runFetch = (chartType: ChartType, date?: string) => {
     startTransition(async () => {
@@ -102,6 +138,21 @@ export function LatestChartsView({
     });
   };
 
+  // Fall back to the first available chart if the active slug is not present in
+  // the loaded registry list (invalid/removed chart), per UI-SPEC States.
+  useEffect(() => {
+    if (charts.length === 0 || !snapshot.chartType) {
+      return;
+    }
+    if (!charts.some((row) => row.slug === snapshot.chartType)) {
+      const fallback = charts[0]?.slug;
+      if (fallback) {
+        runFetch(fallback);
+      }
+    }
+    // runFetch is stable for our purposes; deliberately excluded to avoid loops.
+  }, [charts, snapshot.chartType]);
+
   useEffect(() => {
     if (!snapshot.chartType || !snapshot.selectedDate) {
       return;
@@ -117,11 +168,20 @@ export function LatestChartsView({
     }
   }, [pathname, router, searchParams, snapshot.chartType, snapshot.selectedDate]);
 
+  // Resolve the active chart title for attribution: prefer the snapshot's title,
+  // fall back to the registry list row for the current slug.
+  const chartTitle =
+    snapshot.chartTitle ??
+    charts.find((row) => row.slug === snapshot.chartType)?.title ??
+    "this chart";
+
   return (
     <section className="flex flex-1 flex-col gap-4">
       <ChartControls
         availableDates={snapshot.availableDates}
+        charts={charts}
         chartType={snapshot.chartType}
+        chartTitle={chartTitle}
         entryCount={snapshot.entries.length}
         isPending={isPending}
         latestDate={snapshot.latestDate}
