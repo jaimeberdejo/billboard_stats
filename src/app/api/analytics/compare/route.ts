@@ -52,6 +52,15 @@ export async function GET(request: NextRequest): Promise<Response> {
     );
   }
 
+  // Same-kind, same-id is a meaningless X-vs-X comparison (every metric trivially
+  // equal) and wastes a duplicate DB round-trip — reject before querying.
+  if (aId === bId) {
+    return Response.json(
+      { error: "Pick two different entities to compare." },
+      { status: 400 },
+    );
+  }
+
   try {
     const payload = await getEntityComparison(entityKind, aId, bId);
     return Response.json(payload, { headers: { "Cache-Control": CACHE_CONTROL } });
