@@ -6,14 +6,37 @@ import type { ChartType } from "@/lib/charts";
 import type { DetailChartRunPoint } from "@/lib/songs";
 
 interface ChartRunVisualizationProps {
-  chartType: ChartType;
+  /** Registry chart slug for this group (widened ChartType). */
+  chartSlug: ChartType;
+  /** Chart depth (rank count) — parameterizes the y-axis instead of a hardcoded 100/200. */
+  depth: number;
   points: DetailChartRunPoint[];
   title: string;
 }
 
-const HOT_100_TICKS = [1, 25, 50, 75, 100];
-const BILLBOARD_200_TICKS = [1, 50, 100, 150, 200];
 const WEEK_IN_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Build evenly-spaced y-axis ticks from a chart's depth. Always starts at rank 1
+ * and ends at the depth (e.g. 50 / 100 / 200), with 4 interior steps. Replaces
+ * the two hardcoded HOT_100_TICKS / BILLBOARD_200_TICKS arrays so genre charts
+ * (depth 50 etc.) render correctly.
+ */
+function buildTicks(depth: number): number[] {
+  const safeDepth = Math.max(1, Math.round(depth));
+  if (safeDepth === 1) {
+    return [1];
+  }
+  const steps = 4;
+  const ticks: number[] = [];
+  for (let i = 0; i <= steps; i += 1) {
+    const value = Math.round(1 + ((safeDepth - 1) * i) / steps);
+    if (ticks[ticks.length - 1] !== value) {
+      ticks.push(value);
+    }
+  }
+  return ticks;
+}
 
 interface PlotPoint extends DetailChartRunPoint {
   x: number;
@@ -70,7 +93,8 @@ function buildPolylineSegments(points: PlotPoint[]): string[] {
 }
 
 export function ChartRunVisualization({
-  chartType,
+  chartSlug,
+  depth,
   points,
   title,
 }: ChartRunVisualizationProps) {
@@ -82,9 +106,8 @@ export function ChartRunVisualization({
     return null;
   }
 
-  const ticks =
-    chartType === "hot-100" ? HOT_100_TICKS : BILLBOARD_200_TICKS;
-  const yMax = chartType === "hot-100" ? 100 : 200;
+  const ticks = buildTicks(depth);
+  const yMax = Math.max(2, Math.round(depth));
   const width = 720;
   const height = 260;
   const padding = { top: 20, right: 24, bottom: 28, left: 40 };
@@ -136,7 +159,7 @@ export function ChartRunVisualization({
             viewBox={`0 0 ${width} ${height}`}
             className="h-auto w-full"
             role="img"
-            aria-label={`${title} chart run`}
+            aria-label={`${title} chart run on ${chartSlug}`}
           >
             {ticks.map((tick) => {
               const y = padding.top + ((tick - 1) / (yMax - 1)) * innerHeight;

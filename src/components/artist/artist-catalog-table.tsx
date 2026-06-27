@@ -19,7 +19,8 @@ interface ArtistCatalogTableRow {
 interface ArtistCatalogTableProps {
   title: string;
   rows: ArtistCatalogTableRow[];
-  chartType: ChartType;
+  /** Registry chart slug for this section's date links (widened ChartType). */
+  chartSlug: ChartType;
 }
 
 type SortKey = "title" | "peak_position" | "total_weeks" | "weeks_at_peak" | "debut_date" | "last_date";
@@ -38,7 +39,7 @@ function formatDate(value: string | null): string {
   }).format(new Date(`${value}T00:00:00Z`));
 }
 
-export function ArtistCatalogTable({ title, rows, chartType }: ArtistCatalogTableProps) {
+export function ArtistCatalogTable({ title, rows, chartSlug }: ArtistCatalogTableProps) {
   const [sortKey, setSortKey] = useState<SortKey>("debut_date");
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
 
@@ -139,7 +140,7 @@ export function ArtistCatalogTable({ title, rows, chartType }: ArtistCatalogTabl
                   <td className="px-3 py-2 text-[12px] text-[#888888]">
                     {row.debut_date ? (
                       <Link
-                        href={`/?chart=${chartType}&date=${row.debut_date}`}
+                        href={`/?chart=${chartSlug}&date=${row.debut_date}`}
                         className="transition-colors hover:text-[#C8102E]"
                       >
                         {formatDate(row.debut_date)}
@@ -151,7 +152,7 @@ export function ArtistCatalogTable({ title, rows, chartType }: ArtistCatalogTabl
                   <td className="px-3 py-2 text-[12px] text-[#888888]">
                     {row.last_date ? (
                       <Link
-                        href={`/?chart=${chartType}&date=${row.last_date}`}
+                        href={`/?chart=${chartSlug}&date=${row.last_date}`}
                         className="transition-colors hover:text-[#C8102E]"
                       >
                         {formatDate(row.last_date)}

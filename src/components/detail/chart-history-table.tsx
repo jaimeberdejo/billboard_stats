@@ -5,7 +5,8 @@ import type { DetailChartRunPoint } from "@/lib/songs";
 
 interface ChartHistoryTableProps {
   chartRun: DetailChartRunPoint[];
-  chartType: ChartType;
+  /** Registry chart slug for this group's date links (widened ChartType). */
+  chartSlug: ChartType;
 }
 
 function getMovement(point: DetailChartRunPoint): { label: string; tone: string } {
@@ -61,7 +62,7 @@ function formatLastWeek(point: DetailChartRunPoint): string {
   return String(point.last_pos);
 }
 
-export function ChartHistoryTable({ chartRun, chartType }: ChartHistoryTableProps) {
+export function ChartHistoryTable({ chartRun, chartSlug }: ChartHistoryTableProps) {
   const rows = [...chartRun].reverse();
 
   return (
@@ -91,7 +92,7 @@ export function ChartHistoryTable({ chartRun, chartType }: ChartHistoryTableProp
                 >
                   <td className="px-3 py-2 text-[12px] leading-[1.45] text-[#888888]">
                     <Link
-                      href={`/?chart=${chartType}&date=${point.chart_date}`}
+                      href={`/?chart=${chartSlug}&date=${point.chart_date}`}
                       className="transition-colors hover:text-[#C8102E]"
                     >
                       {formatWeek(point.chart_date)}
