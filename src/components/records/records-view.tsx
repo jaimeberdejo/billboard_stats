@@ -7,12 +7,15 @@ import {
   CustomQueryBuilder,
   type CustomQueryState,
 } from "@/components/records/custom-query-builder";
+import { GenderFilter } from "@/components/records/gender-filter";
 import { LeaderboardList } from "@/components/records/leaderboard-list";
 import { chartDepth } from "@/lib/chart-families";
 import type { ChartRegistryRow, ChartType } from "@/lib/charts";
 import {
   type CustomRecordsPayload,
   type DrilldownPayload,
+  type GenderFilter as GenderFilterValue,
+  type GenderLeaderboardPayload,
   type PresetRecordsPayload,
   type RecordLeaderboardRow,
   type RecordPreset,
@@ -55,6 +58,22 @@ function parseChart(value: string | null): ChartType {
   // Registry slugs are validated server-side by the records API; default to the
   // Hot 100 core chart when absent/blank. Any non-empty slug is admitted.
   return value && value.trim() ? value : "hot-100";
+}
+
+const GENDER_VALUES: GenderFilterValue[] = [
+  "all",
+  "female",
+  "male",
+  "group",
+  "mixed",
+  "unknown",
+];
+
+function parseGender(value: string | null): GenderFilterValue {
+  // Gender is opt-in; default to "all" when absent or unrecognized.
+  return value && GENDER_VALUES.includes(value as GenderFilterValue)
+    ? (value as GenderFilterValue)
+    : "all";
 }
 
 function parsePositiveNumber(value: string | null, fallback: number): number {
@@ -131,6 +150,37 @@ async function fetchPreset(
       "error" in payload && payload.error
         ? payload.error
         : "Could not load records. Please try again later.",
+    );
+  }
+
+  return payload;
+}
+
+async function fetchGenderLeaderboard(
+  chart: ChartType,
+  gender: GenderFilterValue,
+  limit: number,
+): Promise<GenderLeaderboardPayload> {
+  const params = new URLSearchParams({
+    mode: "gender",
+    chart,
+    gender,
+    limit: String(limit),
+  });
+
+  const response = await fetch(`/api/records?${params.toString()}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  const payload = (await response.json()) as
+    | GenderLeaderboardPayload
+    | { error?: string };
+  if (!response.ok || !("rows" in payload)) {
+    throw new Error(
+      "error" in payload && payload.error
+        ? payload.error
+        : "Could not load gender leaderboard. Please try again later.",
     );
   }
 
@@ -235,6 +285,11 @@ export function RecordsView() {
   const [chart, setChart] = useState<ChartType>(() =>
     parseChart(searchParams.get("chart")),
   );
+  const [gender, setGender] = useState<GenderFilterValue>(() =>
+    parseGender(searchParams.get("gender")),
+  );
+  const [genderPayload, setGenderPayload] =
+    useState<GenderLeaderboardPayload | null>(null);
   const [registryCharts, setRegistryCharts] = useState<ChartRegistryRow[]>([]);
   const [payload, setPayload] = useState<PresetRecordsPayload | null>(null);
   const [customPayload, setCustomPayload] = useState<CustomRecordsPayload | null>(null);
@@ -294,6 +349,7 @@ export function RecordsView() {
     params.set("recordType", recordType);
     params.set("chart", chart);
     params.set("limit", requestedLimit);
+    params.set("gender", gender);
 
     if (recordType === "custom-query") {
       params.set("entity", customState.entity);
@@ -325,7 +381,7 @@ export function RecordsView() {
     if (`${pathname}?${searchParams.toString()}` !== nextUrl) {
       router.replace(nextUrl, { scroll: false });
     }
-  }, [chart, customState, pathname, recordType, requestedLimit, router, searchParams]);
+  }, [chart, customState, gender, pathname, recordType, requestedLimit, router, searchParams]);
 
   const handleRecordTypeChange = (nextRecordType: "custom-query" | RecordPreset) => {
     setRecordType(nextRecordType);
@@ -333,12 +389,19 @@ export function RecordsView() {
     if (nextRecordType === "custom-query") {
       setPayload(null);
       setCustomPayload(null);
+      setGenderPayload(null);
       setError(null);
     }
   };
 
+  const handleGenderChange = (nextGender: GenderFilterValue) => {
+    setGender(nextGender);
+    resetExpandedState();
+  };
+
   const handleChartChange = (nextChart: ChartType) => {
     setChart(nextChart);
+    setGenderPayload(null);
     resetExpandedState();
     const nextDepth = chartDepth(nextChart);
     setCustomState((current) => ({
@@ -381,6 +444,39 @@ export function RecordsView() {
       cancelled = true;
     };
   }, [chart, recordType, resolvedLimit]);
+
+  // Gender coverage/leaderboard fetch. Runs for the preset (leaderboard) surface
+  // only — custom-query is gender-agnostic. Fetched on every chart/gender change
+  // so the Unknown count + coverage are always current, even in the "All" view.
+  useEffect(() => {
+    if (recordType === "custom-query") {
+      return;
+    }
+
+    let cancelled = false;
+    startTransition(async () => {
+      try {
+        const nextGenderPayload = await fetchGenderLeaderboard(
+          chart,
+          gender,
+          resolvedLimit,
+        );
+        if (!cancelled) {
+          setGenderPayload(nextGenderPayload);
+        }
+      } catch {
+        // Coverage is supplementary; a failure here must not blank the page or
+        // trip the red error band reserved for the primary fetch.
+        if (!cancelled) {
+          setGenderPayload(null);
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [chart, gender, recordType, resolvedLimit]);
 
   useEffect(() => {
     if (recordType !== "custom-query") {
@@ -441,10 +537,29 @@ export function RecordsView() {
     });
   };
 
+  // When a non-"All" gender filter is active on the preset surface, the gender
+  // leaderboard replaces the preset rows. The Unknown/coverage chrome is always
+  // owned by GenderFilter (the calm 0% panel renders there, never as a red band).
+  const genderActive = recordType !== "custom-query" && gender !== "all";
+  const genderRows: RecordLeaderboardRow[] = (genderPayload?.rows ?? []).map(
+    (row) => ({
+      rank: row.rank,
+      title: row.name,
+      artist_credit: row.name,
+      value: row.value,
+      song_id: null,
+      album_id: null,
+      artist_id: row.artist_id,
+      chart_date: null,
+    }),
+  );
+
   const resultCount =
     recordType === "custom-query"
       ? (customPayload?.rows.length ?? 0)
-      : (payload?.rows.length ?? 0);
+      : genderActive
+        ? genderRows.length
+        : (payload?.rows.length ?? 0);
 
   return (
     <section className="mt-6 flex flex-col gap-4">
@@ -504,6 +619,15 @@ export function RecordsView() {
           </div>
         ) : null}
 
+        {recordType !== "custom-query" ? (
+          <GenderFilter
+            value={gender}
+            coverage={genderPayload}
+            onChange={handleGenderChange}
+            disabled={isPending}
+          />
+        ) : null}
+
         <label className="ml-auto flex items-center gap-2">
           <span className="text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
             Results
@@ -544,13 +668,37 @@ export function RecordsView() {
         </div>
       ) : null}
 
-      {recordType !== "custom-query" && payload?.unsupportedMessage ? (
+      {recordType !== "custom-query" && !genderActive && payload?.unsupportedMessage ? (
         <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
           {payload.unsupportedMessage}
         </div>
       ) : null}
 
-      {recordType !== "custom-query" && payload && !payload.unsupportedMessage ? (
+      {recordType !== "custom-query" && genderActive ? (
+        genderPayload?.unsupportedMessage ? (
+          <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
+            {genderPayload.unsupportedMessage}
+          </div>
+        ) : genderRows.length > 0 ? (
+          <LeaderboardList
+            rows={genderRows}
+            valueLabel={genderPayload?.valueLabel ?? "Wks"}
+            expandedRowKey={null}
+            onRowClick={(row) => {
+              if (row.artist_id) {
+                router.push(`/artist/${row.artist_id}`);
+              }
+            }}
+          />
+        ) : // Empty gendered result: GenderFilter renders the calm 0%/all-Unknown
+        // dashed panel inline (never a red band), so no extra empty panel here.
+        null
+      ) : null}
+
+      {recordType !== "custom-query" &&
+      !genderActive &&
+      payload &&
+      !payload.unsupportedMessage ? (
         payload.rows.length > 0 ? (
           <>
             <LeaderboardList
