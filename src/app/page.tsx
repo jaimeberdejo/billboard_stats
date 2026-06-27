@@ -1,5 +1,5 @@
 import { LatestChartsView } from "@/components/charts/latest-charts-view";
-import { getChartSnapshot, type ChartSnapshot } from "@/lib/charts";
+import { getChartSnapshot, type ChartSnapshot, type ChartType } from "@/lib/charts";
 
 export const dynamic = "force-dynamic";
 
@@ -7,10 +7,13 @@ export const metadata = {
   title: "Latest Charts — Billboard Stats",
 };
 
-function parseChartType(
-  value: string | string[] | undefined,
-): "hot-100" | "billboard-200" | undefined {
-  return value === "billboard-200" ? "billboard-200" : value === "hot-100" ? "hot-100" : undefined;
+/**
+ * Resolve the requested chart slug. Threads the raw slug straight through to
+ * getChartSnapshot (which resolves it against the registry and falls back to an
+ * empty snapshot for unknown/inactive slugs); defaults to "hot-100" when absent.
+ */
+function parseChartSlug(value: string | string[] | undefined): ChartType {
+  return typeof value === "string" && value ? value : "hot-100";
 }
 
 function parseRequestedDate(value: string | string[] | undefined): string | undefined {
@@ -18,14 +21,14 @@ function parseRequestedDate(value: string | string[] | undefined): string | unde
 }
 
 async function loadRequestedSnapshot(
-  chartType: "hot-100" | "billboard-200",
+  chartSlug: ChartType,
   requestedDate?: string,
 ): Promise<{
   snapshot: ChartSnapshot | null;
   error: string | null;
 }> {
   try {
-    const snapshot = await getChartSnapshot(chartType, requestedDate);
+    const snapshot = await getChartSnapshot(chartSlug, requestedDate);
     return { snapshot, error: null };
   } catch {
     return {
@@ -37,9 +40,9 @@ async function loadRequestedSnapshot(
 
 export default async function Home(props: PageProps<"/">) {
   const searchParams = await props.searchParams;
-  const chartType = parseChartType(searchParams?.chart) ?? "hot-100";
+  const chartSlug = parseChartSlug(searchParams?.chart);
   const requestedDate = parseRequestedDate(searchParams?.date);
-  const { snapshot, error } = await loadRequestedSnapshot(chartType, requestedDate);
+  const { snapshot, error } = await loadRequestedSnapshot(chartSlug, requestedDate);
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-3 py-3 sm:px-6 sm:py-4">

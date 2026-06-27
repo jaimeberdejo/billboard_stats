@@ -2,7 +2,7 @@
  * GET /api/charts
  *
  * Query parameters:
- *   chart  - "hot-100" or "billboard-200" (required)
+ *   chart  - an active chart slug from the registry (required)
  *   date   - ISO date YYYY-MM-DD (optional; defaults to latest available)
  *
  * Response shape:
@@ -11,8 +11,9 @@
  *   500: { error: string }
  *
  * Threat-model mitigations (TM-02-03, TM-02-04):
- *   - chart is validated against the "hot-100"|"billboard-200" allowlist before
- *     any DB call.
+ *   - chart is validated against the active charts registry (parseChartType
+ *     resolves the slug via a parameterized lookup) before any chart query keys
+ *     on it.
  *   - date is validated as YYYY-MM-DD regex before passing to the SQL helper.
  *   - Errors returned as concise JSON; raw SQL and stack traces are never
  *     surfaced to the caller.
@@ -27,11 +28,11 @@ export async function GET(request: NextRequest): Promise<Response> {
   // --- Input validation ---
 
   const rawChart = searchParams.get("chart");
-  const chartType = parseChartType(rawChart);
+  const chartType = await parseChartType(rawChart);
 
   if (!chartType) {
     return Response.json(
-      { error: 'Invalid or missing "chart" parameter. Must be "hot-100" or "billboard-200".' },
+      { error: "Invalid or missing chart parameter." },
       { status: 400 },
     );
   }
