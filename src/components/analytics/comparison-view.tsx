@@ -396,7 +396,24 @@ export function ComparisonView() {
             </p>
           </div>
 
-          {/* Trend overlay: A red, B ink. */}
+          {/* Trend overlay: A red, B ink. The trend is fetched per-entity for a
+              SINGLE chart (charts[0]) while the metric table above spans ALL of
+              each entity's charts. For multi-chart entities those scopes differ,
+              so the eyebrow names the chart each line represents to keep the
+              scope mismatch visible (honesty contract / WR-02). */}
+          {left.charts[0] || right.charts[0] ? (
+            <p className={eraEyebrow}>
+              Trend scoped to one chart per entity —
+              {left.charts[0]
+                ? ` ${left.label || `Entity ${left.id}`}: ${left.charts[0]}`
+                : ""}
+              {left.charts[0] && right.charts[0] ? ";" : ""}
+              {right.charts[0]
+                ? ` ${right.label || `Entity ${right.id}`}: ${right.charts[0]}`
+                : ""}
+              . Totals above span all charts.
+            </p>
+          ) : null}
           <PresenceChart
             data={seriesA}
             secondSeries={seriesB}
