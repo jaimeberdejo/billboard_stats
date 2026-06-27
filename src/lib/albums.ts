@@ -1,42 +1,13 @@
 import { getSql } from "@/lib/db";
+import { validWeeksForCharts } from "@/lib/valid-weeks";
+import { genreFamily } from "@/lib/chart-families";
+import type {
+  ChartRunGroup,
+  DetailArtistLink,
+  DetailChartRunPoint,
+} from "@/lib/songs";
 
-const VALID_B200_WEEKS_CTE = `
-    phantom_b200 AS (
-        SELECT e.chart_week_id
-        FROM b200_entries e
-        GROUP BY e.chart_week_id
-        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
-               >= COUNT(*) * 95 / 100
-    ),
-    first_real_b200 AS (
-        SELECT MIN(cw.id) AS id
-        FROM phantom_b200 ph
-        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
-        WHERE cw.chart_type = 'billboard-200'
-    ),
-    valid_b200_weeks AS (
-        SELECT cw.id
-        FROM chart_weeks cw
-        WHERE cw.chart_type = 'billboard-200'
-          AND (cw.id NOT IN (SELECT chart_week_id FROM phantom_b200)
-               OR cw.id = (SELECT id FROM first_real_b200))
-    )
-`;
-
-export interface DetailArtistLink {
-  id: number;
-  name: string;
-  image_url: string | null;
-}
-
-export interface DetailChartRunPoint {
-  chart_date: string;
-  rank: number;
-  last_pos: number | null;
-  is_new: boolean;
-  peak_pos: number | null;
-  weeks_on_chart: number | null;
-}
+export type { ChartRunGroup, DetailArtistLink, DetailChartRunPoint };
 
 export interface AlbumDetailPayload {
   album: {
@@ -56,8 +27,7 @@ export interface AlbumDetailPayload {
     debut_position: number | null;
   } | null;
   artists: DetailArtistLink[];
-  chartRun: DetailChartRunPoint[];
-  chartType: "billboard-200";
+  runsByChart: ChartRunGroup[];
 }
 
 function isPositiveInteger(value: number): boolean {
@@ -74,6 +44,47 @@ function toIsoDate(value: unknown): string | null {
   return null;
 }
 
+/**
+ * Group a flat ordered run-row result (sorted by sort_order, chart_date) into
+ * per-chart ChartRunGroup[] — symmetric to songs.ts groupRunsByChart. `depth` =
+ * max rank seen on the chart (per-chart y-axis bound from real data).
+ */
+function groupRunsByChart(rows: Record<string, unknown>[]): ChartRunGroup[] {
+  const grouped = new Map<number, ChartRunGroup>();
+
+  for (const row of rows) {
+    const chartId = row.chart_id as number;
+    const point: DetailChartRunPoint = {
+      chart_date: toIsoDate(row.chart_date) ?? "",
+      rank: row.rank as number,
+      last_pos: (row.last_pos as number | null) ?? null,
+      is_new: row.is_new as boolean,
+      peak_pos: (row.peak_pos as number | null) ?? null,
+      weeks_on_chart: (row.weeks_on_chart as number | null) ?? null,
+    };
+
+    const existing = grouped.get(chartId);
+    if (!existing) {
+      const slug = row.chart_slug as string;
+      grouped.set(chartId, {
+        chartSlug: slug,
+        chartTitle: (row.chart_title as string | null) ?? slug,
+        family: genreFamily(slug, (row.chart_category as string | null) ?? null),
+        depth: point.rank,
+        points: [point],
+      });
+      continue;
+    }
+
+    existing.points.push(point);
+    if (point.rank > existing.depth) {
+      existing.depth = point.rank;
+    }
+  }
+
+  return [...grouped.values()];
+}
+
 export async function getAlbumDetail(
   albumId: number,
 ): Promise<AlbumDetailPayload | null> {
@@ -82,6 +93,20 @@ export async function getAlbumDetail(
   }
 
   const sql = getSql();
+
+  // Charts this album touches (small N), then a per-chart valid-weeks union so
+  // EACH chart keeps its own MIN(cw.id) first-real-week (CR-01 / Pitfall 2).
+  const chartIdRows = await sql.query(
+    `SELECT DISTINCT cw.chart_id
+     FROM chart_entries e
+     JOIN chart_weeks cw ON e.chart_week_id = cw.id
+     WHERE e.album_id = $1
+       AND cw.chart_id IS NOT NULL`,
+    [albumId],
+  );
+  const chartIds = chartIdRows
+    .map((r) => r.chart_id as number)
+    .filter((id): id is number => typeof id === "number");
 
   const [albumRows, statsRows, artistRows, chartRunRows] = await Promise.all([
     sql.query(
@@ -111,21 +136,34 @@ export async function getAlbumDetail(
        ORDER BY aa.role, a.name`,
       [albumId],
     ),
-    sql.query(
-      `WITH ${VALID_B200_WEEKS_CTE}
-       SELECT cw.chart_date::text AS chart_date,
-              e.rank,
-              e.last_pos,
-              e.is_new,
-              e.peak_pos,
-              e.weeks_on_chart
-       FROM b200_entries e
-       JOIN chart_weeks cw ON e.chart_week_id = cw.id
-       WHERE e.album_id = $1
-         AND cw.id IN (SELECT id FROM valid_b200_weeks)
-       ORDER BY cw.chart_date ASC`,
-      [albumId],
-    ),
+    (async () => {
+      if (chartIds.length === 0) {
+        return [] as Record<string, unknown>[];
+      }
+      const vw = validWeeksForCharts(chartIds, 1);
+      const albumParamIndex = chartIds.length + 1;
+      return sql.query(
+        `WITH ${vw.cte}
+         SELECT c.sort_order AS sort_order,
+                c.id AS chart_id,
+                c.slug AS chart_slug,
+                c.title AS chart_title,
+                c.category AS chart_category,
+                cw.chart_date::text AS chart_date,
+                e.rank,
+                e.last_pos,
+                e.is_new,
+                e.peak_pos,
+                e.weeks_on_chart
+         FROM chart_entries e
+         JOIN chart_weeks cw ON e.chart_week_id = cw.id
+         JOIN charts c ON cw.chart_id = c.id
+         WHERE e.album_id = $${albumParamIndex}
+           AND e.chart_week_id IN (SELECT id FROM ${vw.finalRelation})
+         ORDER BY c.sort_order ASC, cw.chart_date ASC`,
+        [...chartIds, albumId],
+      );
+    })(),
   ]);
 
   const albumRow = albumRows[0];
@@ -159,14 +197,6 @@ export async function getAlbumDetail(
       name: row.name as string,
       image_url: (row.image_url as string | null) ?? null,
     })),
-    chartRun: chartRunRows.map((row) => ({
-      chart_date: toIsoDate(row.chart_date) ?? "",
-      rank: row.rank as number,
-      last_pos: (row.last_pos as number | null) ?? null,
-      is_new: row.is_new as boolean,
-      peak_pos: (row.peak_pos as number | null) ?? null,
-      weeks_on_chart: (row.weeks_on_chart as number | null) ?? null,
-    })),
-    chartType: "billboard-200",
+    runsByChart: groupRunsByChart(chartRunRows),
   };
 }

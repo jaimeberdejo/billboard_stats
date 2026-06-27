@@ -1,27 +1,6 @@
 import { getSql } from "@/lib/db";
-
-const VALID_HOT100_WEEKS_CTE = `
-    phantom_hot100 AS (
-        SELECT e.chart_week_id
-        FROM hot100_entries e
-        GROUP BY e.chart_week_id
-        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
-               >= COUNT(*) * 95 / 100
-    ),
-    first_real_hot100 AS (
-        SELECT MIN(cw.id) AS id
-        FROM phantom_hot100 ph
-        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
-        WHERE cw.chart_type = 'hot-100'
-    ),
-    valid_hot100_weeks AS (
-        SELECT cw.id
-        FROM chart_weeks cw
-        WHERE cw.chart_type = 'hot-100'
-          AND (cw.id NOT IN (SELECT chart_week_id FROM phantom_hot100)
-               OR cw.id = (SELECT id FROM first_real_hot100))
-    )
-`;
+import { validWeeksForCharts } from "@/lib/valid-weeks";
+import { genreFamily, type ChartFamily } from "@/lib/chart-families";
 
 export interface DetailArtistLink {
   id: number;
@@ -36,6 +15,21 @@ export interface DetailChartRunPoint {
   is_new: boolean;
   peak_pos: number | null;
   weeks_on_chart: number | null;
+}
+
+/**
+ * One chart's worth of an entity's run, grouped from the polymorphic
+ * chart_entries read. A song/album that charts on multiple charts yields one
+ * group per chart, in the stable family/sort order. Single-chart entities yield
+ * exactly one group (renders identically to the v1.0 single flat run).
+ */
+export interface ChartRunGroup {
+  chartSlug: string;
+  chartTitle: string;
+  family: ChartFamily;
+  /** Chart depth (rank count) used to parameterize the run-visualization y-axis. */
+  depth: number;
+  points: DetailChartRunPoint[];
 }
 
 export interface SongDetailPayload {
@@ -56,8 +50,7 @@ export interface SongDetailPayload {
     debut_position: number | null;
   } | null;
   artists: DetailArtistLink[];
-  chartRun: DetailChartRunPoint[];
-  chartType: "hot-100";
+  runsByChart: ChartRunGroup[];
 }
 
 function isPositiveInteger(value: number): boolean {
@@ -74,12 +67,72 @@ function toIsoDate(value: unknown): string | null {
   return null;
 }
 
+/**
+ * Group a flat ordered run-row result (already sorted by sort_order, chart_date)
+ * into per-chart ChartRunGroup[]. Mirrors the Map-keyed grouping idiom in
+ * records.ts (mapSimultaneousWeeks). Preserves first-seen chart order so the
+ * incoming charts.sort_order ASC ordering carries through to the rendered
+ * sequence. `depth` = max rank seen on the chart (a safe per-chart y-axis bound
+ * derived from real data, never a hardcoded 100/200).
+ */
+function groupRunsByChart(rows: Record<string, unknown>[]): ChartRunGroup[] {
+  const grouped = new Map<number, ChartRunGroup>();
+
+  for (const row of rows) {
+    const chartId = row.chart_id as number;
+    const point: DetailChartRunPoint = {
+      chart_date: toIsoDate(row.chart_date) ?? "",
+      rank: row.rank as number,
+      last_pos: (row.last_pos as number | null) ?? null,
+      is_new: row.is_new as boolean,
+      peak_pos: (row.peak_pos as number | null) ?? null,
+      weeks_on_chart: (row.weeks_on_chart as number | null) ?? null,
+    };
+
+    const existing = grouped.get(chartId);
+    if (!existing) {
+      const slug = row.chart_slug as string;
+      grouped.set(chartId, {
+        chartSlug: slug,
+        chartTitle:
+          (row.chart_title as string | null) ?? slug,
+        family: genreFamily(slug, (row.chart_category as string | null) ?? null),
+        depth: point.rank,
+        points: [point],
+      });
+      continue;
+    }
+
+    existing.points.push(point);
+    if (point.rank > existing.depth) {
+      existing.depth = point.rank;
+    }
+  }
+
+  return [...grouped.values()];
+}
+
 export async function getSongDetail(songId: number): Promise<SongDetailPayload | null> {
   if (!isPositiveInteger(songId)) {
     return null;
   }
 
   const sql = getSql();
+
+  // Discover the charts this song touches (small N), then build a per-chart
+  // valid-weeks union so EACH chart keeps its own MIN(cw.id) first-real-week
+  // (CR-01 / Pitfall 2 — never a single cross-chart MIN).
+  const chartIdRows = await sql.query(
+    `SELECT DISTINCT cw.chart_id
+     FROM chart_entries e
+     JOIN chart_weeks cw ON e.chart_week_id = cw.id
+     WHERE e.song_id = $1
+       AND cw.chart_id IS NOT NULL`,
+    [songId],
+  );
+  const chartIds = chartIdRows
+    .map((r) => r.chart_id as number)
+    .filter((id): id is number => typeof id === "number");
 
   const [songRows, statsRows, artistRows, chartRunRows] = await Promise.all([
     sql.query(
@@ -109,21 +162,35 @@ export async function getSongDetail(songId: number): Promise<SongDetailPayload |
        ORDER BY sa.role, a.name`,
       [songId],
     ),
-    sql.query(
-      `WITH ${VALID_HOT100_WEEKS_CTE}
-       SELECT cw.chart_date::text AS chart_date,
-              e.rank,
-              e.last_pos,
-              e.is_new,
-              e.peak_pos,
-              e.weeks_on_chart
-       FROM hot100_entries e
-       JOIN chart_weeks cw ON e.chart_week_id = cw.id
-       WHERE e.song_id = $1
-         AND cw.id IN (SELECT id FROM valid_hot100_weeks)
-       ORDER BY cw.chart_date ASC`,
-      [songId],
-    ),
+    (async () => {
+      if (chartIds.length === 0) {
+        return [] as Record<string, unknown>[];
+      }
+      // chartIds occupy $1..$N (bound params); the song id is the last param.
+      const vw = validWeeksForCharts(chartIds, 1);
+      const songParamIndex = chartIds.length + 1;
+      return sql.query(
+        `WITH ${vw.cte}
+         SELECT c.sort_order AS sort_order,
+                c.id AS chart_id,
+                c.slug AS chart_slug,
+                c.title AS chart_title,
+                c.category AS chart_category,
+                cw.chart_date::text AS chart_date,
+                e.rank,
+                e.last_pos,
+                e.is_new,
+                e.peak_pos,
+                e.weeks_on_chart
+         FROM chart_entries e
+         JOIN chart_weeks cw ON e.chart_week_id = cw.id
+         JOIN charts c ON cw.chart_id = c.id
+         WHERE e.song_id = $${songParamIndex}
+           AND e.chart_week_id IN (SELECT id FROM ${vw.finalRelation})
+         ORDER BY c.sort_order ASC, cw.chart_date ASC`,
+        [...chartIds, songId],
+      );
+    })(),
   ]);
 
   const songRow = songRows[0];
@@ -157,14 +224,6 @@ export async function getSongDetail(songId: number): Promise<SongDetailPayload |
       name: row.name as string,
       image_url: (row.image_url as string | null) ?? null,
     })),
-    chartRun: chartRunRows.map((row) => ({
-      chart_date: toIsoDate(row.chart_date) ?? "",
-      rank: row.rank as number,
-      last_pos: (row.last_pos as number | null) ?? null,
-      is_new: row.is_new as boolean,
-      peak_pos: (row.peak_pos as number | null) ?? null,
-      weeks_on_chart: (row.weeks_on_chart as number | null) ?? null,
-    })),
-    chartType: "hot-100",
+    runsByChart: groupRunsByChart(chartRunRows),
   };
 }
