@@ -21,7 +21,16 @@ export const searchEntitySchema = z.enum([
   "mixed",
 ]);
 
-export const chartTypeSchema = z.enum(["hot-100", "billboard-200"]);
+// Chart contract for the NLQ chain. Widened from the closed
+// z.enum(["hot-100","billboard-200"]) to an open chart slug so the interpreter
+// admits every ingested chart (the 9 new genre/artist charts), not just the two
+// legacy core charts. The slug is validated at the boundary — the interpreter
+// only ever emits a slug it resolved from the registry-seeded CHART_ALIASES, so
+// an unknown chart falls back to needs_clarification rather than an unbound slug.
+// recordsPreset.chart and recordsCustom.chart derive from this, so interpret.ts
+// and catalog.ts (which alias `type ChartType = RecordsCustomInterpretation["chart"]`)
+// inherit the widening automatically.
+export const chartTypeSchema = z.string().min(1);
 
 export const recordPresetSchema = z.enum([
   "most-weeks-at-number-one",

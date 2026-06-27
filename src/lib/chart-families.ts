@@ -100,26 +100,37 @@ export type ChartEntityKind = "song" | "album" | "artist";
 interface ChartMeta {
   entityKind: ChartEntityKind;
   depth: number;
+  /** Human-facing chart title (e.g. for NLQ clarification messages). */
+  title: string;
 }
 
 /** Exact-slug metadata for the non-genre-prefixed charts. */
 const CHART_META_BY_SLUG: Record<string, ChartMeta> = {
-  "hot-100": { entityKind: "song", depth: 100 },
-  "billboard-200": { entityKind: "album", depth: 200 },
-  "artist-100": { entityKind: "artist", depth: 100 },
+  "hot-100": { entityKind: "song", depth: 100, title: "Hot 100" },
+  "billboard-200": { entityKind: "album", depth: 200, title: "Billboard 200" },
+  "artist-100": { entityKind: "artist", depth: 100, title: "Artist 100" },
+  "country-songs": { entityKind: "song", depth: 50, title: "Hot Country Songs" },
+  "r-b-hip-hop-songs": { entityKind: "song", depth: 50, title: "Hot R&B/Hip-Hop Songs" },
+  "rock-songs": { entityKind: "song", depth: 50, title: "Hot Rock & Alternative Songs" },
+  "latin-songs": { entityKind: "song", depth: 50, title: "Hot Latin Songs" },
+  "country-albums": { entityKind: "album", depth: 50, title: "Top Country Albums" },
+  "r-b-hip-hop-albums": { entityKind: "album", depth: 50, title: "Top R&B/Hip-Hop Albums" },
+  "rock-albums": { entityKind: "album", depth: 50, title: "Top Rock & Alternative Albums" },
+  "latin-albums": { entityKind: "album", depth: 50, title: "Top Latin Albums" },
 };
 
 /**
  * Genre-prefix metadata. The curated genre charts are deliberately named
  * `<genre>-songs` / `<genre>-albums` (country / r-b-hip-hop / rock / latin), all
- * top-50, so a prefix rule covers each genre's song+album pair with one entry.
+ * top-50, so a suffix rule covers any future `<genre>-songs`/`-albums` chart not
+ * in the exact-slug map above.
  */
 const GENRE_SUFFIX_META: Array<{ suffix: string; meta: ChartMeta }> = [
-  { suffix: "-songs", meta: { entityKind: "song", depth: 50 } },
-  { suffix: "-albums", meta: { entityKind: "album", depth: 50 } },
+  { suffix: "-songs", meta: { entityKind: "song", depth: 50, title: "this chart" } },
+  { suffix: "-albums", meta: { entityKind: "album", depth: 50, title: "this chart" } },
 ];
 
-const DEFAULT_CHART_META: ChartMeta = { entityKind: "song", depth: 100 };
+const DEFAULT_CHART_META: ChartMeta = { entityKind: "song", depth: 100, title: "this chart" };
 
 function lookupChartMeta(slug: string): ChartMeta {
   const exact = CHART_META_BY_SLUG[slug];
@@ -150,4 +161,13 @@ export function chartDepth(slug: string): number {
  */
 export function chartEntityKind(slug: string): ChartEntityKind {
   return lookupChartMeta(slug).entityKind;
+}
+
+/**
+ * Human-facing chart title for a slug — used to render NLQ clarification
+ * messages without a DB round-trip, replacing the two-way
+ * `resolvedChart === "hot-100" ? "Hot 100" : "Billboard 200"` label.
+ */
+export function chartTitle(slug: string): string {
+  return lookupChartMeta(slug).title;
 }

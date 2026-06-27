@@ -8,12 +8,43 @@ type CustomEntity = RecordsCustomInterpretation["entity"];
 type CustomRankBy = RecordsCustomInterpretation["rankBy"];
 type RecordPreset = RecordsPresetInterpretation["record"];
 
+// Read-side alias table mapping spoken chart names to registry slugs. Seeded
+// from billboard_stats/etl/charts.py CURATED_CHARTS (genre song/album charts +
+// Artist 100) plus the two legacy core charts. This is the ONLY chart vocabulary
+// the interpreter matches against — extending it (not a hardcoded two-chart
+// branch) is how new charts become reachable by inferChart.
 export const CHART_ALIASES: Record<string, ChartType> = {
+  // Core charts.
   "hot 100": "hot-100",
   hot100: "hot-100",
   "billboard 200": "billboard-200",
   b200: "billboard-200",
   "billboard200": "billboard-200",
+  // Artist chart.
+  "artist 100": "artist-100",
+  artist100: "artist-100",
+  // Genre song charts.
+  "country songs": "country-songs",
+  "hot country songs": "country-songs",
+  "r&b/hip-hop songs": "r-b-hip-hop-songs",
+  "r&b hip-hop songs": "r-b-hip-hop-songs",
+  "rnb songs": "r-b-hip-hop-songs",
+  "hip-hop songs": "r-b-hip-hop-songs",
+  "rock songs": "rock-songs",
+  "hot rock songs": "rock-songs",
+  "latin songs": "latin-songs",
+  "hot latin songs": "latin-songs",
+  // Genre album charts.
+  "country albums": "country-albums",
+  "top country albums": "country-albums",
+  "r&b/hip-hop albums": "r-b-hip-hop-albums",
+  "r&b hip-hop albums": "r-b-hip-hop-albums",
+  "rnb albums": "r-b-hip-hop-albums",
+  "hip-hop albums": "r-b-hip-hop-albums",
+  "rock albums": "rock-albums",
+  "top rock albums": "rock-albums",
+  "latin albums": "latin-albums",
+  "top latin albums": "latin-albums",
 };
 
 export const ENTITY_ALIASES: Record<string, CustomEntity | "mixed"> = {

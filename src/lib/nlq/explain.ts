@@ -1,3 +1,4 @@
+import { chartEntityKind, chartTitle } from "../chart-families.ts";
 import type {
   InterpretedQuery,
   RecordsCustomInterpretation,
@@ -10,8 +11,10 @@ type ExplanationSubject = Pick<
   "status" | "intent" | "search" | "recordsPreset" | "recordsCustom"
 >;
 
-function chartLabel(chart: "hot-100" | "billboard-200"): string {
-  return chart === "hot-100" ? "Hot 100" : "Billboard 200";
+function chartLabel(chart: string): string {
+  // Registry-seeded human title, replacing the closed hot-100/billboard-200
+  // ternary so any ingested chart renders its real name.
+  return chartTitle(chart);
 }
 
 function recordLabel(record: RecordsPresetInterpretation["record"]): string {
@@ -31,7 +34,11 @@ function rankLabel(query: RecordsCustomInterpretation): string {
     case "most-entries":
       return "most chart entries";
     case "number-one-entries":
-      return query.chart === "hot-100" ? "most #1 songs" : "most #1 albums";
+      // Entity_kind-derived label (registry), not the hot-100/billboard-200
+      // literal: song charts rank #1 songs, album charts rank #1 albums.
+      return chartEntityKind(query.chart) === "song"
+        ? "most #1 songs"
+        : "most #1 albums";
   }
 }
 

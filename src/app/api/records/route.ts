@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 
 import { parseChartType, type ChartType } from "@/lib/charts";
+import { chartDepth } from "@/lib/chart-families";
 import {
   type CustomCreditScope,
   type CustomEntity,
@@ -84,19 +85,22 @@ function parseArtistNames(value: string | null): string[] | null {
 }
 
 function maxPositionForChart(chart: ChartType): number {
-  return chart === "hot-100" ? 100 : 200;
+  // Registry-derived chart depth (e.g. 100 / 200 / 50), replacing the hardcoded
+  // hot-100 ? 100 : 200 so position-range validation works for any chart.
+  return chartDepth(chart);
 }
 
 export async function GET(request: NextRequest): Promise<Response> {
   const { searchParams } = request.nextUrl;
   const mode = searchParams.get("mode");
+  // Validate the chart slug against the registry (parseChartType resolves it via
+  // the active charts set). Any active chart slug is accepted — the records
+  // subsystem reads the polymorphic chart_entries path keyed by chart_id.
   const chart = await parseChartType(searchParams.get("chart"));
 
-  // The legacy records subsystem (artist_stats) only covers the two core charts.
-  // Phase 15 generalizes it onto artist_chart_stats; until then restrict here.
-  if (!chart || (chart !== "hot-100" && chart !== "billboard-200")) {
+  if (!chart) {
     return Response.json(
-      { error: 'Invalid or missing "chart" parameter. Must be "hot-100" or "billboard-200".' },
+      { error: 'Invalid or missing "chart" parameter. Must be an active chart slug.' },
       { status: 400 },
     );
   }

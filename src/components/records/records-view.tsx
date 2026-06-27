@@ -8,6 +8,8 @@ import {
   type CustomQueryState,
 } from "@/components/records/custom-query-builder";
 import { LeaderboardList } from "@/components/records/leaderboard-list";
+import { chartDepth } from "@/lib/chart-families";
+import type { ChartRegistryRow, ChartType } from "@/lib/charts";
 import {
   type CustomRecordsPayload,
   type DrilldownPayload,
@@ -15,6 +17,17 @@ import {
   type RecordLeaderboardRow,
   type RecordPreset,
 } from "@/lib/records";
+
+/** Compact toggle labels for the common core/artist charts; falls back to title. */
+const CHART_TOGGLE_ABBREV: Record<string, string> = {
+  "hot-100": "HOT 100",
+  "billboard-200": "B200",
+  "artist-100": "ARTIST 100",
+};
+
+function chartToggleLabel(row: ChartRegistryRow): string {
+  return CHART_TOGGLE_ABBREV[row.slug] ?? (row.title ?? row.slug);
+}
 
 const RECORD_OPTIONS: Array<{ label: string; value: "custom-query" | RecordPreset }> = [
   { label: "Custom Query", value: "custom-query" },
@@ -38,8 +51,10 @@ function parseRecordType(value: string | null): "custom-query" | RecordPreset {
     : "most-weeks-at-number-one";
 }
 
-function parseChart(value: string | null): "hot-100" | "billboard-200" {
-  return value === "billboard-200" ? "billboard-200" : "hot-100";
+function parseChart(value: string | null): ChartType {
+  // Registry slugs are validated server-side by the records API; default to the
+  // Hot 100 core chart when absent/blank. Any non-empty slug is admitted.
+  return value && value.trim() ? value : "hot-100";
 }
 
 function parsePositiveNumber(value: string | null, fallback: number): number {
@@ -57,8 +72,14 @@ function buildInitialCustomState(searchParams: URLSearchParams): CustomQueryStat
     return raw === "albums" || raw === "artists" ? raw : "songs";
   })();
   const chartContext = parseChart(searchParams.get("chartContext"));
+  // Registry-derived chart depth: albums default to the Billboard 200 depth,
+  // songs to the Hot 100 depth, artists to their selected chart's depth.
   const chartMax =
-    entity === "albums" ? 200 : entity === "artists" ? (chartContext === "billboard-200" ? 200 : 100) : 100;
+    entity === "albums"
+      ? chartDepth("billboard-200")
+      : entity === "artists"
+        ? chartDepth(chartContext)
+        : chartDepth("hot-100");
 
   return {
     entity,
@@ -88,7 +109,7 @@ function buildInitialCustomState(searchParams: URLSearchParams): CustomQueryStat
 }
 
 async function fetchPreset(
-  chart: "hot-100" | "billboard-200",
+  chart: ChartType,
   record: RecordPreset,
   limit: number,
 ): Promise<PresetRecordsPayload> {
@@ -117,7 +138,7 @@ async function fetchPreset(
 }
 
 async function fetchDrilldown(
-  chart: "hot-100" | "billboard-200",
+  chart: ChartType,
   record: RecordPreset,
   row: RecordLeaderboardRow,
 ): Promise<DrilldownPayload> {
@@ -153,7 +174,7 @@ async function fetchCustomRecords(
   state: CustomQueryState,
   limit: number,
 ): Promise<CustomRecordsPayload> {
-  const chart: "hot-100" | "billboard-200" =
+  const chart: ChartType =
     state.entity === "songs"
       ? "hot-100"
       : state.entity === "albums"
@@ -211,9 +232,10 @@ export function RecordsView() {
   const [recordType, setRecordType] = useState<"custom-query" | RecordPreset>(() =>
     parseRecordType(searchParams.get("recordType")),
   );
-  const [chart, setChart] = useState<"hot-100" | "billboard-200">(() =>
+  const [chart, setChart] = useState<ChartType>(() =>
     parseChart(searchParams.get("chart")),
   );
+  const [registryCharts, setRegistryCharts] = useState<ChartRegistryRow[]>([]);
   const [payload, setPayload] = useState<PresetRecordsPayload | null>(null);
   const [customPayload, setCustomPayload] = useState<CustomRecordsPayload | null>(null);
   const [drilldown, setDrilldown] = useState<DrilldownPayload | null>(null);
@@ -229,6 +251,32 @@ export function RecordsView() {
     setExpandedRowKey(null);
     setDrilldown(null);
   };
+
+  // Load the active chart registry so the chart selector + attribution are
+  // registry-driven (any ingested chart), not the hardcoded hot-100/b200 pair.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/charts/list", { method: "GET" });
+        const payload = (await response.json()) as
+          | { charts: ChartRegistryRow[] }
+          | { error?: string };
+        if (!cancelled && response.ok && "charts" in payload) {
+          setRegistryCharts(payload.charts);
+        }
+      } catch {
+        // Selector degrades to the default chart if the registry can't load.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Human-facing title of the active chart for result attribution (CHARTS-06).
+  const activeChartTitle =
+    registryCharts.find((row) => row.slug === chart)?.title ?? chart;
 
   const getRowKey = (row: RecordLeaderboardRow) =>
     `${row.artist_id ?? "row"}:${row.chart_date ?? "none"}`;
@@ -289,20 +337,18 @@ export function RecordsView() {
     }
   };
 
-  const handleChartChange = (nextChart: "hot-100" | "billboard-200") => {
+  const handleChartChange = (nextChart: ChartType) => {
     setChart(nextChart);
     resetExpandedState();
+    const nextDepth = chartDepth(nextChart);
     setCustomState((current) => ({
       ...current,
       chartContext: nextChart,
       peakMin: 1,
-      peakMax: nextChart === "hot-100" ? 100 : 200,
+      peakMax: nextDepth,
       debutPosMin: 1,
-      debutPosMax: nextChart === "hot-100" ? 100 : 200,
-      rankByParam: Math.min(
-        current.rankByParam,
-        nextChart === "hot-100" ? 100 : 200,
-      ),
+      debutPosMax: nextDepth,
+      rankByParam: Math.min(current.rankByParam, nextDepth),
     }));
   };
 
@@ -419,22 +465,40 @@ export function RecordsView() {
 
         {recordType !== "custom-query" ? (
           <div className="inline-flex overflow-hidden rounded border border-black/10 bg-[#F5F5F5]">
-            {([
-              { value: "hot-100", label: "HOT 100" },
-              { value: "billboard-200", label: "B200" },
-            ] as const).map((option) => (
+            {(registryCharts.length > 0
+              ? registryCharts.filter((row) => row.entity_kind !== "artist")
+              : [
+                  {
+                    slug: "hot-100",
+                    title: "Hot 100",
+                    entity_kind: "song",
+                    category: "core",
+                    family: "Core",
+                    sort_order: 0,
+                  } as ChartRegistryRow,
+                  {
+                    slug: "billboard-200",
+                    title: "Billboard 200",
+                    entity_kind: "album",
+                    category: "core",
+                    family: "Core",
+                    sort_order: 1,
+                  } as ChartRegistryRow,
+                ]
+            ).map((row) => (
               <button
-                key={option.value}
+                key={row.slug}
                 type="button"
-                onClick={() => handleChartChange(option.value)}
+                onClick={() => handleChartChange(row.slug)}
+                aria-label={row.title ?? row.slug}
                 className={[
                   "min-w-[78px] border-r border-black/10 px-3 py-1.5 text-[11px] font-[600] tracking-[0.08em] transition-colors last:border-r-0",
-                  chart === option.value
+                  chart === row.slug
                     ? "bg-[#C8102E] text-white"
                     : "bg-transparent text-[#0A0A0A] hover:bg-white",
                 ].join(" ")}
               >
-                {option.label}
+                {chartToggleLabel(row)}
               </button>
             ))}
           </div>
@@ -460,10 +524,17 @@ export function RecordsView() {
         </label>
       </div>
 
+      {recordType !== "custom-query" ? (
+        <p className="text-[11px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+          Chart: <span className="text-[#0A0A0A]">{activeChartTitle}</span>
+        </p>
+      ) : null}
+
       {recordType === "custom-query" ? (
         <CustomQueryBuilder
           state={customState}
           onChange={setCustomState}
+          charts={registryCharts}
         />
       ) : null}
 

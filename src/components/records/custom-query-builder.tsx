@@ -2,11 +2,20 @@
 
 import { useState } from "react";
 
+import { chartDepth } from "@/lib/chart-families";
+import type { ChartRegistryRow, ChartType } from "@/lib/charts";
 import type { CustomCreditScope, CustomEntity, CustomRankBy } from "@/lib/records";
+
+/** Compact toggle labels for the common core/artist charts; falls back to title. */
+const CHART_TOGGLE_ABBREV: Record<string, string> = {
+  "hot-100": "HOT 100",
+  "billboard-200": "B200",
+  "artist-100": "ARTIST 100",
+};
 
 export interface CustomQueryState {
   entity: CustomEntity;
-  chartContext: "hot-100" | "billboard-200";
+  chartContext: ChartType;
   creditScope: CustomCreditScope;
   sortDir: "asc" | "desc";
   rankBy: CustomRankBy;
@@ -24,20 +33,51 @@ export interface CustomQueryState {
 interface CustomQueryBuilderProps {
   state: CustomQueryState;
   onChange: (nextState: CustomQueryState) => void;
+  /** Active chart registry (for the artist-records chart toggle). */
+  charts?: ChartRegistryRow[];
 }
 
 export function CustomQueryBuilder({
   state,
   onChange,
+  charts = [],
 }: CustomQueryBuilderProps) {
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const entityChart =
+  const entityChart: ChartType =
     state.entity === "songs"
       ? "hot-100"
       : state.entity === "albums"
         ? "billboard-200"
         : state.chartContext;
-  const chartMax = entityChart === "hot-100" ? 100 : 200;
+  // Registry-derived chart depth, replacing the hardcoded hot-100 ? 100 : 200.
+  const chartMax = chartDepth(entityChart);
+  const isSongChart =
+    charts.find((row) => row.slug === state.chartContext)?.entity_kind === "song" ||
+    state.chartContext === "hot-100";
+  // Artist-records chart toggle is registry-driven: song + album charts only
+  // (the artist rollup spans song/album charts). Falls back to the two core
+  // charts when the registry hasn't loaded.
+  const artistChartOptions: ChartRegistryRow[] =
+    charts.length > 0
+      ? charts.filter((row) => row.entity_kind !== "artist")
+      : [
+          {
+            slug: "hot-100",
+            title: "Hot 100",
+            entity_kind: "song",
+            category: "core",
+            family: "Core",
+            sort_order: 0,
+          } as ChartRegistryRow,
+          {
+            slug: "billboard-200",
+            title: "Billboard 200",
+            entity_kind: "album",
+            category: "core",
+            family: "Core",
+            sort_order: 1,
+          } as ChartRegistryRow,
+        ];
   const showRankParam =
     state.rankBy === "weeks-at-position" || state.rankBy === "weeks-in-top-n";
   const showPositionFilters = state.entity !== "artists";
@@ -56,7 +96,7 @@ export function CustomQueryBuilder({
           { label: "total chart weeks", value: "total-weeks" },
           { label: "most entries", value: "most-entries" },
           {
-            label: entityChart === "hot-100" ? "most #1 songs" : "most #1 albums",
+            label: isSongChart ? "most #1 songs" : "most #1 albums",
             value: "number-one-entries",
           },
         ]
@@ -94,7 +134,10 @@ export function CustomQueryBuilder({
                   type="button"
                   onClick={() =>
                     onChange((() => {
-                      const nextChartMax = option.value === "albums" ? 200 : 100;
+                      const nextChartMax =
+                        option.value === "albums"
+                          ? chartDepth("billboard-200")
+                          : chartDepth("hot-100");
                       const isEntitySwitch = option.value !== state.entity;
                       return {
                         ...state,
@@ -134,22 +177,20 @@ export function CustomQueryBuilder({
                 Chart
               </span>
               <div className="inline-flex overflow-hidden rounded border border-black/10 bg-white">
-                {([
-                  { value: "hot-100", label: "HOT 100" },
-                  { value: "billboard-200", label: "B200" },
-                ] as const).map((option) => (
+                {artistChartOptions.map((row) => (
                   <button
-                    key={option.value}
+                    key={row.slug}
                     type="button"
-                    onClick={() => update("chartContext", option.value)}
+                    onClick={() => update("chartContext", row.slug)}
+                    aria-label={row.title ?? row.slug}
                     className={[
                       "min-w-[78px] border-r border-black/10 px-3 py-2 text-[11px] font-[600] tracking-[0.08em] last:border-r-0",
-                      state.chartContext === option.value
+                      state.chartContext === row.slug
                         ? "bg-[#C8102E] text-white"
                         : "bg-transparent text-[#0A0A0A] hover:bg-[#F5F5F5]",
                     ].join(" ")}
                   >
-                    {option.label}
+                    {CHART_TOGGLE_ABBREV[row.slug] ?? (row.title ?? row.slug)}
                   </button>
                 ))}
               </div>
@@ -168,7 +209,7 @@ export function CustomQueryBuilder({
                 className="min-w-[220px] flex-1 rounded border border-black/10 bg-white px-3 py-2 text-[12px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
               />
 
-              {state.entity === "artists" && state.chartContext === "hot-100" ? (
+              {state.entity === "artists" && isSongChart ? (
                 <div className="inline-flex overflow-hidden rounded border border-black/10 bg-white">
                   {([
                     { value: "all", label: "All Credits" },

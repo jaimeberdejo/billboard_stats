@@ -24,8 +24,22 @@ import {
   splitArtistNames,
   tokenizeQuestion,
 } from "./normalize.ts";
+import {
+  chartDepth,
+  chartEntityKind,
+  chartTitle,
+} from "../chart-families.ts";
 
 type ChartType = RecordsCustomInterpretation["chart"];
+
+// Default chart slug per ranked entity, derived from the registry-seeded chart
+// metadata (NOT a hardcoded two-chart branch). Song records default to Hot 100
+// and album records to Billboard 200 — the canonical core chart for that entity
+// kind — when the question does not name a chart explicitly.
+const DEFAULT_CHART_FOR_ENTITY: Record<"songs" | "albums", ChartType> = {
+  songs: "hot-100",
+  albums: "billboard-200",
+};
 
 interface InterpretationDraft {
   status: InterpretationStatus;
@@ -213,14 +227,18 @@ function validatePresetChart(
   preset: RecordsPresetInterpretation["record"],
   chart: ChartType,
 ): string | null {
-  if (preset === "most-simultaneous-entries" && chart === "billboard-200") {
-    return "Most simultaneous entries is only available for the Hot 100.";
+  // Compatibility expressed in entity_kind terms (registry-derived), not the
+  // hot-100 / billboard-200 literals: the song-side records require a song chart,
+  // the album-side record requires an album chart.
+  const entityKind = chartEntityKind(chart);
+  if (preset === "most-simultaneous-entries" && entityKind !== "song") {
+    return "Most simultaneous entries is only available for song charts.";
   }
-  if (preset === "most-number-one-songs-by-artist" && chart === "billboard-200") {
-    return "Most #1 songs by artist is only available for the Hot 100.";
+  if (preset === "most-number-one-songs-by-artist" && entityKind !== "song") {
+    return "Most #1 songs by artist is only available for song charts.";
   }
-  if (preset === "most-number-one-albums-by-artist" && chart === "hot-100") {
-    return "Most #1 albums by artist is only available for the Billboard 200.";
+  if (preset === "most-number-one-albums-by-artist" && entityKind !== "album") {
+    return "Most #1 albums by artist is only available for album charts.";
   }
 
   return null;
@@ -325,7 +343,9 @@ function inferRange(
 }
 
 function chartMax(chart: ChartType): number {
-  return chart === "hot-100" ? 100 : 200;
+  // Registry-derived chart depth (e.g. 100 / 200 / 50), replacing the hardcoded
+  // hot-100 ? 100 : 200 so position bounds work for every ingested chart.
+  return chartDepth(chart);
 }
 
 function buildCustomInterpretation(normalizedQuestion: string): InterpretationDraft | null {
@@ -367,10 +387,15 @@ function buildCustomInterpretation(normalizedQuestion: string): InterpretationDr
   if (!resolvedEntity) {
     if (metric.rankBy === "most-entries" || metric.rankBy === "number-one-entries") {
       resolvedEntity = "artists";
-    } else if (explicitChart === "hot-100") {
-      resolvedEntity = "songs";
-    } else if (explicitChart === "billboard-200") {
-      resolvedEntity = "albums";
+    } else if (explicitChart) {
+      // Infer the target entity from the explicit chart's ranked entity_kind
+      // (registry-derived), not from a hot-100/billboard-200 literal.
+      const explicitKind = chartEntityKind(explicitChart);
+      if (explicitKind === "song") {
+        resolvedEntity = "songs";
+      } else if (explicitKind === "album") {
+        resolvedEntity = "albums";
+      }
     }
   }
 
@@ -389,10 +414,10 @@ function buildCustomInterpretation(normalizedQuestion: string): InterpretationDr
 
   let resolvedChart = explicitChart;
   if (!resolvedChart) {
-    if (resolvedEntity === "songs") {
-      resolvedChart = "hot-100";
-    } else if (resolvedEntity === "albums") {
-      resolvedChart = "billboard-200";
+    // Default to the canonical core chart for the entity's kind (registry-seeded
+    // map), not a hardcoded two-chart branch.
+    if (resolvedEntity === "songs" || resolvedEntity === "albums") {
+      resolvedChart = DEFAULT_CHART_FOR_ENTITY[resolvedEntity];
     }
   }
 
@@ -409,7 +434,13 @@ function buildCustomInterpretation(normalizedQuestion: string): InterpretationDr
     };
   }
 
-  if (resolvedEntity === "songs" && resolvedChart !== "hot-100") {
+  // Entity↔chart compatibility expressed via the resolved chart's entity_kind
+  // (registry-derived), replacing the former two-chart slug-equality guards.
+  // A song-entity query needs a song chart; an album-entity query needs an
+  // album chart.
+  const resolvedChartKind = chartEntityKind(resolvedChart);
+
+  if (resolvedEntity === "songs" && resolvedChartKind !== "song") {
     return {
       status: "needs_clarification",
       intent: "clarify",
@@ -417,12 +448,12 @@ function buildCustomInterpretation(normalizedQuestion: string): InterpretationDr
       recordsPreset: null,
       recordsCustom: null,
       ambiguityHints: [
-        "Song records can only be interpreted against the Hot 100 contract.",
+        "Song records can only be interpreted against a song chart.",
       ],
     };
   }
 
-  if (resolvedEntity === "albums" && resolvedChart !== "billboard-200") {
+  if (resolvedEntity === "albums" && resolvedChartKind !== "album") {
     return {
       status: "needs_clarification",
       intent: "clarify",
@@ -430,7 +461,7 @@ function buildCustomInterpretation(normalizedQuestion: string): InterpretationDr
       recordsPreset: null,
       recordsCustom: null,
       ambiguityHints: [
-        "Album records can only be interpreted against the Billboard 200 contract.",
+        "Album records can only be interpreted against an album chart.",
       ],
     };
   }
@@ -495,7 +526,7 @@ function buildCustomInterpretation(normalizedQuestion: string): InterpretationDr
       recordsPreset: null,
       recordsCustom: null,
       ambiguityHints: [
-        `The ${resolvedChart === "hot-100" ? "Hot 100" : "Billboard 200"} does not support that position range.`,
+        `The ${chartTitle(resolvedChart)} does not support that position range.`,
       ],
     };
   }
