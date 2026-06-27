@@ -43,13 +43,10 @@ export function CustomQueryBuilder({
   charts = [],
 }: CustomQueryBuilderProps) {
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const entityChart: ChartType =
-    state.entity === "songs"
-      ? "hot-100"
-      : state.entity === "albums"
-        ? "billboard-200"
-        : state.chartContext;
-  // Registry-derived chart depth, replacing the hardcoded hot-100 ? 100 : 200.
+  // Drive depth from the builder's chartContext for every entity (WR-01),
+  // replacing the hardcoded song->hot-100 / album->billboard-200 mapping. The
+  // registry-derived chartDepth keeps the slider bounds correct for any chart.
+  const entityChart: ChartType = state.chartContext;
   const chartMax = chartDepth(entityChart);
   const isSongChart =
     charts.find((row) => row.slug === state.chartContext)?.entity_kind === "song" ||

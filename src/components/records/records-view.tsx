@@ -174,12 +174,12 @@ async function fetchCustomRecords(
   state: CustomQueryState,
   limit: number,
 ): Promise<CustomRecordsPayload> {
-  const chart: ChartType =
-    state.entity === "songs"
-      ? "hot-100"
-      : state.entity === "albums"
-        ? "billboard-200"
-        : state.chartContext;
+  // Drive the chart from the builder's chartContext for every entity (WR-01),
+  // not a hardcoded hot-100/billboard-200 per entity. The slug is validated
+  // server-side, and getCustomRecords scopes the legacy-stats arms to the core
+  // charts, so an unsupported entity/chart combination returns an empty result
+  // rather than mislabeled data.
+  const chart: ChartType = state.chartContext;
   const params = new URLSearchParams({
     mode: "custom",
     entity: state.entity,
