@@ -8,6 +8,7 @@
  */
 
 import { getSql } from "@/lib/db";
+import { saturdayPredicate } from "@/lib/chart-week";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -102,14 +103,18 @@ export async function getTableCounts(): Promise<TableCounts> {
 export async function getLatestChartDates(): Promise<LatestDates> {
   const sql = getSql();
 
-  const rows = await sql`
-    SELECT chart_type,
+  // The Saturday (chart-day) predicate is a code constant sourced from the
+  // single-source-of-truth chart-week module — no bound params here, so this
+  // uses the sql.query(text) form (matching how records.ts composes constant
+  // predicate text) rather than the tagged-template form.
+  const rows = await sql.query(
+    `SELECT chart_type,
            MAX(chart_date)::text AS latest_date
     FROM chart_weeks
     WHERE chart_date <= CURRENT_DATE
-      AND EXTRACT(DOW FROM chart_date) = 6
-    GROUP BY chart_type
-  `;
+      AND ${saturdayPredicate("chart_date")}
+    GROUP BY chart_type`,
+  );
 
   const result: LatestDates = {};
   for (const row of rows) {
