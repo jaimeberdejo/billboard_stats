@@ -29,6 +29,7 @@
 
 import { getSql } from "@/lib/db";
 import { validWeeksCte, validWeeksForCharts } from "@/lib/valid-weeks";
+import { isoWeekExpr } from "@/lib/chart-week";
 
 // ---------------------------------------------------------------------------
 // Shared entity-kind shape
@@ -297,4 +298,157 @@ export async function getPresenceByYear(
   }));
 
   return { chart: chartSlug, entityKind, entityId, series };
+}
+
+// ---------------------------------------------------------------------------
+// ANALYTICS-03: this-week-in-history
+// ---------------------------------------------------------------------------
+
+/**
+ * Entity title/credit/join SQL fragments per chart entity_kind. Mirrors the
+ * `ENTITY_QUERY_SHAPE` map in charts.ts — all strings are code constants keyed
+ * by the registry-resolved `entity_kind`, never request text.
+ */
+interface ThisWeekShape {
+  titleExpr: string;
+  artistCreditExpr: string;
+  joins: string;
+}
+
+const THIS_WEEK_SHAPE: Record<EntityKind, ThisWeekShape> = {
+  song: {
+    titleExpr: "s.title",
+    artistCreditExpr: "s.artist_credit",
+    joins: "JOIN songs s ON e.song_id = s.id",
+  },
+  album: {
+    titleExpr: "a.title",
+    artistCreditExpr: "a.artist_credit",
+    joins: "JOIN albums a ON e.album_id = a.id",
+  },
+  artist: {
+    titleExpr: "ar.name",
+    artistCreditExpr: "ar.name",
+    joins: "JOIN artists ar ON e.artist_id = ar.id",
+  },
+};
+
+/** A single ranked row within a this-week-in-history year group. */
+export interface ThisWeekRow {
+  rank: number;
+  title: string;
+  artist_credit: string;
+}
+
+/**
+ * One prior year's slice of the same ISO week. `charted: false` (with empty
+ * rows) is an EXPLICIT marker for a year that had no chart that week — the UI
+ * renders "No chart published this week." rather than the year being dropped.
+ */
+export interface ThisWeekGroup {
+  year: number;
+  /** The matched chart_date for this year, or null when charted=false. */
+  chartDate: string | null;
+  charted: boolean;
+  rows: ThisWeekRow[];
+}
+
+export interface ThisWeekPayload {
+  chart: string;
+  /** The (validated) target date the same ISO week was matched against. */
+  targetDate: string;
+  /** Prior-year groups, newest → oldest. */
+  groups: ThisWeekGroup[];
+}
+
+/**
+ * The same ISO week across prior years for one chart, Saturday-aligned via
+ * `isoWeekExpr` (so a non-Saturday `targetDate` still resolves by ISO-week
+ * match rather than requiring an exact date hit). Years with no chart that week
+ * still get an explicit `{ charted: false, rows: [] }` marker (no-throw).
+ *
+ * Binds chart_id ($1, also feeds the valid-weeks CTE), targetDate ($2), and
+ * topN ($3). All SQL is a code constant; the entity shape is keyed by the
+ * registry-resolved kind.
+ */
+export async function getThisWeekInHistory(
+  chartId: number,
+  chartSlug: string,
+  entityKind: EntityKind,
+  targetDate: string,
+  topN: number,
+): Promise<ThisWeekPayload> {
+  const sql = getSql();
+  const shape = THIS_WEEK_SHAPE[entityKind];
+
+  const rows = await sql.query(
+    `WITH ${validWeeksCte("valid_weeks", "$1")}
+     SELECT cw.chart_date::text AS chart_date,
+            EXTRACT(YEAR FROM cw.chart_date)::int AS year,
+            e.rank,
+            ${shape.titleExpr} AS title,
+            ${shape.artistCreditExpr} AS artist_credit
+     FROM chart_weeks cw
+     JOIN chart_entries e ON e.chart_week_id = cw.id
+     ${shape.joins}
+     WHERE cw.chart_id = $1
+       AND ${isoWeekExpr("cw.chart_date")} = ${isoWeekExpr("$2::date")}
+       AND cw.chart_date < $2::date
+       AND cw.id IN (SELECT id FROM valid_weeks)
+       AND e.rank <= $3
+     ORDER BY year DESC, e.rank`,
+    [chartId, targetDate, topN],
+  );
+
+  // Group rows by year into a Map (mirrors records.ts mapSimultaneousWeeks).
+  const byYear = new Map<number, { chartDate: string | null; rows: ThisWeekRow[] }>();
+  for (const r of rows) {
+    const year = Number(r.year ?? 0);
+    const existing = byYear.get(year);
+    const entry: ThisWeekRow = {
+      rank: Number(r.rank ?? 0),
+      title: (r.title as string | null) ?? "",
+      artist_credit: (r.artist_credit as string | null) ?? "",
+    };
+    if (existing) {
+      existing.rows.push(entry);
+    } else {
+      byYear.set(year, { chartDate: toIsoDate(r.chart_date), rows: [entry] });
+    }
+  }
+
+  // Determine the full set of prior years to represent: from the chart's first
+  // valid year up to targetYear-1, so gap / pre-debut years still surface as
+  // explicit charted:false markers rather than being silently dropped.
+  const targetYear = yearOf(toIsoDate(targetDate));
+  const firstYearRows = await sql.query(
+    `WITH ${validWeeksCte("valid_weeks", "$1")}
+     SELECT MIN(EXTRACT(YEAR FROM cw.chart_date))::int AS first_year
+     FROM chart_weeks cw
+     WHERE cw.chart_id = $1
+       AND cw.id IN (SELECT id FROM valid_weeks)`,
+    [chartId],
+  );
+  const firstYear = firstYearRows[0]?.first_year as number | null | undefined;
+
+  const groups: ThisWeekGroup[] = [];
+  if (targetYear !== null && firstYear !== null && firstYear !== undefined) {
+    for (let year = targetYear - 1; year >= firstYear; year--) {
+      const hit = byYear.get(year);
+      if (hit) {
+        groups.push({ year, chartDate: hit.chartDate, charted: true, rows: hit.rows });
+      } else {
+        // Explicit no-chart-that-week marker (no-throw degradation).
+        groups.push({ year, chartDate: null, charted: false, rows: [] });
+      }
+    }
+  } else {
+    // No resolvable year window (e.g. empty chart): still emit whatever rows
+    // grouped by year, newest first, without throwing.
+    for (const [year, hit] of [...byYear.entries()].sort((l, r) => r[0] - l[0])) {
+      groups.push({ year, chartDate: hit.chartDate, charted: true, rows: hit.rows });
+    }
+  }
+
+  return { chart: chartSlug, targetDate, groups };
 }
