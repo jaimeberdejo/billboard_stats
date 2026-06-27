@@ -80,7 +80,7 @@ export function ChartControls({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-end gap-2">
         <button
           type="button"
           onClick={() => previousDate && onDateChange(previousDate)}
@@ -99,19 +99,19 @@ export function ChartControls({
           Next Week
         </button>
 
-        <label className="sr-only" htmlFor="chart-week-input">
-          Jump to chart week
+        <label className="flex min-w-[220px] flex-1 flex-col gap-1" htmlFor="chart-week-input">
+          <span className="sr-only">Jump to chart week</span>
+          <input
+            key={selectedDate}
+            id="chart-week-input"
+            list="chart-week-suggestions"
+            defaultValue={selectedDate}
+            ref={dateInputRef}
+            placeholder="Type a date: YYYY-MM-DD or year"
+            disabled={isPending || availableDates.length === 0}
+            className="w-full rounded border border-black/10 bg-white px-2 py-1.5 text-[11px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
+          />
         </label>
-        <input
-          key={selectedDate}
-          id="chart-week-input"
-          list="chart-week-suggestions"
-          defaultValue={selectedDate}
-          ref={dateInputRef}
-          placeholder="1990 or 1990-05-12"
-          disabled={isPending || availableDates.length === 0}
-          className="min-w-[190px] flex-1 rounded border border-black/10 bg-white px-2 py-1.5 text-[11px] text-[#0A0A0A] outline-none transition focus:border-[#C8102E]"
-        />
         <datalist id="chart-week-suggestions">
           {availableDates.map((date) => (
             <option key={date} value={date}>
@@ -131,8 +131,8 @@ export function ChartControls({
       </div>
 
       <div className="text-[11px] leading-[1.45] text-[#888888]">
-        Viewing {formatChartDate(selectedDate)}. Jump by year or exact date. Latest available week:{" "}
-        {formatChartDate(latestDate)}.
+        Viewing {formatChartDate(selectedDate)}. Type an exact chart date or a year, then press Go. Latest
+        available week: {formatChartDate(latestDate)}.
       </div>
 
     </div>
