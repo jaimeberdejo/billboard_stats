@@ -5,8 +5,10 @@ import { chartDepth } from "@/lib/chart-families";
 import {
   type CustomCreditScope,
   type CustomEntity,
+  type GenderFilter,
   getArtistRecordDrilldown,
   getCustomRecords,
+  getGenderLeaderboard,
   getPresetRecords,
   type CustomRankBy,
   type RecordPreset,
@@ -40,6 +42,21 @@ const CUSTOM_ENTITY_ALLOWLIST = new Set<CustomEntity>([
 
 const CUSTOM_CREDIT_SCOPE_ALLOWLIST = new Set<CustomCreditScope>(["all", "lead"]);
 
+/**
+ * The gender filter vocabulary (GENDER-03). The five real values mirror the
+ * artists_gender_check vocabulary in schema.sql plus the opt-in "all" default.
+ * The query param is validated against this Set BEFORE it is bound as $N — it is
+ * never interpolated into SQL (T-14-04-V).
+ */
+const GENDER_ALLOWLIST = new Set<GenderFilter>([
+  "all",
+  "female",
+  "male",
+  "group",
+  "mixed",
+  "unknown",
+]);
+
 function parsePositiveInteger(
   value: string | null,
   minimum = 1,
@@ -70,6 +87,17 @@ function isValidCustomEntity(value: string | null): value is CustomEntity {
 function parseCustomCreditScope(value: string | null): CustomCreditScope {
   return value !== null && CUSTOM_CREDIT_SCOPE_ALLOWLIST.has(value as CustomCreditScope)
     ? (value as CustomCreditScope)
+    : "all";
+}
+
+/**
+ * Parse the gender filter against the allowlist, defaulting to "all" when the
+ * param is absent or invalid. Gender is opt-in, so a missing/unknown value is
+ * NOT a 400 — it simply means the unfiltered ("All") view (GENDER-03).
+ */
+function parseGender(value: string | null): GenderFilter {
+  return value !== null && GENDER_ALLOWLIST.has(value as GenderFilter)
+    ? (value as GenderFilter)
     : "all";
 }
 
@@ -211,6 +239,26 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
   }
 
+  if (mode === "gender") {
+    // Gender is opt-in: a missing/invalid value defaults to "all" (never a 400).
+    // The value is allowlist-validated before binding (T-14-04-V); limit reuses
+    // the existing 1..1000 clamp (T-14-04-D).
+    const gender = parseGender(searchParams.get("gender"));
+    const limit = parsePositiveInteger(searchParams.get("limit"), 1, 1000) ?? 50;
+
+    try {
+      const payload = await getGenderLeaderboard(chart, gender, limit);
+      return Response.json(payload, {
+        headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
+      });
+    } catch {
+      return Response.json(
+        { error: "Failed to load gender leaderboard. Please try again later." },
+        { status: 500 },
+      );
+    }
+  }
+
   if (mode === "drilldown") {
     const record = searchParams.get("record");
     if (!isValidRecordPreset(record)) {
@@ -251,7 +299,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 
   return Response.json(
-    { error: 'Invalid or missing "mode" parameter. Expected "preset", "custom", or "drilldown".' },
+    { error: 'Invalid or missing "mode" parameter. Expected "preset", "custom", "gender", or "drilldown".' },
     { status: 400 },
   );
 }
