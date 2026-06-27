@@ -156,6 +156,45 @@ export type CustomRankBy =
 export type CustomEntity = "songs" | "albums" | "artists";
 export type CustomCreditScope = "all" | "lead";
 
+/**
+ * Gender filter vocabulary (GENDER-03). "all" is the opt-in default that returns
+ * every artist (including the explicit 'unknown' bucket); the five real values
+ * mirror the artists_gender_check vocabulary in schema.sql
+ * (female|male|group|mixed|unknown). 'unknown' is a FIRST-CLASS value, never a
+ * missing sentinel — a non-'all' filter still reports the unknown population so
+ * the UI can surface the Unknown bucket and coverage truthfully.
+ */
+export type GenderFilter =
+  | "all"
+  | "female"
+  | "male"
+  | "group"
+  | "mixed"
+  | "unknown";
+
+export interface GenderLeaderboardRow {
+  rank: number;
+  artist_id: number | null;
+  name: string;
+  gender: GenderFilter;
+  value: number;
+}
+
+export interface GenderLeaderboardPayload {
+  mode: "gender";
+  chart: ChartType;
+  genderFilter: GenderFilter;
+  valueLabel: string;
+  unsupportedMessage: string | null;
+  /** matched (gender <> 'unknown') / total, in [0,1]; 0 when total is 0. */
+  coveragePct: number;
+  matchedArtists: number;
+  totalArtists: number;
+  unknownArtists: number;
+  methodologyNote: string;
+  rows: GenderLeaderboardRow[];
+}
+
 export interface RecordLeaderboardRow {
   rank: number;
   title: string;
@@ -600,6 +639,173 @@ export async function getPresetRecords(
     supportsDrilldown: record in DRILLDOWN_VALUE_LABELS,
     unsupportedMessage: null,
     rows: mapRows(rows),
+  };
+}
+
+/** The five gender buckets the leaderboard may legitimately emit per row. */
+const GENDER_ROW_VALUES = new Set<GenderFilter>([
+  "female",
+  "male",
+  "group",
+  "mixed",
+  "unknown",
+]);
+
+function coerceGenderRow(value: unknown): GenderFilter {
+  return typeof value === "string" && GENDER_ROW_VALUES.has(value as GenderFilter)
+    ? (value as GenderFilter)
+    : "unknown";
+}
+
+const GENDER_METHODOLOGY_NOTE =
+  "Gender is best-effort; Unknown artists are not counted as any gender and are excluded from a filtered view (never silently bucketed).";
+
+/**
+ * Gender-aware artist leaderboard (GENDER-03). Rolls each artist's valid-week
+ * presence on the requested chart up through the entity_kind-appropriate
+ * artist-link table (song_artists / album_artists) and attaches the artist's
+ * gender. Semantics (locked by RESEARCH §Pattern 5 + the UI-SPEC):
+ *
+ *   1. genderFilter 'all' (the default) returns EVERY artist including Unknown —
+ *      nothing is dropped.
+ *   2. A non-'all' filter restricts the returned rows to that gender, but the
+ *      coverage aggregate (total / matched / unknown) is always computed over the
+ *      UNFILTERED population so the Unknown count is reported regardless.
+ *   3. coveragePct = matched(gender <> 'unknown') / total, returned with the raw
+ *      counts and a methodology note on every response.
+ *   4. With no enrichment run (every artist 'unknown'): matched = 0, coverage = 0,
+ *      every row is Unknown — returned truthfully, never an error.
+ *
+ * Counts are COUNT(*) over valid-week rows via validWeeksCte — never SUM of the
+ * per-row Billboard counter. The artist/gender side is LEFT JOINed and the value
+ * is COALESCEd to the explicit Unknown bucket so a missing gender is never the
+ * reason an artist disappears; the filter is `('all' OR gender = $x)`, never an
+ * inner-join drop. All SQL is a code constant; chartId, gender, and limit are the
+ * only bound values.
+ */
+export async function getGenderLeaderboard(
+  chart: ChartType,
+  genderFilter: GenderFilter,
+  limit = 50,
+): Promise<GenderLeaderboardPayload> {
+  const chartRow = await resolveRecordsChart(chart);
+  const entityKind = chartRow.entity_kind;
+
+  const basePayload = {
+    mode: "gender" as const,
+    chart,
+    genderFilter,
+    valueLabel: "Wks",
+    coveragePct: 0,
+    matchedArtists: 0,
+    totalArtists: 0,
+    unknownArtists: 0,
+    methodologyNote: GENDER_METHODOLOGY_NOTE,
+    rows: [] as GenderLeaderboardRow[],
+  };
+
+  // Artist-entity charts (Artist 100) have no song/album artist-link rollup, so
+  // the gender leaderboard is unsupported there — same boundary as the records
+  // presets (return a calm unsupported payload rather than mislabeled data).
+  if (isUnsupportedEntityKindChart(entityKind)) {
+    return { ...basePayload, unsupportedMessage: UNSUPPORTED_ENTITY_KIND_MESSAGE };
+  }
+
+  // Branch the artist-link table on entity_kind (song_artists for song charts,
+  // album_artists for album charts) — code constants, never user input.
+  const shape = recordsEntityShape(entityKind);
+  const linkTable = shape.artistLinkTable;
+  const linkIdCol = shape.artistLinkIdCol;
+
+  const sql = getSql();
+
+  // per_artist rolls up valid-week presence per artist with the gender attached.
+  // LEFT JOIN artists + COALESCE keeps any artist whose gender is absent in the
+  // explicit Unknown bucket. Coverage is a second aggregate over per_artist
+  // computed BEFORE the gender filter is applied, so the Unknown/total counts are
+  // independent of the selected filter. $1 = chart_id, $2 = gender, $3 = limit.
+  const rows = await sql.query(
+    `WITH ${validWeeksCte("valid_weeks", "$1")},
+     per_artist AS (
+       SELECT a.id AS artist_id,
+              a.name,
+              COALESCE(a.gender, 'unknown') AS gender,
+              COUNT(*) AS weeks
+       FROM chart_entries e
+       JOIN ${linkTable} link ON e.${linkIdCol} = link.${linkIdCol}
+       LEFT JOIN artists a ON link.artist_id = a.id
+       WHERE e.chart_id = $1
+         AND e.chart_week_id IN (SELECT id FROM valid_weeks)
+       GROUP BY a.id, a.name, COALESCE(a.gender, 'unknown')
+     ),
+     coverage AS (
+       SELECT COUNT(*) AS total_artists,
+              COUNT(*) FILTER (WHERE gender <> 'unknown') AS matched_artists,
+              COUNT(*) FILTER (WHERE gender = 'unknown') AS unknown_artists
+       FROM per_artist
+     )
+     SELECT pa.artist_id,
+            pa.name,
+            pa.gender,
+            pa.weeks AS value,
+            cov.total_artists,
+            cov.matched_artists,
+            cov.unknown_artists
+     FROM per_artist pa
+     CROSS JOIN coverage cov
+     WHERE ($2::text = 'all' OR pa.gender = $2::text)
+     ORDER BY pa.weeks DESC, pa.name
+     LIMIT $3`,
+    [chartRow.id, genderFilter, limit],
+  );
+
+  // The coverage aggregate is identical on every row (CROSS JOIN); read it once.
+  // When the filter excludes all rows, fall back to a coverage-only aggregate so
+  // the truthful total/unknown counts are still reported.
+  let totalArtists = Number(rows[0]?.total_artists ?? 0);
+  let matchedArtists = Number(rows[0]?.matched_artists ?? 0);
+  let unknownArtists = Number(rows[0]?.unknown_artists ?? 0);
+
+  if (rows.length === 0 && genderFilter !== "all") {
+    const coverageOnly = await sql.query(
+      `WITH ${validWeeksCte("valid_weeks", "$1")},
+       per_artist AS (
+         SELECT a.id AS artist_id,
+                COALESCE(a.gender, 'unknown') AS gender
+         FROM chart_entries e
+         JOIN ${linkTable} link ON e.${linkIdCol} = link.${linkIdCol}
+         LEFT JOIN artists a ON link.artist_id = a.id
+         WHERE e.chart_id = $1
+           AND e.chart_week_id IN (SELECT id FROM valid_weeks)
+         GROUP BY a.id, COALESCE(a.gender, 'unknown')
+       )
+       SELECT COUNT(*) AS total_artists,
+              COUNT(*) FILTER (WHERE gender <> 'unknown') AS matched_artists,
+              COUNT(*) FILTER (WHERE gender = 'unknown') AS unknown_artists
+       FROM per_artist`,
+      [chartRow.id],
+    );
+    totalArtists = Number(coverageOnly[0]?.total_artists ?? 0);
+    matchedArtists = Number(coverageOnly[0]?.matched_artists ?? 0);
+    unknownArtists = Number(coverageOnly[0]?.unknown_artists ?? 0);
+  }
+
+  const coveragePct = totalArtists > 0 ? matchedArtists / totalArtists : 0;
+
+  return {
+    ...basePayload,
+    unsupportedMessage: null,
+    coveragePct,
+    matchedArtists,
+    totalArtists,
+    unknownArtists,
+    rows: rows.map((row, index) => ({
+      rank: index + 1,
+      artist_id: (row.artist_id as number | null) ?? null,
+      name: (row.name as string | null) ?? "",
+      gender: coerceGenderRow(row.gender),
+      value: Number(row.value ?? 0),
+    })),
   };
 }
 
