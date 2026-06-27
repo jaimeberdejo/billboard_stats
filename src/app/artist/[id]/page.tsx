@@ -1,5 +1,3 @@
-import type { ReactNode } from "react";
-
 import Link from "next/link";
 
 import { ArtistCatalogTable } from "@/components/artist/artist-catalog-table";
@@ -7,6 +5,8 @@ import { DetailHeader } from "@/components/detail/detail-header";
 import { StatsBar } from "@/components/detail/stats-bar";
 import {
   getArtistDetail,
+  type ArtistCatalogAlbumRow,
+  type ArtistCatalogSongRow,
   type ArtistCreditScope,
   type ArtistDetailPayload,
 } from "@/lib/artists";
@@ -43,31 +43,17 @@ function formatPeak(value: number | null): string {
   return value ? `#${value}` : "—";
 }
 
-function renderDateRangeNode(start: string | null, end: string | null): ReactNode {
+/**
+ * Career first/last dates are aggregated across ALL the artist's charts, so no
+ * single chart slug applies — render them as plain muted text (no chart link).
+ * Per-chart date links live in the per-chart catalog tables instead.
+ */
+function formatDateRange(start: string | null, end: string | null): string {
   if (!start && !end) {
     return "Career aggregate detail";
   }
 
-  const renderNode = (value: string | null): ReactNode => {
-    if (!value) {
-      return "—";
-    }
-
-    return (
-      <Link
-        href={`/?chart=hot-100&date=${value}`}
-        className="transition-colors hover:text-[#C8102E]"
-      >
-        {formatDate(value)}
-      </Link>
-    );
-  };
-
-  return (
-    <>
-      {renderNode(start)} – {renderNode(end)}
-    </>
-  );
+  return `${formatDate(start)} – ${formatDate(end)}`;
 }
 
 async function loadArtistDetail(
@@ -126,40 +112,59 @@ export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">)
     );
   }
 
-  const stats = detail.stats;
+  const totals = detail.careerTotals;
   const statsItems = [
-    { label: "Hot 100 Songs", value: String(stats?.total_hot100_songs ?? 0) },
-    { label: "B200 Albums", value: String(stats?.total_b200_albums ?? 0) },
+    { label: "Charts", value: String(totals?.chart_count ?? 0) },
+    { label: "Entries", value: String(totals?.total_entries ?? 0) },
     {
-      label: "#1 Songs",
-      value: String(stats?.hot100_number_ones ?? 0),
-      accent: (stats?.hot100_number_ones ?? 0) > 0,
+      label: "#1s",
+      value: String(totals?.number_ones ?? 0),
+      accent: (totals?.number_ones ?? 0) > 0,
     },
+    { label: "Total Weeks", value: String(totals?.total_weeks ?? 0) },
     {
-      label: "#1 Albums",
-      value: String(stats?.b200_number_ones ?? 0),
-      accent: (stats?.b200_number_ones ?? 0) > 0,
+      label: "Best Peak",
+      value: formatPeak(totals?.best_peak ?? null),
+      accent: totals?.best_peak === 1,
     },
-    { label: "Hot 100 Weeks", value: String(stats?.total_hot100_weeks ?? 0) },
-    { label: "B200 Weeks", value: String(stats?.total_b200_weeks ?? 0) },
-    {
-      label: "Best Hot 100",
-      value: formatPeak(stats?.best_hot100_peak ?? null),
-      accent: stats?.best_hot100_peak === 1,
-    },
-    { label: "Max Simultaneous", value: String(stats?.max_simultaneous_hot100 ?? 0) },
+    { label: "Max Simultaneous", value: String(totals?.max_simultaneous ?? 0) },
   ];
 
-  const hasCatalogData = detail.songs.length > 0 || detail.albums.length > 0;
+  // Group catalog rows by their originating chart slug so each per-chart section
+  // passes its own real slug to ArtistCatalogTable (correct date links).
+  const songsBySlug = new Map<string, ArtistCatalogSongRow[]>();
+  for (const song of detail.songs) {
+    const list = songsBySlug.get(song.chart_slug) ?? [];
+    list.push(song);
+    songsBySlug.set(song.chart_slug, list);
+  }
+  const albumsBySlug = new Map<string, ArtistCatalogAlbumRow[]>();
+  for (const album of detail.albums) {
+    const list = albumsBySlug.get(album.chart_slug) ?? [];
+    list.push(album);
+    albumsBySlug.set(album.chart_slug, list);
+  }
+
+  // Render catalog sections in the rollup (sort_order) sequence; only charts
+  // with catalog rows produce a section.
+  const catalogSections = detail.chartRollups
+    .map((rollup) => ({
+      rollup,
+      songs: songsBySlug.get(rollup.chart_slug) ?? [],
+      albums: albumsBySlug.get(rollup.chart_slug) ?? [],
+    }))
+    .filter((section) => section.songs.length > 0 || section.albums.length > 0);
+
+  const hasCatalogData = catalogSections.length > 0;
 
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col px-3 py-3 sm:px-6 sm:py-4">
       <DetailHeader
         backHref="/"
         title={detail.artist.name}
-        subtitle={renderDateRangeNode(
-          stats?.first_chart_date ?? null,
-          stats?.latest_chart_date ?? null,
+        subtitle={formatDateRange(
+          totals?.first_date ?? null,
+          totals?.last_date ?? null,
         )}
       />
 
@@ -194,41 +199,78 @@ export default async function ArtistDetailPage(props: PageProps<"/artist/[id]">)
         <StatsBar items={statsItems} />
       </div>
 
+      {detail.chartRollups.length > 0 ? (
+        <div className="mt-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          {detail.chartRollups.map((rollup) => (
+            <div
+              key={rollup.chart_slug}
+              className="rounded border border-black/10 bg-white px-3 py-3"
+            >
+              <div className="text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+                {rollup.chart_title}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12px] leading-[1.45] text-[#0A0A0A]">
+                <span>
+                  <span className="text-[#888888]">Entries</span> {rollup.total_entries}
+                </span>
+                <span>
+                  <span className="text-[#888888]">Weeks</span> {rollup.total_weeks}
+                </span>
+                <span
+                  className={rollup.number_ones > 0 ? "font-[700] text-[#C8102E]" : ""}
+                >
+                  <span className="text-[#888888]">#1s</span> {rollup.number_ones}
+                </span>
+                <span
+                  className={rollup.best_peak === 1 ? "font-[700] text-[#C8102E]" : ""}
+                >
+                  <span className="text-[#888888]">Peak</span> {formatPeak(rollup.best_peak)}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       {hasCatalogData ? (
         <div className="mt-6 flex flex-col gap-6">
-          {detail.songs.length > 0 ? (
-            <ArtistCatalogTable
-              title="Hot 100 Songs"
-              chartType="hot-100"
-              rows={detail.songs.map((song) => ({
-                id: song.id,
-                title: song.title,
-                peak_position: song.peak_position,
-                total_weeks: song.total_weeks,
-                weeks_at_peak: song.weeks_at_peak,
-                debut_date: song.debut_date,
-                last_date: song.last_date,
-                href: `/song/${song.id}`,
-              }))}
-            />
-          ) : null}
+          {catalogSections.map((section) => (
+            <div key={section.rollup.chart_slug} className="flex flex-col gap-6">
+              {section.songs.length > 0 ? (
+                <ArtistCatalogTable
+                  title={section.rollup.chart_title}
+                  chartSlug={section.rollup.chart_slug}
+                  rows={section.songs.map((song) => ({
+                    id: song.id,
+                    title: song.title,
+                    peak_position: song.peak_position,
+                    total_weeks: song.total_weeks,
+                    weeks_at_peak: song.weeks_at_peak,
+                    debut_date: song.debut_date,
+                    last_date: song.last_date,
+                    href: `/song/${song.id}`,
+                  }))}
+                />
+              ) : null}
 
-          {detail.albums.length > 0 ? (
-            <ArtistCatalogTable
-              title="Billboard 200 Albums"
-              chartType="billboard-200"
-              rows={detail.albums.map((album) => ({
-                id: album.id,
-                title: album.title,
-                peak_position: album.peak_position,
-                total_weeks: album.total_weeks,
-                weeks_at_peak: album.weeks_at_peak,
-                debut_date: album.debut_date,
-                last_date: album.last_date,
-                href: `/album/${album.id}`,
-              }))}
-            />
-          ) : null}
+              {section.albums.length > 0 ? (
+                <ArtistCatalogTable
+                  title={section.rollup.chart_title}
+                  chartSlug={section.rollup.chart_slug}
+                  rows={section.albums.map((album) => ({
+                    id: album.id,
+                    title: album.title,
+                    peak_position: album.peak_position,
+                    total_weeks: album.total_weeks,
+                    weeks_at_peak: album.weeks_at_peak,
+                    debut_date: album.debut_date,
+                    last_date: album.last_date,
+                    href: `/album/${album.id}`,
+                  }))}
+                />
+              ) : null}
+            </div>
+          ))}
         </div>
       ) : (
         <div className="mt-6 rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">

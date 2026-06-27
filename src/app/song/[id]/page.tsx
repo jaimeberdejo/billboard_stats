@@ -83,8 +83,16 @@ export default async function SongDetailPage(props: PageProps<"/song/[id]">) {
   }
 
   const stats = detail.stats;
+  const runs = detail.runsByChart;
+  // Stat-line date links resolve against the song's primary (highest-priority)
+  // chart — the first group is sort_order ASC. Single-chart songs are exact.
+  const primarySlug = runs[0]?.chartSlug ?? null;
   const chartHref = (date: string | null): string | undefined =>
-    date ? `/?chart=${detail.chartType}&date=${date}` : undefined;
+    date && primarySlug ? `/?chart=${primarySlug}&date=${date}` : undefined;
+  const subtitle =
+    runs.length > 1
+      ? `${detail.song.artist_credit} · Charted on ${runs.length} charts`
+      : detail.song.artist_credit;
   const statsItems = [
     { label: "Peak", value: formatPeak(stats?.peak_position ?? null), accent: stats?.peak_position === 1 },
     { label: "Weeks on Chart", value: String(stats?.total_weeks ?? 0) },
@@ -112,7 +120,7 @@ export default async function SongDetailPage(props: PageProps<"/song/[id]">) {
       <DetailHeader
         backHref="/"
         title={detail.song.title}
-        subtitle={detail.song.artist_credit}
+        subtitle={subtitle}
         quoteTitle
       />
 
@@ -120,26 +128,48 @@ export default async function SongDetailPage(props: PageProps<"/song/[id]">) {
         <StatsBar items={statsItems} />
       </div>
 
-      {detail.chartRun.length >= 2 ? (
-        <ChartRunVisualization
-          chartType={detail.chartType}
-          points={detail.chartRun}
-          title={`${detail.song.title} chart run`}
-        />
-      ) : null}
+      {runs.length > 0 ? (
+        <div className="mt-6 flex flex-col gap-6">
+          {runs.map((group) => (
+            <section key={group.chartSlug}>
+              <div className="mb-3 text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+                {group.chartTitle}
+              </div>
 
-      <section className="mt-6">
-        <div className="mb-3 text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
-          Chart History
+              {group.points.length >= 2 ? (
+                <ChartRunVisualization
+                  chartSlug={group.chartSlug}
+                  depth={group.depth}
+                  points={group.points}
+                  title={`${detail.song.title} chart run`}
+                />
+              ) : null}
+
+              {group.points.length > 0 ? (
+                <div className="mt-3">
+                  <ChartHistoryTable
+                    chartRun={group.points}
+                    chartSlug={group.chartSlug}
+                  />
+                </div>
+              ) : (
+                <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
+                  No chart history available
+                </div>
+              )}
+            </section>
+          ))}
         </div>
-        {detail.chartRun.length > 0 ? (
-          <ChartHistoryTable chartRun={detail.chartRun} chartType={detail.chartType} />
-        ) : (
+      ) : (
+        <section className="mt-6">
+          <div className="mb-3 text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
+            Chart History
+          </div>
           <div className="rounded border border-dashed border-black/10 bg-[#F5F5F5] px-4 py-6 text-[12px] leading-[1.45] text-[#888888]">
             No chart history available
           </div>
-        )}
-      </section>
+        </section>
+      )}
 
       <section className="mt-6">
         <div className="mb-3 text-[10px] font-[600] uppercase tracking-[0.08em] text-[#888888]">
