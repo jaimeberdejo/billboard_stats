@@ -370,10 +370,16 @@ export async function getPresetRecords(
   record: RecordPreset,
   chart: ChartType,
   limit = 50,
+  creditScope: CustomCreditScope = "all",
 ): Promise<PresetRecordsPayload> {
   const chartRow = await resolveRecordsChart(chart);
   const entityKind = chartRow.entity_kind;
   const isSongChart = entityKind === "song";
+  // Artist-rollup presets honor creditScope (WR-03): "lead" restricts the
+  // artist-link join to the primary credit, matching the custom artists path
+  // and getArtistDetail. "all" credits featured + lead artists alike.
+  const songRoleFilter = creditScope === "lead" ? "AND sa.role = 'primary'" : "";
+  const albumRoleFilter = creditScope === "lead" ? "AND aa.role = 'primary'" : "";
 
   // Artist-entity charts have no song/album records rollup (CR-01); and the
   // legacy-stats-backed presets are scoped to the two core charts because their
@@ -481,7 +487,7 @@ export async function getPresetRecords(
         `SELECT a.name AS title, a.name AS artist_credit,
                 COUNT(DISTINCT ss.song_id) AS value, a.id AS artist_id
          FROM song_stats ss
-         JOIN song_artists sa ON ss.song_id = sa.song_id
+         JOIN song_artists sa ON ss.song_id = sa.song_id ${songRoleFilter}
          JOIN artists a ON sa.artist_id = a.id
          WHERE ss.weeks_at_number_one > 0
          GROUP BY a.id, a.name
@@ -495,7 +501,7 @@ export async function getPresetRecords(
         `SELECT a.name AS title, a.name AS artist_credit,
                 COUNT(DISTINCT als.album_id) AS value, a.id AS artist_id
          FROM album_stats als
-         JOIN album_artists aa ON als.album_id = aa.album_id
+         JOIN album_artists aa ON als.album_id = aa.album_id ${albumRoleFilter}
          JOIN artists a ON aa.artist_id = a.id
          WHERE als.weeks_at_number_one > 0
          GROUP BY a.id, a.name
@@ -506,8 +512,11 @@ export async function getPresetRecords(
       break;
     case "most-entries-by-artist":
       // Legacy artist rollup (artist_stats) is keyed by the song- vs album-side
-      // career column, picked by entity_kind. Phase 15 generalizes this onto
-      // artist_chart_stats; until then the entity_kind branch is the contract.
+      // career column, picked by entity_kind. These pre-aggregated totals are
+      // all-credits by construction (no artist-link join), so creditScope cannot
+      // be honored here without re-deriving from the link tables — deferred to
+      // Phase 15's artist_chart_stats rollup. The link-joined #1-songs/#1-albums
+      // presets above DO honor creditScope (WR-03).
       if (isSongChart) {
         rows = await sql.query(
           `SELECT a.name AS title, a.name AS artist_credit,
@@ -564,7 +573,7 @@ export async function getPresetRecords(
          artist_week_counts AS (
            SELECT sa.artist_id, e.chart_week_id, COUNT(*) AS cnt
            FROM chart_entries e
-           JOIN song_artists sa ON e.song_id = sa.song_id
+           JOIN song_artists sa ON e.song_id = sa.song_id ${songRoleFilter}
            WHERE e.chart_id = $2
              AND e.chart_week_id IN (SELECT id FROM valid_weeks)
            GROUP BY sa.artist_id, e.chart_week_id
@@ -1065,10 +1074,15 @@ export async function getArtistRecordDrilldown(
   chart: ChartType,
   artistId: number,
   chartDate?: string,
+  creditScope: CustomCreditScope = "all",
 ): Promise<DrilldownPayload> {
   const chartRow = await resolveRecordsChart(chart);
   const entityKind = chartRow.entity_kind;
   const isSongChart = entityKind === "song";
+  // Honor creditScope on the artist-link join (WR-03), matching the preset
+  // leaderboard so the drilldown's per-item list uses the same lead/all rule.
+  const songRoleFilter = creditScope === "lead" ? "AND sa.role = 'primary'" : "";
+  const albumRoleFilter = creditScope === "lead" ? "AND aa.role = 'primary'" : "";
   // Same scoping as getPresetRecords (CR-01): artist-entity charts have no
   // song/album rollup; legacy-stats drilldowns read song_stats/album_stats with
   // no chart_id filter, so they are core-chart only.
@@ -1103,7 +1117,7 @@ export async function getArtistRecordDrilldown(
          FROM song_stats ss
          JOIN songs s ON ss.song_id = s.id
          JOIN song_artists sa ON s.id = sa.song_id
-         WHERE sa.artist_id = $1 AND ss.weeks_at_number_one > 0
+         WHERE sa.artist_id = $1 ${songRoleFilter} AND ss.weeks_at_number_one > 0
          ORDER BY ss.weeks_at_number_one DESC, s.title`,
         [artistId],
       );
@@ -1114,7 +1128,7 @@ export async function getArtistRecordDrilldown(
          FROM album_stats als
          JOIN albums a ON als.album_id = a.id
          JOIN album_artists aa ON a.id = aa.album_id
-         WHERE aa.artist_id = $1 AND als.weeks_at_number_one > 0
+         WHERE aa.artist_id = $1 ${albumRoleFilter} AND als.weeks_at_number_one > 0
          ORDER BY als.weeks_at_number_one DESC, a.title`,
         [artistId],
       );
@@ -1126,7 +1140,7 @@ export async function getArtistRecordDrilldown(
            FROM song_stats ss
            JOIN songs s ON ss.song_id = s.id
            JOIN song_artists sa ON s.id = sa.song_id
-           WHERE sa.artist_id = $1
+           WHERE sa.artist_id = $1 ${songRoleFilter}
            ORDER BY ss.total_weeks DESC, s.title`,
           [artistId],
         );
@@ -1136,7 +1150,7 @@ export async function getArtistRecordDrilldown(
            FROM album_stats als
            JOIN albums a ON als.album_id = a.id
            JOIN album_artists aa ON a.id = aa.album_id
-           WHERE aa.artist_id = $1
+           WHERE aa.artist_id = $1 ${albumRoleFilter}
            ORDER BY als.total_weeks DESC, a.title`,
           [artistId],
         );
@@ -1149,7 +1163,7 @@ export async function getArtistRecordDrilldown(
            FROM song_stats ss
            JOIN songs s ON ss.song_id = s.id
            JOIN song_artists sa ON s.id = sa.song_id
-           WHERE sa.artist_id = $1
+           WHERE sa.artist_id = $1 ${songRoleFilter}
            ORDER BY ss.total_weeks DESC, s.title`,
           [artistId],
         );
@@ -1159,7 +1173,7 @@ export async function getArtistRecordDrilldown(
            FROM album_stats als
            JOIN albums a ON als.album_id = a.id
            JOIN album_artists aa ON a.id = aa.album_id
-           WHERE aa.artist_id = $1
+           WHERE aa.artist_id = $1 ${albumRoleFilter}
            ORDER BY als.total_weeks DESC, a.title`,
           [artistId],
         );
@@ -1174,7 +1188,7 @@ export async function getArtistRecordDrilldown(
          week_counts AS (
            SELECT e.chart_week_id, COUNT(*) AS cnt
            FROM chart_entries e
-           JOIN song_artists sa ON e.song_id = sa.song_id
+           JOIN song_artists sa ON e.song_id = sa.song_id ${songRoleFilter}
            WHERE sa.artist_id = $1
              AND e.chart_id = $3
              AND e.chart_week_id IN (SELECT id FROM valid_weeks)
@@ -1191,7 +1205,7 @@ export async function getArtistRecordDrilldown(
          JOIN chart_entries e ON e.chart_week_id = week_counts.chart_week_id
               AND e.chart_id = $3
          JOIN songs s ON e.song_id = s.id
-         JOIN song_artists sa ON s.id = sa.song_id
+         JOIN song_artists sa ON s.id = sa.song_id ${songRoleFilter}
          WHERE sa.artist_id = $1
            AND ($2::date IS NULL OR cw.chart_date = $2::date)
          ORDER BY week_counts.cnt DESC, cw.chart_date DESC, e.rank ASC`,

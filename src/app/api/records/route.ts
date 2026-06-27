@@ -115,9 +115,10 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
 
     const limit = parsePositiveInteger(searchParams.get("limit"), 1, 1000) ?? 50;
+    const creditScope = parseCustomCreditScope(searchParams.get("creditScope"));
 
     try {
-      const payload = await getPresetRecords(record, chart, limit);
+      const payload = await getPresetRecords(record, chart, limit, creditScope);
       return Response.json(payload, {
         headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
       });
@@ -228,9 +229,16 @@ export async function GET(request: NextRequest): Promise<Response> {
     }
 
     const chartDate = searchParams.get("chartDate")?.trim() ?? undefined;
+    const creditScope = parseCustomCreditScope(searchParams.get("creditScope"));
 
     try {
-      const payload = await getArtistRecordDrilldown(record, chart, artistId, chartDate);
+      const payload = await getArtistRecordDrilldown(
+        record,
+        chart,
+        artistId,
+        chartDate,
+        creditScope,
+      );
       return Response.json(payload, {
         headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
       });
