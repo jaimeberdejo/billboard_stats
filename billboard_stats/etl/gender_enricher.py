@@ -34,10 +34,17 @@ operator-script pattern):
 * Defensive parsing (T-12-04): MusicBrainz/Wikidata responses are UNTRUSTED
   JSON. Every field access uses ``dict.get`` with defaults, guards missing /
   None / wrong-typed values, never indexes blindly, and never evals.
-* Politeness (T-12-06): a ``delay``-second sleep between resolves (default
-  ~1.1s, MusicBrainz's documented ~1 req/sec). ``delay`` is injectable so tests
-  pass ``0`` (and ``time.sleep`` is monkeypatched to a no-op). A descriptive
-  ``User-Agent`` with an operator-supplied ``--contact`` is sent on every call.
+* Politeness (T-12-06, WR-02): a ``delay``-second minimum gap is enforced before
+  EVERY OUTBOUND REQUEST at the HTTP-client boundary (default ~1.1s, MusicBrainz's
+  documented ~1 req/sec) — NOT once per artist, so an artist that issues several
+  requests (MB search + lookup + Wikidata search + getentities) is still spaced.
+  ``delay`` (and the client's sleep/clock) is injectable so tests pass ``0`` /
+  no-ops. A descriptive ``User-Agent`` with an operator-supplied ``--contact`` is
+  sent on every call.
+* Backoff (WR-03): HTTP 503 (MusicBrainz over-rate) / 429 (Wikidata) trigger a
+  bounded retry-with-exponential-backoff in the HTTP client, honoring
+  ``Retry-After`` when present. Repeated throttling gives up gracefully (the
+  artist stays 'unknown'; the batch is never blocked).
 
 The LIVE network run, the real prod ``002_gender`` apply, and the coverage SPIKE
 measurement are DEFERRED operator steps documented in docs/GENDER-ENRICHMENT.md.
@@ -67,6 +74,14 @@ DEFAULT_MIN_SCORE = 90
 # points of the best AND disagrees on artist `type`, the match is ambiguous and we
 # refuse to guess (return no-match -> stay 'unknown').
 DEFAULT_TIE_MARGIN = 5
+
+# 503/429 backoff (WR-03 / Pitfall 2 & 6): MusicBrainz returns 503 when over the
+# ~1 req/sec rate; Wikidata returns 429. Honor Retry-After when present, else use a
+# short capped exponential backoff. Bounded retries — never tight-retry.
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_BACKOFF_BASE = 1.0
+DEFAULT_BACKOFF_CAP = 30.0
+_RETRY_STATUS = {429, 503}
 
 # Wikidata Q-ids used by the mapping (VERIFIED against Property:P21 / class ids).
 WD_HUMAN = "Q5"
@@ -105,16 +120,101 @@ class HttpClient:
 
     ``requests`` is imported lazily inside :meth:`get_json` so the module (and
     this class's constructor) import cleanly with no ``requests`` installed.
+
+    Politeness + resilience live HERE, at the request boundary (WR-02 / WR-03),
+    so EVERY outbound request is spaced and every 503/429 is backed off — not once
+    per artist. An artist that issues up to four requests (MB search + lookup + WD
+    search + getentities) therefore still respects MusicBrainz's "never more than
+    ONE call per second" rule.
+
+    * ``delay``  — minimum gap (seconds) enforced BEFORE each outbound request.
+    * ``max_retries`` / ``backoff_base`` / ``backoff_cap`` — bounded retry-with-
+      exponential-backoff on HTTP 503/429, honoring ``Retry-After`` when present.
+    * ``sleep`` and ``monotonic`` are injectable so tests pass no-ops and never
+      actually sleep (the test suite monkeypatches ``time.sleep`` to a no-op).
     """
+
+    def __init__(
+        self,
+        *,
+        delay: float = 1.1,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        backoff_base: float = DEFAULT_BACKOFF_BASE,
+        backoff_cap: float = DEFAULT_BACKOFF_CAP,
+        sleep=None,
+        monotonic=None,
+    ):
+        self.delay = delay
+        self.max_retries = max_retries
+        self.backoff_base = backoff_base
+        self.backoff_cap = backoff_cap
+        # Injectable clock/sleep so tests do not actually block.
+        self._sleep = sleep if sleep is not None else time.sleep
+        self._monotonic = monotonic if monotonic is not None else time.monotonic
+        self._last_request_at: Optional[float] = None
+
+    def _throttle(self) -> None:
+        """Sleep just enough to keep at least ``delay`` seconds between requests."""
+        if not self.delay:
+            return
+        now = self._monotonic()
+        if self._last_request_at is not None:
+            elapsed = now - self._last_request_at
+            gap = self.delay - elapsed
+            if gap > 0:
+                self._sleep(gap)
+        self._last_request_at = self._monotonic()
 
     def get_json(
         self, url: str, params=None, headers=None, timeout: int = 20
     ) -> Tuple[int, object]:
         import requests  # lazy: module imports cleanly without requests in CI
 
-        resp = requests.get(url, params=params, headers=headers, timeout=timeout)
-        resp.raise_for_status()
-        return resp.status_code, resp.json()
+        attempt = 0
+        while True:
+            # Politeness: space EVERY request (WR-02), not once per artist.
+            self._throttle()
+            resp = requests.get(url, params=params, headers=headers, timeout=timeout)
+            status = resp.status_code
+            if status in _RETRY_STATUS and attempt < self.max_retries:
+                # WR-03: throttled by the upstream — back off and retry, bounded.
+                wait = _retry_after_seconds(resp.headers)
+                if wait is None:
+                    wait = min(
+                        self.backoff_base * (2 ** attempt), self.backoff_cap
+                    )
+                logger.warning(
+                    "HTTP %s from %s; backing off %.1fs (retry %d/%d).",
+                    status, url, wait, attempt + 1, self.max_retries,
+                )
+                if wait > 0:
+                    self._sleep(wait)
+                attempt += 1
+                continue
+            resp.raise_for_status()
+            return status, resp.json()
+
+
+def _retry_after_seconds(headers) -> Optional[float]:
+    """Parse a ``Retry-After`` header (delta-seconds form) to a float, else None.
+
+    Only the integer/float-seconds form is honored; an HTTP-date form (or any
+    unparseable value) returns None so the caller falls back to exponential
+    backoff. ``headers`` is the response headers mapping (untrusted).
+    """
+    try:
+        raw = headers.get("Retry-After")
+    except AttributeError:
+        return None
+    if raw is None:
+        return None
+    try:
+        secs = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if secs < 0:
+        return None
+    return secs
 
 
 # ----------------------------------------------------------------------------
@@ -399,8 +499,10 @@ def enrich(
         only_artist_ids: Restrict selection to these ids (the ETL delta path).
         contact: Operator contact embedded in the User-Agent.
         min_score: MusicBrainz confidence threshold (default 90).
-        delay: Seconds to sleep between resolves (polite ~1 req/sec). Injectable
-            so tests pass 0.
+        delay: Minimum seconds between OUTBOUND REQUESTS (polite ~1 req/sec).
+            Applied at the HTTP-client boundary (WR-02) so EVERY request is spaced
+            — not once per artist. Only used when ``http`` is the default client
+            (an injected client owns its own throttle). Injectable so tests pass 0.
 
     Returns:
         A report dict (matched / unmatched / updated / dry_run / ...).
@@ -409,7 +511,9 @@ def enrich(
     error rolls back its own unit and re-raises. Callers MUST NOT commit/rollback.
     """
     if http is None:
-        http = HttpClient()
+        # WR-02: the polite delay lives at the request boundary, so each of the
+        # up-to-four requests an artist makes is spaced (real ~1 req/sec).
+        http = HttpClient(delay=delay)
 
     only_ids: Optional[Set[int]] = (
         set(only_artist_ids) if only_artist_ids is not None else None
@@ -461,8 +565,9 @@ def enrich(
                     report["errors"] += 1
                     resolved = None
 
-                if delay:
-                    time.sleep(delay)
+                # NOTE (WR-02): NO per-artist sleep here. Politeness is enforced
+                # per OUTBOUND REQUEST inside the HTTP client, so an artist that
+                # makes several requests is correctly spaced.
 
                 if resolved is None:
                     report["unmatched"] += 1

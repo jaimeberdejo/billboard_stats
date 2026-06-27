@@ -20,6 +20,8 @@ tests/test_reconcile_artists.py, tests/test_charts.py): no pytest fixtures, no
 
 import copy
 import re
+import sys
+import types
 import unittest
 
 from billboard_stats.etl import gender_enricher
@@ -28,6 +30,7 @@ from billboard_stats.etl.gender_enricher import (
     _MBMatchedUnmappable,
     _map_gender,
     _map_wikidata,
+    _retry_after_seconds,
     enrich,
     mb_resolve,
 )
@@ -1063,6 +1066,200 @@ class TieBreakTests(unittest.TestCase):
         )
         enrich(conn, http=http, delay=0)
         self.assertEqual(db.by_id(1)["gender"], "female")
+
+
+# ============================================================================
+# WR-02 + WR-03: HttpClient throttles per-request and backs off on 503/429
+# ============================================================================
+class _FakeResponse:
+    def __init__(self, status_code, json_body=None, headers=None):
+        self.status_code = status_code
+        self._json = json_body if json_body is not None else {}
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests as _rq
+            raise _rq.exceptions.HTTPError(f"status {self.status_code}")
+
+    def json(self):
+        return self._json
+
+
+class _FakeRequestsModule(types.ModuleType):
+    """A stand-in for the lazily-imported ``requests`` module.
+
+    ``HttpClient.get_json`` does ``import requests`` inside the method; we install
+    this fake into ``sys.modules`` so no real network (or real requests install)
+    is needed. ``responses`` is a queue of _FakeResponse returned in order.
+    """
+
+    def __init__(self, responses):
+        super().__init__("requests")
+        self._responses = list(responses)
+        self.get_calls = []
+        # Mirror requests.exceptions.HTTPError so raise_for_status can raise it.
+        self.exceptions = types.SimpleNamespace(
+            HTTPError=type("HTTPError", (Exception,), {})
+        )
+
+    def get(self, url, params=None, headers=None, timeout=20):
+        self.get_calls.append((url, params))
+        if not self._responses:
+            raise AssertionError("FakeRequests: no queued response")
+        return self._responses.pop(0)
+
+
+class _install_fake_requests:
+    """Context manager installing a fake ``requests`` module in sys.modules."""
+
+    def __init__(self, responses):
+        self.module = _FakeRequestsModule(responses)
+        self._saved = None
+
+    def __enter__(self):
+        self._saved = sys.modules.get("requests")
+        sys.modules["requests"] = self.module
+        return self.module
+
+    def __exit__(self, *exc):
+        if self._saved is not None:
+            sys.modules["requests"] = self._saved
+        else:
+            sys.modules.pop("requests", None)
+        return False
+
+
+class HttpClientThrottleTests(unittest.TestCase):
+    """WR-02: a minimum gap is enforced before EVERY outbound request."""
+
+    def test_throttles_before_each_request_using_injected_clock(self):
+        sleeps = []
+        clock = {"t": 0.0}
+
+        def fake_sleep(secs):
+            sleeps.append(secs)
+            clock["t"] += secs  # advancing the clock models real sleeping
+
+        def fake_monotonic():
+            return clock["t"]
+
+        client = HttpClient(delay=1.1, sleep=fake_sleep, monotonic=fake_monotonic)
+        with _install_fake_requests(
+            [
+                _FakeResponse(200, {"ok": 1}),
+                _FakeResponse(200, {"ok": 2}),
+                _FakeResponse(200, {"ok": 3}),
+            ]
+        ):
+            client.get_json("http://x/a")
+            client.get_json("http://x/b")
+            client.get_json("http://x/c")
+
+        # First request: no prior request -> no throttle sleep. Each subsequent
+        # request sleeps the full gap (clock advanced exactly by the sleep, so no
+        # natural elapsed time between them). WR-02: spacing is per REQUEST.
+        self.assertEqual(len(sleeps), 2)
+        for s in sleeps:
+            self.assertAlmostEqual(s, 1.1, places=6)
+
+    def test_zero_delay_never_sleeps(self):
+        sleeps = []
+        client = HttpClient(delay=0, sleep=lambda s: sleeps.append(s))
+        with _install_fake_requests(
+            [_FakeResponse(200, {"ok": 1}), _FakeResponse(200, {"ok": 2})]
+        ):
+            client.get_json("http://x/a")
+            client.get_json("http://x/b")
+        self.assertEqual(sleeps, [])
+
+
+class HttpClientBackoffTests(unittest.TestCase):
+    """WR-03: bounded retry-with-backoff on 503/429, honoring Retry-After."""
+
+    def test_503_then_200_retries_and_succeeds(self):
+        sleeps = []
+        client = HttpClient(delay=0, max_retries=3, sleep=lambda s: sleeps.append(s))
+        with _install_fake_requests(
+            [
+                _FakeResponse(503, headers={}),       # over-rate -> backoff
+                _FakeResponse(200, {"ok": "after retry"}),
+            ]
+        ):
+            status, body = client.get_json("http://mb/artist")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"ok": "after retry"})
+        self.assertEqual(len(sleeps), 1)
+        self.assertGreater(sleeps[0], 0)
+
+    def test_honors_retry_after_header(self):
+        sleeps = []
+        client = HttpClient(delay=0, max_retries=3, sleep=lambda s: sleeps.append(s))
+        with _install_fake_requests(
+            [
+                _FakeResponse(429, headers={"Retry-After": "7"}),
+                _FakeResponse(200, {"ok": 1}),
+            ]
+        ):
+            client.get_json("http://wd/api")
+        self.assertEqual(sleeps, [7.0])
+
+    def test_repeated_503_gives_up_and_raises(self):
+        sleeps = []
+        client = HttpClient(delay=0, max_retries=2, sleep=lambda s: sleeps.append(s))
+        with _install_fake_requests(
+            [
+                _FakeResponse(503),
+                _FakeResponse(503),
+                _FakeResponse(503),  # final attempt also 503 -> raise_for_status
+            ]
+        ) as fake:
+            with self.assertRaises(fake.exceptions.HTTPError):
+                client.get_json("http://mb/artist")
+        # max_retries=2 -> two backoff sleeps, then the 3rd response raises.
+        self.assertEqual(len(sleeps), 2)
+
+    def test_repeated_503_leaves_artist_unknown_not_blocking_batch(self):
+        # End-to-end via enrich(): a persistently-throttled artist's error is
+        # caught by the per-artist except, the row stays 'unknown', and the batch
+        # commits (never blocked).
+        gender_enricher.time.sleep = lambda *_a, **_k: None
+        try:
+            db = FakeDB([{"id": 1, "name": "Throttled"}])
+            conn = FakeConn(db)
+
+            class _RaisingHttp:
+                def __init__(self):
+                    self.calls = 0
+
+                def get_json(self, url, params=None, headers=None, timeout=20):
+                    self.calls += 1
+                    raise RuntimeError("503 Service Unavailable (gave up)")
+
+            report = enrich(conn, http=_RaisingHttp(), delay=0)
+            self.assertEqual(db.by_id(1)["gender"], "unknown")
+            self.assertEqual(report["errors"], 1)
+            self.assertTrue(conn.committed)
+            self.assertFalse(conn.rolled_back)
+        finally:
+            gender_enricher.time.sleep = lambda *_a, **_k: None
+
+
+class RetryAfterParseTests(unittest.TestCase):
+    def test_integer_seconds(self):
+        self.assertEqual(_retry_after_seconds({"Retry-After": "5"}), 5.0)
+
+    def test_missing_header_is_none(self):
+        self.assertIsNone(_retry_after_seconds({}))
+
+    def test_http_date_form_is_none(self):
+        # Non-numeric (HTTP-date) form -> None (fall back to exponential backoff).
+        self.assertIsNone(
+            _retry_after_seconds({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"})
+        )
+
+    def test_negative_is_none(self):
+        self.assertIsNone(_retry_after_seconds({"Retry-After": "-1"}))
 
 
 # ============================================================================
