@@ -1,12 +1,16 @@
 "use client";
 
-import { useRef } from "react";
+import { useMemo, useRef } from "react";
 
-import type { ChartType } from "@/lib/charts";
+import type { ChartRegistryRow, ChartType } from "@/lib/charts";
+import { FAMILY_ORDER, type ChartFamily } from "@/lib/chart-families";
 
 interface ChartControlsProps {
   availableDates: string[];
+  charts: ChartRegistryRow[];
   chartType: ChartType;
+  /** Resolved active-chart title for the Latest Charts attribution line. */
+  chartTitle: string;
   entryCount: number;
   isPending: boolean;
   latestDate: string;
@@ -16,6 +20,30 @@ interface ChartControlsProps {
   onChartTypeChange: (chartType: ChartType) => void;
   onDateChange: (date: string) => void;
   onDateSearch: (value: string) => void;
+}
+
+/** Human-facing label for each family row tab. */
+const FAMILY_LABEL: Record<ChartFamily, string> = {
+  Core: "Hot 100 / Billboard 200",
+  Artist: "Artist 100",
+  Country: "Country",
+  Latin: "Latin",
+  "R&B/Hip-Hop": "R&B/Hip-Hop",
+  Rock: "Rock",
+};
+
+/**
+ * Abbreviated, space-constrained chart labels for the Row-2 segmented control.
+ * The full registry title is always supplied as the button's accessible name, so
+ * the abbreviation never costs AT users the real chart name.
+ */
+const CHART_ABBREV: Record<string, string> = {
+  "hot-100": "HOT 100",
+  "billboard-200": "B200",
+};
+
+function chartLabel(row: ChartRegistryRow): string {
+  return CHART_ABBREV[row.slug] ?? (row.title ?? row.slug);
 }
 
 function formatChartDate(value: string): string {
@@ -33,7 +61,9 @@ function formatChartDate(value: string): string {
 
 export function ChartControls({
   availableDates,
+  charts,
   chartType,
+  chartTitle,
   entryCount,
   isPending,
   latestDate,
@@ -46,30 +76,78 @@ export function ChartControls({
 }: ChartControlsProps) {
   const dateInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Group the registry list into families in the shared FAMILY_ORDER so the
+  // family row and the chart row render in a stable, predictable sequence.
+  const familyGroups = useMemo(() => {
+    const byFamily = new Map<ChartFamily, ChartRegistryRow[]>();
+    for (const row of charts) {
+      const bucket = byFamily.get(row.family);
+      if (bucket) {
+        bucket.push(row);
+      } else {
+        byFamily.set(row.family, [row]);
+      }
+    }
+    for (const bucket of byFamily.values()) {
+      bucket.sort((a, b) => a.sort_order - b.sort_order);
+    }
+    return FAMILY_ORDER.filter((family) => byFamily.has(family)).map((family) => ({
+      family,
+      label: FAMILY_LABEL[family],
+      charts: byFamily.get(family) ?? [],
+    }));
+  }, [charts]);
+
+  // Determine the active family from the currently-selected chart slug.
+  const activeFamily = useMemo<ChartFamily | null>(() => {
+    const match = charts.find((row) => row.slug === chartType);
+    return match?.family ?? familyGroups[0]?.family ?? null;
+  }, [charts, chartType, familyGroups]);
+
+  // Row 2 only renders when the active family has more than one chart.
+  const activeFamilyCharts = useMemo<ChartRegistryRow[]>(() => {
+    const group = familyGroups.find((g) => g.family === activeFamily);
+    return group?.charts ?? [];
+  }, [familyGroups, activeFamily]);
+
+  const handleFamilySelect = (family: ChartFamily) => {
+    if (family === activeFamily) {
+      return;
+    }
+    const group = familyGroups.find((g) => g.family === family);
+    const firstChart = group?.charts[0];
+    if (firstChart) {
+      onChartTypeChange(firstChart.slug);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-3 border-b border-black/10 pb-3">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="inline-flex overflow-hidden rounded border border-black/10 bg-[#F5F5F5]">
-          {([
-            { value: "hot-100", label: "HOT 100" },
-            { value: "billboard-200", label: "B200" },
-          ] as const).map((option) => {
-            const active = option.value === chartType;
+        {/* Row 1 — genre-family tabs */}
+        <div
+          role="group"
+          aria-label="Chart family"
+          className="inline-flex max-w-full overflow-x-auto overflow-y-hidden rounded border border-black/10 bg-[#F5F5F5]"
+        >
+          {familyGroups.map((group) => {
+            const active = group.family === activeFamily;
 
             return (
               <button
-                key={option.value}
+                key={group.family}
                 type="button"
-                onClick={() => onChartTypeChange(option.value)}
+                onClick={() => handleFamilySelect(group.family)}
                 aria-pressed={active}
+                aria-label={group.label}
                 className={[
-                  "min-w-[78px] border-r border-black/10 px-3 py-1.5 text-[11px] font-[600] tracking-[0.08em] transition-colors last:border-r-0",
+                  "whitespace-nowrap border-r border-black/10 px-3 py-1.5 text-[11px] font-[600] tracking-[0.08em] transition-colors last:border-r-0",
                   active
                     ? "bg-[#C8102E] text-white"
                     : "bg-transparent text-[#0A0A0A] hover:bg-white",
                 ].join(" ")}
               >
-                {option.label}
+                {group.label}
               </button>
             );
           })}
@@ -79,6 +157,37 @@ export function ChartControls({
           {isPending ? "Loading..." : `${entryCount} entries`}
         </div>
       </div>
+
+      {/* Row 2 — specific-chart selector (only when the active family has >1 chart) */}
+      {activeFamilyCharts.length > 1 ? (
+        <div
+          role="group"
+          aria-label="Chart"
+          className="inline-flex w-fit max-w-full flex-wrap overflow-hidden rounded border border-black/10 bg-[#F5F5F5]"
+        >
+          {activeFamilyCharts.map((row) => {
+            const active = row.slug === chartType;
+
+            return (
+              <button
+                key={row.slug}
+                type="button"
+                onClick={() => onChartTypeChange(row.slug)}
+                aria-pressed={active}
+                aria-label={row.title ?? row.slug}
+                className={[
+                  "min-w-[72px] border-r border-black/10 px-3 py-1.5 text-[11px] font-[600] tracking-[0.08em] transition-colors last:border-r-0",
+                  active
+                    ? "bg-[#C8102E] text-white"
+                    : "bg-transparent text-[#0A0A0A] hover:bg-white",
+                ].join(" ")}
+              >
+                {chartLabel(row)}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-end gap-2">
         <button
@@ -131,8 +240,8 @@ export function ChartControls({
       </div>
 
       <div className="text-[11px] leading-[1.45] text-[#888888]">
-        Viewing {formatChartDate(selectedDate)}. Type an exact chart date or a year, then press Go. Latest
-        available week: {formatChartDate(latestDate)}.
+        Viewing {chartTitle} · {formatChartDate(selectedDate)}. Type an exact chart date or a year,
+        then press Go. Latest available week: {formatChartDate(latestDate)}.
       </div>
 
     </div>
