@@ -955,6 +955,117 @@ class EtlEnrichmentStageTests(unittest.TestCase):
 
 
 # ============================================================================
+# WR-04: ambiguous near-tie on differing type -> stay 'unknown' (no guessing)
+# ============================================================================
+# Two high-scoring candidates within the tie margin that DISAGREE on type
+# (Group vs Person) — must be treated as ambiguous.
+MB_SEARCH_AMBIGUOUS = {
+    "count": 2,
+    "artists": [
+        {
+            "id": "aaaaaaaa-0000-0000-0000-000000000001",
+            "name": "Ambiguous",
+            "type": "Group",
+            "score": 100,
+        },
+        {
+            "id": "bbbbbbbb-0000-0000-0000-000000000002",
+            "name": "Ambiguous",
+            "type": "Person",
+            "score": 98,  # within DEFAULT_TIE_MARGIN (5) of best, different type
+        },
+    ],
+}
+# Two high-scoring candidates within the margin but SAME type -> not ambiguous;
+# the best (highest score) wins deterministically.
+MB_SEARCH_NEAR_TIE_SAME_TYPE = {
+    "count": 2,
+    "artists": [
+        {
+            "id": "cccccccc-0000-0000-0000-000000000003",
+            "name": "SameType",
+            "type": "Person",
+            "score": 100,
+        },
+        {
+            "id": "dddddddd-0000-0000-0000-000000000004",
+            "name": "SameType",
+            "type": "Person",
+            "score": 98,
+        },
+    ],
+}
+MB_LOOKUP_NEAR_TIE_BEST = {
+    "id": "cccccccc-0000-0000-0000-000000000003",
+    "name": "SameType",
+    "type": "Person",
+    "gender": "Male",
+}
+
+
+class TieBreakTests(unittest.TestCase):
+    """WR-04: deterministic tie-break / ambiguity guard on MB search candidates."""
+
+    def setUp(self):
+        self._orig_sleep = gender_enricher.time.sleep
+        gender_enricher.time.sleep = lambda *_a, **_k: None
+
+    def tearDown(self):
+        gender_enricher.time.sleep = self._orig_sleep
+
+    def test_ambiguous_near_tie_different_type_stays_unknown(self):
+        # Best (Group, 100) and runner-up (Person, 98) are within the tie margin
+        # and disagree on type -> ambiguous -> no MB match, no lookup attempted,
+        # row stays 'unknown'. A Wikidata route proves we DO try Wikidata on a
+        # genuine no-match (here it returns nothing usable).
+        db = FakeDB([{"id": 1, "name": "Ambiguous"}])
+        conn = FakeConn(db)
+        http = FakeHttpClient(
+            [
+                _route_search_returns("Ambiguous", (200, MB_SEARCH_AMBIGUOUS)),
+                # No MB lookup route: a lookup attempt would raise "unrouted call".
+                (_wd_action("wbsearchentities"), (200, {"search": []})),
+            ]
+        )
+        report = enrich(conn, http=http, delay=0)
+        self.assertEqual(db.by_id(1)["gender"], "unknown")
+        self.assertEqual(report["errors"], 0)
+        # No MB lookup call was made (ambiguity short-circuited before lookup).
+        self.assertFalse(
+            any(url.endswith(MB_SEARCH_AMBIGUOUS["artists"][0]["id"])
+                for url, _ in http.calls)
+        )
+
+    def test_near_tie_same_type_resolves_to_best(self):
+        # Same scores within margin but SAME type -> NOT ambiguous; the highest
+        # score (deterministic) is chosen and resolved normally.
+        db = FakeDB([{"id": 1, "name": "SameType"}])
+        conn = FakeConn(db)
+        http = FakeHttpClient(
+            [
+                _route_search_returns("SameType", (200, MB_SEARCH_NEAR_TIE_SAME_TYPE)),
+                _route_lookup(MB_LOOKUP_NEAR_TIE_BEST["id"], (200, MB_LOOKUP_NEAR_TIE_BEST)),
+            ]
+        )
+        enrich(conn, http=http, delay=0)
+        self.assertEqual(db.by_id(1)["gender"], "male")
+        self.assertEqual(db.by_id(1)["gender_source_id"], MB_LOOKUP_NEAR_TIE_BEST["id"])
+
+    def test_clear_winner_above_margin_is_not_ambiguous(self):
+        # The Beyoncé fixture has a runner-up far below the margin -> clear winner.
+        db = FakeDB([{"id": 1, "name": "Beyoncé"}])
+        conn = FakeConn(db)
+        http = FakeHttpClient(
+            [
+                _route_search_returns("Beyoncé", (200, MB_SEARCH_BEYONCE)),
+                _route_lookup(MB_LOOKUP_BEYONCE["id"], (200, MB_LOOKUP_BEYONCE)),
+            ]
+        )
+        enrich(conn, http=http, delay=0)
+        self.assertEqual(db.by_id(1)["gender"], "female")
+
+
+# ============================================================================
 # Import hygiene: no top-level psycopg2 / requests
 # ============================================================================
 class EnricherPostgresFreeTests(unittest.TestCase):

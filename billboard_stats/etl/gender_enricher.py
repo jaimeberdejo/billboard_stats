@@ -63,6 +63,11 @@ WD_API = "https://www.wikidata.org/w/api.php"
 # candidate is treated as no-match (do not guess; Pitfall 4 / T-12-09).
 DEFAULT_MIN_SCORE = 90
 
+# Tie-break margin (WR-04 / Pitfall 4): if a second candidate is within this many
+# points of the best AND disagrees on artist `type`, the match is ambiguous and we
+# refuse to guess (return no-match -> stay 'unknown').
+DEFAULT_TIE_MARGIN = 5
+
 # Wikidata Q-ids used by the mapping (VERIFIED against Property:P21 / class ids).
 WD_HUMAN = "Q5"
 WD_MALE = "Q6581097"
@@ -187,6 +192,7 @@ class _MBMatchedUnmappable(Exception):
 def mb_resolve(
     http, name: str, *, contact: Optional[str] = None,
     min_score: int = DEFAULT_MIN_SCORE, limit: int = 5,
+    tie_margin: int = DEFAULT_TIE_MARGIN,
 ) -> Optional[Tuple[str, str]]:
     """Resolve a name via MusicBrainz search -> lookup.
 
@@ -194,6 +200,10 @@ def mb_resolve(
     is NO confident match (the caller then tries Wikidata); and raises
     :class:`_MBMatchedUnmappable` when MB confidently matched but the gender has no
     5-value bucket (WR-01: terminal -> stay 'unknown', do NOT fall through).
+
+    Ambiguity guard (WR-04 / Pitfall 4): if a second candidate is within
+    ``tie_margin`` points of the best AND disagrees on artist ``type``, the match
+    is treated as ambiguous and ``None`` is returned (do not guess).
 
     The Lucene name is passed via ``params`` (urllib-encoded by the client), never
     string-concatenated into the query; ``fmt=json`` is always set. Defensive
@@ -211,9 +221,33 @@ def mb_resolve(
     cands = [c for c in cands if isinstance(c, dict)]
     if not cands:
         return None
-    best = max(cands, key=lambda a: _as_int(a.get("score")))
+    # Deterministic ordering: highest score first, then MBID as a stable tie-break
+    # so the selection is reproducible across runs (WR-04).
+    cands.sort(key=lambda a: (_as_int(a.get("score")), str(a.get("id") or "")),
+               reverse=True)
+    best = cands[0]
     if _as_int(best.get("score")) < min_score:
         return None  # low confidence -> stay unknown
+    # WR-04: an ambiguous near-tie on a DIFFERENT type -> refuse to guess.
+    if len(cands) > 1:
+        runner_up = cands[1]
+        best_score = _as_int(best.get("score"))
+        ru_score = _as_int(runner_up.get("score"))
+        best_type = (best.get("type") or "").strip().lower()
+        ru_type = (runner_up.get("type") or "").strip().lower()
+        if (
+            ru_score >= min_score
+            and (best_score - ru_score) <= tie_margin
+            and best_type != ru_type
+        ):
+            logger.warning(
+                "Ambiguous MB match for %r: %r(score=%d,type=%r) vs "
+                "%r(score=%d,type=%r) within tie_margin=%d and differing type; "
+                "leaving 'unknown'.",
+                name, best.get("id"), best_score, best_type,
+                runner_up.get("id"), ru_score, ru_type, tie_margin,
+            )
+            return None
     mbid = best.get("id")
     if not isinstance(mbid, str) or not mbid:
         return None
