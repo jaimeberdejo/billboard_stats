@@ -35,11 +35,13 @@ interface RecordsEntityShape {
 }
 
 /**
- * Resolve the records entity shape from a chart's entity_kind. Artist-entity
- * charts (Artist 100) have no song/album-keyed stats rollup in the v1.0 records
- * subsystem, so they map onto the song shape defensively (the api/records layer
- * gates which charts reach here); the entity-kind switch never hardcodes a
- * chart slug.
+ * Resolve the records entity shape from a chart's entity_kind. The records
+ * subsystem is keyed on song- and album-entity charts only; artist-entity
+ * charts (Artist 100) have NO song/album-keyed rollup, so this throws rather
+ * than silently mapping an artist chart onto the song shape (CR-01 — the
+ * api/records two-chart gate that previously made the song fallback safe was
+ * removed in 27bd0030). Callers guard artist-entity charts before reaching the
+ * record SQL (see getPresetRecords / getCustomRecords).
  */
 function recordsEntityShape(entityKind: ChartRow["entity_kind"]): RecordsEntityShape {
   if (entityKind === "album") {
@@ -51,7 +53,12 @@ function recordsEntityShape(entityKind: ChartRow["entity_kind"]): RecordsEntityS
       artistLinkIdCol: "album_id",
     };
   }
-  // song (and defensive default for artist) entity charts.
+  if (entityKind === "artist") {
+    throw new Error(
+      "Records are not available for artist-entity charts (no song/album rollup).",
+    );
+  }
+  // song-entity charts.
   return {
     itemTable: "songs",
     statsTable: "song_stats",
@@ -60,6 +67,18 @@ function recordsEntityShape(entityKind: ChartRow["entity_kind"]): RecordsEntityS
     artistLinkIdCol: "song_id",
   };
 }
+
+/**
+ * The records subsystem (song_stats / album_stats / chart_entries entity joins)
+ * only covers song- and album-entity charts. Artist-entity charts (Artist 100)
+ * have no song/album-keyed records, so every records mode is unsupported there.
+ */
+function isUnsupportedEntityKindChart(entityKind: ChartRow["entity_kind"]): boolean {
+  return entityKind === "artist";
+}
+
+const UNSUPPORTED_ENTITY_KIND_MESSAGE =
+  "Records are not available for this chart.";
 
 /**
  * Resolve a chart slug to its registry row for the records builders. Throws on
@@ -83,6 +102,48 @@ export type RecordPreset =
   | "most-entries-by-artist"
   | "most-total-chart-weeks-by-artist"
   | "most-simultaneous-entries";
+
+/**
+ * The two core charts the legacy pre-computed stats tables (song_stats /
+ * album_stats / artist_stats) were built for. These tables have NO chart_id
+ * discrimination, so a preset that reads them returns Hot 100 / Billboard 200
+ * data regardless of the requested slug. Until Phase 15 generalizes the rollup
+ * onto chart-keyed stats, the legacy-stats-backed presets are scoped to these
+ * two charts; the chart_id-aware (chart_entries via validWeeksCte) presets
+ * accept any active slug.
+ */
+const LEGACY_CORE_CHART_SLUGS = new Set<ChartType>(["hot-100", "billboard-200"]);
+
+/**
+ * Presets whose SQL still reads the legacy entity/artist stats tables with no
+ * chart_id predicate. `most-top-10-weeks` and `most-simultaneous-entries` are
+ * deliberately EXCLUDED: they read chart_entries keyed by chart_id through the
+ * shared validWeeksCte, so they are correct for any active chart slug.
+ */
+const LEGACY_STATS_PRESETS = new Set<RecordPreset>([
+  "most-weeks-at-number-one",
+  "longest-chart-runs",
+  "most-number-one-songs-by-artist",
+  "most-number-one-albums-by-artist",
+  "most-entries-by-artist",
+  "most-total-chart-weeks-by-artist",
+]);
+
+/**
+ * A legacy-stats-backed preset on a non-core chart would silently return
+ * Hot 100 / Billboard 200 data under the wrong attribution (commit 27bd0030
+ * removed the api/records two-chart gate). Scope ONLY those presets to the core
+ * charts — the chart_id-aware presets are unaffected so the cutover stands.
+ */
+function isUnsupportedLegacyStatsRequest(
+  record: RecordPreset,
+  chart: ChartType,
+): boolean {
+  return LEGACY_STATS_PRESETS.has(record) && !LEGACY_CORE_CHART_SLUGS.has(chart);
+}
+
+const LEGACY_STATS_UNSUPPORTED_MESSAGE =
+  "This record is currently only available for the Hot 100 and Billboard 200.";
 
 export type CustomRankBy =
   | "weeks-at-number-one"
@@ -314,7 +375,14 @@ export async function getPresetRecords(
   const entityKind = chartRow.entity_kind;
   const isSongChart = entityKind === "song";
 
-  const unsupportedMessage = getUnsupportedMessage(record, entityKind);
+  // Artist-entity charts have no song/album records rollup (CR-01); and the
+  // legacy-stats-backed presets are scoped to the two core charts because their
+  // SQL reads song_stats/album_stats/artist_stats with no chart_id predicate.
+  const unsupportedMessage = isUnsupportedEntityKindChart(entityKind)
+    ? UNSUPPORTED_ENTITY_KIND_MESSAGE
+    : isUnsupportedLegacyStatsRequest(record, chart)
+      ? LEGACY_STATS_UNSUPPORTED_MESSAGE
+      : getUnsupportedMessage(record, entityKind);
   if (unsupportedMessage) {
     return {
       mode: "preset",
@@ -549,7 +617,44 @@ export async function getCustomRecords(
   const chartRow = await resolveRecordsChart(chart);
   const entityKind = chartRow.entity_kind;
   const isSongChart = entityKind === "song";
+
+  // Artist-entity charts (Artist 100) have no song/album records rollup (CR-01).
+  // recordsEntityShape would throw for them; return an empty payload instead of
+  // serving song data under the wrong attribution.
+  if (isUnsupportedEntityKindChart(entityKind)) {
+    return {
+      mode: "custom",
+      entity,
+      chart,
+      valueLabel: "Value",
+      rows: [],
+    };
+  }
+
   const shape = recordsEntityShape(entityKind);
+
+  // Some custom arms read the legacy per-entity stats tables (song_stats /
+  // album_stats) with no chart_id predicate (CR-01): the artists arm without a
+  // year filter, and the song/album total-weeks / weeks-at-#1 arms without a
+  // year filter. On a non-core chart those would return mislabeled Hot 100 /
+  // B200 stats, so scope them to the core charts. Year-filtered arms and the
+  // rank-window arms read chart_entries keyed by chart_id and stay open to any
+  // active chart slug.
+  const hasYearFilter = startYear != null || endYear != null;
+  const usesLegacyStats =
+    !hasYearFilter &&
+    (entity === "artists" ||
+      rankBy === "total-weeks" ||
+      rankBy === "weeks-at-number-one");
+  if (usesLegacyStats && !LEGACY_CORE_CHART_SLUGS.has(chart)) {
+    return {
+      mode: "custom",
+      entity,
+      chart,
+      valueLabel: "Value",
+      rows: [],
+    };
+  }
   // Polymorphic chart_entries read keyed by chart_id ($1), filtered through the
   // shared validWeeksCte (also bound to $1). The legacy hot100_entries /
   // b200_entries tables and the isHot100 boolean switch are gone — entity tables
@@ -563,7 +668,6 @@ export async function getCustomRecords(
   const validWeeksCteBody = validWeeksCte("valid_weeks", "$1");
   const validWeeksTable = "valid_weeks";
   const orderDir = sortDir === "asc" ? "ASC" : "DESC";
-  const hasYearFilter = startYear != null || endYear != null;
   const artistLinkTable = shape.artistLinkTable;
   const artistLinkIdCol = shape.artistLinkIdCol;
 
@@ -965,7 +1069,14 @@ export async function getArtistRecordDrilldown(
   const chartRow = await resolveRecordsChart(chart);
   const entityKind = chartRow.entity_kind;
   const isSongChart = entityKind === "song";
-  const unsupportedMessage = getUnsupportedMessage(record, entityKind);
+  // Same scoping as getPresetRecords (CR-01): artist-entity charts have no
+  // song/album rollup; legacy-stats drilldowns read song_stats/album_stats with
+  // no chart_id filter, so they are core-chart only.
+  const unsupportedMessage = isUnsupportedEntityKindChart(entityKind)
+    ? UNSUPPORTED_ENTITY_KIND_MESSAGE
+    : isUnsupportedLegacyStatsRequest(record, chart)
+      ? LEGACY_STATS_UNSUPPORTED_MESSAGE
+      : getUnsupportedMessage(record, entityKind);
   const artistName = await getArtistName(artistId);
   if (unsupportedMessage) {
     return {
