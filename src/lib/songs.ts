@@ -1,6 +1,6 @@
 import { getSql } from "@/lib/db";
 import { validWeeksForCharts } from "@/lib/valid-weeks";
-import { genreFamily, type ChartFamily } from "@/lib/chart-families";
+import { chartDepth, genreFamily, type ChartFamily } from "@/lib/chart-families";
 
 export interface DetailArtistLink {
   id: number;
@@ -72,8 +72,9 @@ function toIsoDate(value: unknown): string | null {
  * into per-chart ChartRunGroup[]. Mirrors the Map-keyed grouping idiom in
  * records.ts (mapSimultaneousWeeks). Preserves first-seen chart order so the
  * incoming charts.sort_order ASC ordering carries through to the rendered
- * sequence. `depth` = max rank seen on the chart (a safe per-chart y-axis bound
- * derived from real data, never a hardcoded 100/200).
+ * sequence. `depth` = the chart's registry depth (chartDepth(slug)) so the
+ * y-axis spans the full chart (e.g. 1-100), not just the max rank the entity
+ * reached — runs across charts stay visually comparable (WR-02).
  */
 function groupRunsByChart(rows: Record<string, unknown>[]): ChartRunGroup[] {
   const grouped = new Map<number, ChartRunGroup>();
@@ -97,16 +98,13 @@ function groupRunsByChart(rows: Record<string, unknown>[]): ChartRunGroup[] {
         chartTitle:
           (row.chart_title as string | null) ?? slug,
         family: genreFamily(slug, (row.chart_category as string | null) ?? null),
-        depth: point.rank,
+        depth: chartDepth(slug),
         points: [point],
       });
       continue;
     }
 
     existing.points.push(point);
-    if (point.rank > existing.depth) {
-      existing.depth = point.rank;
-    }
   }
 
   return [...grouped.values()];

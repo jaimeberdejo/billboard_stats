@@ -1,6 +1,6 @@
 import { getSql } from "@/lib/db";
 import { validWeeksForCharts } from "@/lib/valid-weeks";
-import { genreFamily } from "@/lib/chart-families";
+import { chartDepth, genreFamily } from "@/lib/chart-families";
 import type {
   ChartRunGroup,
   DetailArtistLink,
@@ -70,16 +70,13 @@ function groupRunsByChart(rows: Record<string, unknown>[]): ChartRunGroup[] {
         chartSlug: slug,
         chartTitle: (row.chart_title as string | null) ?? slug,
         family: genreFamily(slug, (row.chart_category as string | null) ?? null),
-        depth: point.rank,
+        depth: chartDepth(slug),
         points: [point],
       });
       continue;
     }
 
     existing.points.push(point);
-    if (point.rank > existing.depth) {
-      existing.depth = point.rank;
-    }
   }
 
   return [...grouped.values()];
