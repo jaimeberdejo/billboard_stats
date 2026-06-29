@@ -80,57 +80,34 @@ CREATE TABLE album_artists (
     PRIMARY KEY (album_id, artist_id)
 );
 
--- Each weekly chart publication
+-- Each weekly chart publication. As of Phase 15 the v1.0 per-publication type
+-- column + its CHECK and the bifurcated date/type UNIQUE are RETIRED; a week's
+-- chart identity is carried solely by the chart_id FK (NOT NULL since Phase 15)
+-- and deduped on the full UNIQUE(chart_id, chart_date). The chart_id FK is added
+-- by the Phase 9 block below (and promoted to NOT NULL + given the full UNIQUE
+-- by the Phase 15 block at the end of this file), so a FRESH install and a
+-- migrated install converge to the same final shape.
 CREATE TABLE chart_weeks (
     id          SERIAL PRIMARY KEY,
-    chart_date  DATE NOT NULL,
-    chart_type  VARCHAR(20) NOT NULL CHECK (chart_type IN ('hot-100', 'billboard-200')),
-    UNIQUE(chart_date, chart_type)
-);
-
--- Weekly Hot 100 position entries
-CREATE TABLE hot100_entries (
-    id              SERIAL PRIMARY KEY,
-    chart_week_id   INT NOT NULL REFERENCES chart_weeks(id),
-    song_id         INT NOT NULL REFERENCES songs(id),
-    rank            SMALLINT NOT NULL,
-    peak_pos        SMALLINT,
-    last_pos        SMALLINT,
-    weeks_on_chart  SMALLINT,
-    is_new          BOOLEAN NOT NULL DEFAULT FALSE,
-    UNIQUE(chart_week_id, rank)
-);
-
--- Weekly Billboard 200 position entries
-CREATE TABLE b200_entries (
-    id              SERIAL PRIMARY KEY,
-    chart_week_id   INT NOT NULL REFERENCES chart_weeks(id),
-    album_id        INT NOT NULL REFERENCES albums(id),
-    rank            SMALLINT NOT NULL,
-    peak_pos        SMALLINT,
-    last_pos        SMALLINT,
-    weeks_on_chart  SMALLINT,
-    is_new          BOOLEAN NOT NULL DEFAULT FALSE,
-    UNIQUE(chart_week_id, rank)
+    chart_date  DATE NOT NULL
 );
 
 -- ============================================================
 -- Multi-Chart Generalization (Phase 9, additive)
 -- ============================================================
--- These objects generalize the bifurcated hot100_entries/b200_entries model
--- into a chart registry + a single polymorphic chart_entries table + a
--- per-chart artist rollup. They are STRICTLY ADDITIVE: every v1.0 table,
--- column, and constraint above (hot100_entries, b200_entries,
--- chart_weeks.chart_type + its CHECK, artist_stats, song_stats, album_stats)
--- is kept verbatim so the unchanged v1.0 frontend keeps working. All new
--- statements use IF NOT EXISTS so a fresh install and an existing install
+-- These objects generalize the (now-retired) bifurcated per-chart entry model
+-- into a chart registry + a single polymorphic chart_entries table + a per-chart
+-- artist rollup. chart_entries is now the SOLE entry store.
+-- The v1.0 stats tables (artist_stats, song_stats, album_stats) are kept. All
+-- new statements use IF NOT EXISTS so a fresh install and an existing install
 -- converge to the same shape and re-application is a no-op. Seeding of the
 -- charts registry and backfill of chart_entries / artist_chart_stats happen
--- in the Phase 9 migration (Plan 02), not here. The chart_weeks.chart_id FK
--- stays NULLABLE until Phase 15.
+-- in the Phase 9 migration (Plan 02), not here. The chart_weeks.chart_id FK is
+-- added here and promoted to NOT NULL + given the full UNIQUE(chart_id,
+-- chart_date) by the Phase 15 block at the end of this file.
 
--- Registry of every chart we ingest (DATA-01). Generalizes the
--- chart_weeks.chart_type CHECK into an open, self-describing table.
+-- Registry of every chart we ingest (DATA-01). Generalizes the retired v1.0
+-- per-publication type CHECK into an open, self-describing table.
 CREATE TABLE IF NOT EXISTS charts (
     id          SERIAL PRIMARY KEY,
     slug        VARCHAR(64) NOT NULL UNIQUE,    -- billboard.py slug, e.g. 'hot-100'
@@ -142,24 +119,11 @@ CREATE TABLE IF NOT EXISTS charts (
     sort_order  SMALLINT NOT NULL DEFAULT 100
 );
 
--- Wire chart_weeks to the registry. NULLABLE FK (additive); backfilled in
--- Plan 02 from the existing chart_type. The chart_type column + its CHECK are
--- KEPT (do NOT drop/narrow — Phase 15 retires them). Do NOT add NOT NULL here.
+-- Wire chart_weeks to the registry. The FK is added here; the Phase 15 block at
+-- the end of this file promotes it to NOT NULL and adds the full
+-- UNIQUE(chart_id, chart_date) week-dedup key (every week now carries a chart
+-- identity; chart_entries is the sole entry store).
 ALTER TABLE chart_weeks ADD COLUMN IF NOT EXISTS chart_id INT REFERENCES charts(id);
-
--- New-chart week idempotency (CR-01, additive). The legacy charts dedup a week
--- on UNIQUE(chart_date, chart_type); NEW charts (chart_type NULL, chart_id set)
--- have no chart_type key, so without this they would INSERT a DUPLICATE
--- chart_weeks row on any re-load — and the duplicate week id lets duplicate
--- chart_entries escape the (chart_week_id, rank) idempotency. This PARTIAL
--- unique index keys new-chart weeks on (chart_id, chart_date) ONLY where
--- chart_id IS NOT NULL, giving the new-chart INSERT ... ON CONFLICT
--- (chart_id, chart_date) a conflict target. It is STRICTLY ADDITIVE: it does NOT
--- touch the legacy UNIQUE(chart_date, chart_type) and does NOT constrain the
--- legacy charts beyond what they already obey (one chart_id per (chart_date,
--- chart_type) week). Phase 15 owns any further narrowing.
-CREATE UNIQUE INDEX IF NOT EXISTS uq_chart_weeks_chart_id_date
-    ON chart_weeks(chart_id, chart_date) WHERE chart_id IS NOT NULL;
 
 -- Unified, polymorphic weekly entries (DATA-02). One table for all charts;
 -- exactly one of song_id / album_id / artist_id is set per row, enforced by the
@@ -167,7 +131,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_chart_weeks_chart_id_date
 -- 100 (entity_kind='artist') drops in for free in Phase 11 with no schema
 -- change. Mirrors the v1.0 per-entry columns (rank, peak_pos, last_pos,
 -- weeks_on_chart, is_new) and the UNIQUE(chart_week_id, rank) idempotency
--- constraint from hot100_entries/b200_entries.
+-- constraint carried over from the retired v1.0 per-chart entry tables.
 CREATE TABLE IF NOT EXISTS chart_entries (
     id              BIGSERIAL PRIMARY KEY,
     chart_id        INT NOT NULL REFERENCES charts(id),
@@ -251,12 +215,6 @@ CREATE TABLE artist_stats (
 -- Indexes
 -- ============================================================
 
--- Fast lookups for chart runs
-CREATE INDEX idx_hot100_song_id ON hot100_entries(song_id);
-CREATE INDEX idx_hot100_chart_week ON hot100_entries(chart_week_id);
-CREATE INDEX idx_b200_album_id ON b200_entries(album_id);
-CREATE INDEX idx_b200_chart_week ON b200_entries(chart_week_id);
-
 -- Multi-chart entry indexes (Phase 9): mirror the per-entry indexes above for
 -- the polymorphic chart_entries table — by week, by chart, and a partial index
 -- per entity FK so each lookup matches the v1.0 access pattern.
@@ -271,7 +229,6 @@ CREATE INDEX IF NOT EXISTS idx_acs_chart ON artist_chart_stats(chart_id);
 
 -- Fast lookups by date
 CREATE INDEX idx_chart_weeks_date ON chart_weeks(chart_date);
-CREATE INDEX idx_chart_weeks_type_date ON chart_weeks(chart_type, chart_date);
 
 -- Fast lookups by artist_id on join tables
 CREATE INDEX IF NOT EXISTS idx_song_artists_artist ON song_artists(artist_id);
@@ -283,3 +240,20 @@ CREATE INDEX idx_artists_name_trgm ON artists USING gin (name gin_trgm_ops);
 -- Song/album title search (trigram)
 CREATE INDEX idx_songs_title_trgm ON songs USING gin (title gin_trgm_ops);
 CREATE INDEX idx_albums_title_trgm ON albums USING gin (title gin_trgm_ops);
+
+-- ============================================================
+-- Phase 15: Retire v1.0 legacy tables — final chart_weeks shape
+-- ============================================================
+-- These two ADDITIVE statements bring chart_weeks to its final post-retirement
+-- shape so a FRESH install converges to the same shape a migrated install
+-- reaches: chart_id is promoted to NOT NULL and given the full
+-- UNIQUE(chart_id, chart_date) week-dedup key (the sole entry-week conflict
+-- target now that chart_entries is the sole entry store). These are the
+-- INVARIANT-adding statements db/migrations/003_retire_legacy.sql applies BEFORE
+-- its drops; they are byte-for-byte consistent (after whitespace normalization)
+-- with that file AND migrate_retire_legacy._DDL_STATEMENTS, and a test enforces
+-- that lockstep (W-3). The migration's DROP COLUMN/INDEX/TABLE statements are
+-- NOT replayed here: on a fresh install the legacy objects were never created
+-- above, so this file simply omits them and converges to the same end state.
+ALTER TABLE chart_weeks ALTER COLUMN chart_id SET NOT NULL;
+DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chart_weeks_chart_id_date_key') THEN ALTER TABLE chart_weeks ADD CONSTRAINT chart_weeks_chart_id_date_key UNIQUE (chart_id, chart_date); END IF; END $$;
