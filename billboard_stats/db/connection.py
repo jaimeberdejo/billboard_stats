@@ -77,6 +77,22 @@ def execute_query(query: str, params=None, fetch: bool = True):
         put_conn(conn)
 
 
+def resolve_chart_id(slug: str) -> int:
+    """Resolve a chart slug to its registry ``chart_id`` (an int; Pitfall 1).
+
+    The single shared slug->id resolver for the read-side services (M-03): the
+    parametric ``valid_weeks_cte`` binds a ``%s::int`` chart_id, NOT a slug, so
+    every query resolves its slug to an int first. Raises ``ValueError`` if the
+    slug is unknown (a missing registry row would otherwise silently produce
+    empty results). Mirrors the ETL-side ``stats_builder._resolve_chart_id`` /
+    ``loader._resolve_chart_id`` (which take an explicit conn).
+    """
+    rows = execute_query("SELECT id FROM charts WHERE slug = %s;", (slug,))
+    if not rows or rows[0]["id"] is None:
+        raise ValueError(f"No chart registered for slug {slug!r}")
+    return rows[0]["id"]
+
+
 def execute_script(sql: str):
     """Execute a multi-statement SQL script."""
     conn = get_conn()

@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from billboard_stats.db.connection import execute_query
+from billboard_stats.db.connection import execute_query, resolve_chart_id
 from billboard_stats.etl.stats_builder import valid_weeks_cte
 from billboard_stats.models.schemas import (
     Album,
@@ -65,11 +65,11 @@ def get_chart_run(album_id: int) -> List[ChartRunEntry]:
 
 
 def _b200_chart_id() -> int:
-    """Resolve the billboard-200 chart slug to its registry chart_id (Pitfall 1)."""
-    rows = execute_query("SELECT id FROM charts WHERE slug = %s;", ("billboard-200",))
-    if not rows or rows[0]["id"] is None:
-        raise ValueError("No chart registered for slug 'billboard-200'")
-    return rows[0]["id"]
+    """Resolve the billboard-200 chart slug to its registry chart_id (Pitfall 1).
+
+    Thin wrapper over the shared ``resolve_chart_id`` resolver (M-03).
+    """
+    return resolve_chart_id("billboard-200")
 
 
 def get_album_stats(album_id: int) -> Optional[AlbumStats]:

@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from billboard_stats.db.connection import execute_query
+from billboard_stats.db.connection import execute_query, resolve_chart_id
 from billboard_stats.etl.stats_builder import valid_weeks_cte
 from billboard_stats.models.schemas import (
     Album,
@@ -146,9 +146,6 @@ def get_artist_timeline(artist_id: int) -> List[ChartRunEntry]:
     return [ChartRunEntry(**r) for r in rows]
 
 
-def _chart_id(slug: str) -> int:
-    """Resolve a chart slug to its registry chart_id (an int; Pitfall 1)."""
-    rows = execute_query("SELECT id FROM charts WHERE slug = %s;", (slug,))
-    if not rows or rows[0]["id"] is None:
-        raise ValueError(f"No chart registered for slug {slug!r}")
-    return rows[0]["id"]
+# Shared slug->chart_id resolver (M-03): re-exported under the module-local name
+# the call sites already use.
+_chart_id = resolve_chart_id
