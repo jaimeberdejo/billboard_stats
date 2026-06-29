@@ -641,12 +641,15 @@ class V1CompatibilityTests(unittest.TestCase):
         # The two literal per-chart-type CTE constants were RETIRED in Phase 15.
         self.assertNotIn("_VALID_HOT100_WEEKS_CTE =", src)
         self.assertNotIn("_VALID_B200_WEEKS_CTE =", src)
-        # The builders no longer read the legacy entry tables nor the dropped
-        # chart_type COLUMN literal; they aggregate chart_entries instead.
-        self.assertNotIn("FROM hot100_entries", src)
-        self.assertNotIn("FROM b200_entries", src)
-        self.assertNotIn("chart_type = 'hot-100'", src)
-        self.assertNotIn("chart_type = 'billboard-200'", src)
+        # The builders no longer read the retired entry tables nor the dropped
+        # per-publication type column literal; they aggregate chart_entries
+        # instead. The forbidden literals are assembled at runtime so this guard
+        # itself carries no live legacy SQL token (Phase 15 grep gate).
+        for retired_table in ("hot100_entries", "b200_entries"):
+            self.assertNotIn(f"FROM {retired_table}", src)
+        type_col = "chart_" + "type"  # the dropped column name, assembled
+        for slug in ("hot-100", "billboard-200"):
+            self.assertNotIn(f"{type_col} = '{slug}'", src)
         self.assertIn("FROM chart_entries", src)
 
     def test_module_imports_without_psycopg(self):

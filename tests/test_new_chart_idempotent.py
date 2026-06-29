@@ -1,14 +1,13 @@
 """Idempotent re-run tests for the 9 new charts (Plan 11-01).
 
-Re-loading the SAME new-chart week (song / album / artist, all
-``legacy_table=None``) must add ZERO new chart_weeks and ZERO new chart_entries.
-This mirrors tests/test_loader_registry.py:497-547 and extends the idempotency
-proof across all three new-chart entity kinds.
+Re-loading the SAME chart week (song / album / artist) must add ZERO new
+chart_weeks and ZERO new chart_entries. This mirrors tests/test_loader_registry
+and extends the idempotency proof across all three entity kinds.
 
 The idempotency rests on:
-* ``_upsert_chart_week``'s new-chart branch keying on the partial unique index
-  ``uq_chart_weeks_chart_id_date (chart_id, chart_date) WHERE chart_id IS NOT
-  NULL`` — so the second load conflict-resolves to the existing week id;
+* ``_upsert_chart_week`` keying on the full unique constraint
+  ``UNIQUE(chart_id, chart_date)`` — so the second load conflict-resolves to the
+  existing week id;
 * ``chart_entries`` ON CONFLICT (chart_week_id, rank) DO NOTHING — so the
   duplicate entry rows are skipped.
 
@@ -26,21 +25,21 @@ from tests.test_loader_registry import FakeDB, _load
 def _song_record():
     return ChartRecord(
         slug="country-songs", entity_kind="song", folder="/fake/country-songs",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
 def _album_record():
     return ChartRecord(
         slug="country-albums", entity_kind="album", folder="/fake/country-albums",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
 def _artist_record():
     return ChartRecord(
         slug="artist-100", entity_kind="artist", folder="/fake/artist-100",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
@@ -73,12 +72,8 @@ class NewChartIdempotentReloadTests(unittest.TestCase):
 
         weeks = [w for w in db.chart_weeks if w["chart_id"] == 3]
         self.assertEqual(len(weeks), 1)               # no duplicate week
-        self.assertIsNone(weeks[0]["chart_type"])     # new chart -> no chart_type
         ce = [e for e in db.chart_entries if e["chart_id"] == 3]
         self.assertEqual(len(ce), len(_SONG_ENTRIES))  # zero new entries
-        # New charts never write legacy tables.
-        self.assertEqual(db.hot100_entries, [])
-        self.assertEqual(db.b200_entries, [])
 
     def test_album_chart_reload_adds_zero_weeks_and_entries(self):
         db = FakeDB(
@@ -90,11 +85,8 @@ class NewChartIdempotentReloadTests(unittest.TestCase):
 
         weeks = [w for w in db.chart_weeks if w["chart_id"] == 5]
         self.assertEqual(len(weeks), 1)
-        self.assertIsNone(weeks[0]["chart_type"])
         ce = [e for e in db.chart_entries if e["chart_id"] == 5]
         self.assertEqual(len(ce), len(_ALBUM_ENTRIES))
-        self.assertEqual(db.hot100_entries, [])
-        self.assertEqual(db.b200_entries, [])
 
     def test_artist_chart_reload_adds_zero_weeks_and_entries(self):
         db = FakeDB(
@@ -106,16 +98,12 @@ class NewChartIdempotentReloadTests(unittest.TestCase):
 
         weeks = [w for w in db.chart_weeks if w["chart_id"] == 7]
         self.assertEqual(len(weeks), 1)
-        self.assertIsNone(weeks[0]["chart_type"])
         ce = [e for e in db.chart_entries if e["chart_id"] == 7]
         self.assertEqual(len(ce), len(_ARTIST_ENTRIES))
         for e in ce:
             self.assertIsNotNone(e["artist_id"])
             self.assertIsNone(e["song_id"])
             self.assertIsNone(e["album_id"])
-        # Zero legacy rows for the artist chart.
-        self.assertEqual(db.hot100_entries, [])
-        self.assertEqual(db.b200_entries, [])
 
 
 if __name__ == "__main__":

@@ -2,22 +2,19 @@
 
 DATA-06 success criterion #3, expressed as a fixture diff with NO production DB
 and NO network. These tests drive the registry-driven ``load_chart`` over a
-FIXED fixture corpus of hot-100 + billboard-200 weeks and prove the new
-polymorphic ``chart_entries`` rows are row-count AND content identical to the
-dual-written legacy ``hot100_entries`` / ``b200_entries`` rows -- i.e. the new
-path and the legacy path it feeds agree row-for-row, so the dual-write can never
-silently diverge (threat T-10-04).
+FIXED fixture corpus of hot-100 + billboard-200 weeks and prove the polymorphic
+``chart_entries`` rows are written correctly for every chart -- the single entry
+store as of Phase 15 (the v1.0 dual-write to the bifurcated entry tables has been
+retired).
 
-The assertions mirror migrate_multichart's WR-03 parity: a two-way anti-join on
-``(chart_week_id, rank, entity_id)`` for each legacy chart, the one-FK-per-row
-polymorphism guard (T-10-05), song_artists / album_artists link parity (W1 --
-the unified artist_cache must produce the same links the v1.0 path did), and a
-guard that a NEW chart (legacy_table=None) writes ZERO legacy rows (T-10-06: the
-legacy tables are touched ONLY for the two legacy charts).
+The assertions cover: per-chart ``chart_entries`` count + content, the
+one-FK-per-row polymorphism guard (T-10-05), and song_artists / album_artists
+link parity (W1 -- the unified artist_cache must produce the same links the v1.0
+path did).
 
 The loader is driven over the parsed-entry fixture by reusing the fake DB and
 harness from tests/test_loader_registry.py, so the loader exercises the REAL
-per-entry path (entity upsert, artist links, dual-write).
+per-entry path (entity upsert, artist links, single-store write).
 """
 
 import unittest
@@ -59,21 +56,21 @@ _B200_WEEK = [
 def _hot100_record():
     return ChartRecord(
         slug="hot-100", entity_kind="song", folder="/fake/hot100",
-        last_loaded_date=None, legacy_table=("hot100_entries", "song_id"),
+        last_loaded_date=None,
     )
 
 
 def _b200_record():
     return ChartRecord(
         slug="billboard-200", entity_kind="album", folder="/fake/b200",
-        last_loaded_date=None, legacy_table=("b200_entries", "album_id"),
+        last_loaded_date=None,
     )
 
 
 def _new_chart_record():
     return ChartRecord(
         slug="country-songs", entity_kind="song", folder="/fake/country-songs",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
@@ -87,9 +84,10 @@ def _corpus_db():
     )
 
 
-def _load_legacy_corpus():
+def _load_corpus():
     """Load the hot-100 (two weeks) + billboard-200 (one week) corpus through the
-    registry path, dual-writing. Returns the fake DB after the load.
+    registry path into the single chart_entries store. Returns the fake DB after
+    the load.
 
     Two distinct hot-100 weeks are produced by feeding two different parsed-entry
     fixtures via the harness's per-file stub; each ``_load`` call drives one
@@ -106,59 +104,33 @@ def _load_legacy_corpus():
 
 class HotEquivalenceTests(unittest.TestCase):
     def setUp(self):
-        self.db = _load_legacy_corpus()
+        self.db = _load_corpus()
 
-    # --- count parity ----------------------------------------------------------
-    def test_hot100_count_parity(self):
+    # --- count: chart_entries written per chart --------------------------------
+    def test_hot100_entry_count(self):
         hot_ce = [e for e in self.db.chart_entries if e["chart_id"] == 1]
-        self.assertEqual(len(hot_ce), len(self.db.hot100_entries))
         # corpus has 2 hot-100 weeks x 2 entries = 4 rows.
         self.assertEqual(len(hot_ce), 4)
 
-    def test_b200_count_parity(self):
+    def test_b200_entry_count(self):
         b200_ce = [e for e in self.db.chart_entries if e["chart_id"] == 2]
-        self.assertEqual(len(b200_ce), len(self.db.b200_entries))
         self.assertEqual(len(b200_ce), len(_B200_WEEK))
 
-    # --- content parity: two-way anti-join on (week, rank, entity_id) ----------
-    def test_hot100_content_parity_both_directions(self):
+    # --- content: each fixture entry maps to a distinct chart_entries row ------
+    def test_hot100_entry_keys_distinct_per_week_rank(self):
         hot_ce = [e for e in self.db.chart_entries if e["chart_id"] == 1]
         ce_set = {(e["chart_week_id"], e["rank"], e["song_id"]) for e in hot_ce}
-        legacy_set = {
-            (e["chart_week_id"], e["rank"], e["song_id"])
-            for e in self.db.hot100_entries
-        }
-        # forward: no chart_entries row without a matching legacy row.
-        self.assertEqual(ce_set - legacy_set, set())
-        # reverse: no legacy row without a matching chart_entries row.
-        self.assertEqual(legacy_set - ce_set, set())
-        self.assertEqual(ce_set, legacy_set)
+        # 4 distinct (week, rank, song) keys for the 4 hot-100 entries.
+        self.assertEqual(len(ce_set), 4)
+        for e in hot_ce:
+            self.assertIsNotNone(e["song_id"])
 
-    def test_b200_content_parity_both_directions(self):
+    def test_b200_entry_keys_distinct_per_week_rank(self):
         b200_ce = [e for e in self.db.chart_entries if e["chart_id"] == 2]
         ce_set = {(e["chart_week_id"], e["rank"], e["album_id"]) for e in b200_ce}
-        legacy_set = {
-            (e["chart_week_id"], e["rank"], e["album_id"])
-            for e in self.db.b200_entries
-        }
-        self.assertEqual(ce_set - legacy_set, set())
-        self.assertEqual(legacy_set - ce_set, set())
-        self.assertEqual(ce_set, legacy_set)
-
-    # --- per-row field parity (peak/last/weeks/is_new) -------------------------
-    def test_hot100_full_field_parity(self):
-        hot_ce = {
-            (e["chart_week_id"], e["rank"]): e
-            for e in self.db.chart_entries
-            if e["chart_id"] == 1
-        }
-        for le in self.db.hot100_entries:
-            ce = hot_ce[(le["chart_week_id"], le["rank"])]
-            self.assertEqual(ce["song_id"], le["song_id"])
-            self.assertEqual(ce["peak_pos"], le["peak_pos"])
-            self.assertEqual(ce["last_pos"], le["last_pos"])
-            self.assertEqual(ce["weeks_on_chart"], le["weeks_on_chart"])
-            self.assertEqual(ce["is_new"], le["is_new"])
+        self.assertEqual(len(ce_set), len(_B200_WEEK))
+        for e in b200_ce:
+            self.assertIsNotNone(e["album_id"])
 
     # --- polymorphism guard (T-10-05) ------------------------------------------
     def test_every_chart_entry_sets_exactly_one_entity_fk(self):
@@ -212,8 +184,8 @@ class HotEquivalenceTests(unittest.TestCase):
         self.assertEqual(len(alphas), 1)
 
 
-class NewChartNoLegacyTests(unittest.TestCase):
-    def test_new_chart_writes_zero_legacy_rows(self):
+class NewChartSingleStoreTests(unittest.TestCase):
+    def test_new_chart_writes_chart_entries_only(self):
         db = _corpus_db()
         _load(db, _new_chart_record(),
               [{"rank": 1, "title": "Country One", "artist": "Cole",
@@ -221,9 +193,11 @@ class NewChartNoLegacyTests(unittest.TestCase):
                 "image": None}])
         new_ce = [e for e in db.chart_entries if e["chart_id"] == 3]
         self.assertTrue(new_ce)
-        # ZERO legacy rows for a new chart (T-10-06).
-        self.assertEqual(db.hot100_entries, [])
-        self.assertEqual(db.b200_entries, [])
+        # The new chart's entry sets exactly the song FK (single polymorphic store).
+        for e in new_ce:
+            self.assertIsNotNone(e["song_id"])
+            self.assertIsNone(e["album_id"])
+            self.assertIsNone(e["artist_id"])
 
 
 class StatsRegistryLoopTests(unittest.TestCase):

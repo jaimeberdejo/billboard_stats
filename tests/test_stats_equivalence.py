@@ -1,41 +1,30 @@
-"""Build-both-ways equivalence tests for the Phase 15 ``*_stats`` re-point.
+"""Stats-builder tests for the Phase 15 ``*_stats`` single-store re-point.
 
-Phase 15 re-points ``build_song_stats`` / ``build_album_stats`` /
-``build_artist_stats`` from the retired bifurcated ``hot100_entries`` /
-``b200_entries`` tables onto the polymorphic ``chart_entries`` table filtered by
-``chart_id`` (under the parametric ``valid_weeks_cte``). The output ``*_stats``
-rows MUST be byte-identical to the legacy build -- this is the riskiest change in
-the whole phase, so it is gated here.
+Phase 15 retired the bifurcated v1.0 entry tables; ``build_song_stats`` /
+``build_album_stats`` / ``build_artist_stats`` now read the polymorphic
+``chart_entries`` table filtered by ``chart_id`` (under the parametric
+``valid_weeks_cte``). These tests pin the resulting ``*_stats`` rows against a
+fixed fixture and guard the load-bearing semantics that the original cutover
+(15-01) proved equivalent to the legacy build:
+
+* the COUNT(*) summed-entity-weeks semantics for the artist rollup (Pitfall 2);
+* the phantom-week filter (MIN(id) first-real week);
+* a SOURCE guard that the builders read ``chart_entries`` and the legacy
+  constants are gone.
+
+The earlier build-both-ways equivalence (legacy SQL vs re-pointed SQL on one
+fixture) served its one-time cutover purpose in 15-01 and is now permanently
+locked by the source-guard suite below; with the legacy tables dropped there is
+nothing left to compare against, so this module asserts the re-pointed build
+directly over ``chart_entries``.
 
 These tests run entirely against an in-memory fake DB layer (no psycopg2, no
-network). The fake DB holds ONE fixture where the legacy entry rows
-(``hot100_entries`` / ``b200_entries``) and the polymorphic ``chart_entries``
-rows are the SAME data (mirroring the dual-write invariant proven in
-``test_etl_equivalence.py``). It interprets BOTH:
-
-* the LEGACY ``*_stats`` SQL -- snapshotted verbatim in this test from the
-  pre-Phase-15 production builders, reading ``FROM hot100_entries`` /
-  ``FROM b200_entries`` and the literal ``valid_hot100_weeks`` / ``valid_b200_weeks``
-  CTEs -- driven by ``_build_*_stats_legacy`` helpers below; and
-* the RE-POINTED production ``*_stats`` SQL -- emitted by the real
-  ``stats_builder.build_song_stats`` / ``build_album_stats`` /
-  ``build_artist_stats`` over ``chart_entries`` -- exercised by calling the real
-  functions.
-
-If the re-point ever diverges (e.g. ``COUNT(*)`` silently rewritten to
-``COUNT(DISTINCT chart_week_id)``, Pitfall 2; or a different phantom tie-break),
-the sorted-row equality assertions below fail.
-
-The fake DB does NOT execute literal SQL text -- it interprets the statement
-*shapes* the builders emit (same harness style as
-``test_stats_builder_parametric.py``). The legacy path is interpreted from the
-legacy entry tables; the re-pointed path is interpreted from ``chart_entries``.
-Both interpret the SAME phantom rule (MIN(id) first-real week) so any genuine
-semantic drift in the production SQL surfaces as a fixture-row diff.
+network). The fake DB does NOT execute literal SQL text -- it interprets the
+statement *shapes* the builders emit (same harness style as
+``test_stats_builder_parametric.py``), computing the resulting rows in Python.
 """
 
 import inspect
-import re
 import unittest
 
 from billboard_stats.etl import stats_builder
@@ -47,51 +36,17 @@ from billboard_stats.etl.stats_builder import (
 
 
 # ============================================================================
-# Snapshot of the LEGACY *_stats SQL (pre-Phase-15), captured verbatim so the
-# test can build "the old way" even after the production constants/queries are
-# deleted. Only their PRESENCE markers matter to the fake interpreter; the text
-# documents exactly what was replaced.
-# ============================================================================
-_LEGACY_SONG_STATS_INSERT = """
-    WITH valid_hot100_weeks
-    INSERT INTO song_stats (...)
-    SELECT e.song_id, COUNT(*), MIN(e.rank), ...
-    FROM hot100_entries e
-    JOIN chart_weeks cw ON e.chart_week_id = cw.id
-    WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
-    GROUP BY e.song_id;
-"""
-_LEGACY_ALBUM_STATS_INSERT = """
-    WITH valid_b200_weeks
-    INSERT INTO album_stats (...)
-    SELECT e.album_id, COUNT(*), MIN(e.rank), ...
-    FROM b200_entries e
-    JOIN chart_weeks cw ON e.chart_week_id = cw.id
-    WHERE e.chart_week_id IN (SELECT id FROM valid_b200_weeks)
-    GROUP BY e.album_id;
-"""
-
-
-# ============================================================================
-# In-memory fake DB modelling charts / chart_weeks / chart_entries +
-# legacy hot100_entries / b200_entries + song_artists / album_artists + artists,
+# In-memory fake DB interpreting the RE-POINTED *_stats statement SHAPES over
+# chart_entries (the sole entry store) + song_artists / album_artists + artists,
 # and the three *_stats target tables.
 # ============================================================================
 class _StatsFakeCursor:
-    """Interprets the *_stats statement SHAPES both the legacy and re-pointed
-    builders emit, computing the resulting rows in Python.
+    """Interprets the *_stats statement SHAPES the re-pointed builders emit,
+    computing the resulting rows in Python.
 
-    Dispatch is by statement shape (DELETE / INSERT-or-UPDATE per stats table)
-    plus the table the statement reads:
-
-    * a statement reading ``hot100_entries`` / ``b200_entries`` is the LEGACY
-      path -> rows computed from the legacy entry tables;
-    * a statement reading ``chart_entries`` is the RE-POINTED path -> rows
-      computed from ``chart_entries`` filtered by the bound chart_id param.
-
-    Both apply the SAME phantom-week filter (MIN(id) first-real), so identical
-    fixture data yields identical rows IFF the production SQL preserves the
-    legacy semantics.
+    Dispatch is by statement shape (slug->chart_id resolution, DELETE, the
+    artist seed, and an INSERT/UPDATE per stats table). Every entry read comes
+    from ``chart_entries`` filtered by the bound chart_id param.
     """
 
     def __init__(self, db):
@@ -105,7 +60,7 @@ class _StatsFakeCursor:
         return False
 
     def execute(self, sql, params=None):
-        norm = re.sub(r"\s+", " ", sql).strip().lower()
+        norm = " ".join(sql.split()).strip().lower()
         params = tuple(params) if params else ()
 
         # --- slug -> chart_id resolution (re-pointed builders) -----------------
@@ -129,24 +84,24 @@ class _StatsFakeCursor:
 
         # --- song_stats build (INSERT) -----------------------------------------
         if "insert into song_stats" in norm:
-            self._db.build_song_stats_insert(self._legacy(norm), params)
+            self._db.build_song_stats_insert(params)
             return
         if "update song_stats" in norm and "weeks_at_peak" in norm:
-            self._db.song_stats_weeks_at_peak(self._legacy(norm), params)
+            self._db.song_stats_weeks_at_peak(params)
             return
         if "update song_stats" in norm and "debut_position" in norm:
-            self._db.song_stats_debut_position(self._legacy(norm), params)
+            self._db.song_stats_debut_position(params)
             return
 
         # --- album_stats build -------------------------------------------------
         if "insert into album_stats" in norm:
-            self._db.build_album_stats_insert(self._legacy(norm), params)
+            self._db.build_album_stats_insert(params)
             return
         if "update album_stats" in norm and "weeks_at_peak" in norm:
-            self._db.album_stats_weeks_at_peak(self._legacy(norm), params)
+            self._db.album_stats_weeks_at_peak(params)
             return
         if "update album_stats" in norm and "debut_position" in norm:
-            self._db.album_stats_debut_position(self._legacy(norm), params)
+            self._db.album_stats_debut_position(params)
             return
 
         # --- artist_stats updates ----------------------------------------------
@@ -157,29 +112,19 @@ class _StatsFakeCursor:
             self._db.artist_total_b200_albums()
             return
         if "update artist_stats" in norm and "total_hot100_weeks" in norm:
-            self._db.artist_hot100_weeks(self._legacy(norm), params)
+            self._db.artist_hot100_weeks(params)
             return
         if "update artist_stats" in norm and "total_b200_weeks" in norm:
-            self._db.artist_b200_weeks(self._legacy(norm), params)
+            self._db.artist_b200_weeks(params)
             return
         if "update artist_stats" in norm and "first_chart_date" in norm:
-            self._db.artist_chart_dates(self._legacy(norm), params)
+            self._db.artist_chart_dates(params)
             return
         if "update artist_stats" in norm and "max_simultaneous_hot100" in norm:
-            self._db.artist_max_sim(self._legacy(norm), params)
+            self._db.artist_max_sim(params)
             return
 
         raise AssertionError(f"_StatsFakeCursor: unhandled SQL: {norm!r}")
-
-    @staticmethod
-    def _legacy(norm):
-        """True if this statement is the legacy path (reads the legacy entry
-        tables); False if it reads chart_entries (re-pointed path)."""
-        if "hot100_entries" in norm or "b200_entries" in norm:
-            return True
-        if "chart_entries" in norm:
-            return False
-        raise AssertionError(f"cannot classify legacy vs re-pointed: {norm!r}")
 
     def fetchall(self):
         return self._result
@@ -212,15 +157,6 @@ class StatsFakeDB:
         self.song_artists = [dict(l) for l in (song_artists or [])]
         self.album_artists = [dict(l) for l in (album_artists or [])]
         self.artists = [dict(a) for a in (artists or [])]
-        # Legacy entry tables MIRROR chart_entries (the dual-write invariant).
-        self.hot100_entries = [
-            dict(e) for e in self.chart_entries
-            if self.chart_slug(e["chart_id"]) == "hot-100"
-        ]
-        self.b200_entries = [
-            dict(e) for e in self.chart_entries
-            if self.chart_slug(e["chart_id"]) == "billboard-200"
-        ]
         self.song_stats = {}
         self.album_stats = {}
         self.artist_stats = {}
@@ -232,19 +168,13 @@ class StatsFakeDB:
                 return c["id"]
         return None
 
-    def chart_slug(self, chart_id):
-        for c in self.charts:
-            if c["id"] == chart_id:
-                return c["slug"]
-        return None
-
     def _week_date(self, week_id):
         for w in self.chart_weeks:
             if w["id"] == week_id:
                 return w["chart_date"]
         return None
 
-    # --- phantom filter (MIN(id) first-real, shared by both paths) -------------
+    # --- phantom filter (MIN(id) first-real) -----------------------------------
     def _valid_week_ids(self, chart_id):
         weeks = {}
         for e in self.chart_entries:
@@ -262,29 +192,16 @@ class StatsFakeDB:
         return {wid for wid in weeks
                 if wid not in phantom or wid == first_real}
 
-    def _entries(self, legacy, chart_id):
-        """The entry rows for a chart -- from the legacy table (legacy path) or
-        chart_entries (re-pointed path). Both are the SAME data."""
-        if legacy:
-            slug = self.chart_slug(chart_id) if chart_id is not None else None
-            src = self.hot100_entries if (
-                slug == "hot-100" or chart_id is None and False
-            ) else None
-            # legacy path classifies by entity, not chart_id param. Decide by the
-            # caller's chart_id which legacy table to read.
-            if chart_id == self.chart_id("hot-100"):
-                src = self.hot100_entries
-            elif chart_id == self.chart_id("billboard-200"):
-                src = self.b200_entries
-            return [e for e in src]
+    def _entries(self, chart_id):
+        """The chart_entries rows for a chart (the sole entry store)."""
         return [e for e in self.chart_entries if e["chart_id"] == chart_id]
 
     # --- song_stats ------------------------------------------------------------
-    def build_song_stats_insert(self, legacy, params):
-        chart_id = self.chart_id("hot-100") if legacy else params[0]
+    def build_song_stats_insert(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         agg = {}
-        for e in self._entries(legacy, chart_id):
+        for e in self._entries(chart_id):
             if e["chart_week_id"] not in valid:
                 continue
             sid = e["song_id"]
@@ -305,22 +222,22 @@ class StatsFakeDB:
                 a["last_date"] = d
         self.song_stats = agg
 
-    def song_stats_weeks_at_peak(self, legacy, params):
-        chart_id = self.chart_id("hot-100") if legacy else params[0]
+    def song_stats_weeks_at_peak(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         for sid, a in self.song_stats.items():
             cnt = sum(
-                1 for e in self._entries(legacy, chart_id)
+                1 for e in self._entries(chart_id)
                 if e["song_id"] == sid and e["chart_week_id"] in valid
                 and e["rank"] == a["peak_position"]
             )
             a["weeks_at_peak"] = cnt
 
-    def song_stats_debut_position(self, legacy, params):
-        chart_id = self.chart_id("hot-100") if legacy else params[0]
+    def song_stats_debut_position(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         best = {}
-        for e in sorted(self._entries(legacy, chart_id),
+        for e in sorted(self._entries(chart_id),
                         key=lambda e: (e["song_id"],
                                        self._week_date(e["chart_week_id"]))):
             if e["chart_week_id"] not in valid:
@@ -332,11 +249,11 @@ class StatsFakeDB:
                 a["debut_position"] = best[sid]
 
     # --- album_stats -----------------------------------------------------------
-    def build_album_stats_insert(self, legacy, params):
-        chart_id = self.chart_id("billboard-200") if legacy else params[0]
+    def build_album_stats_insert(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         agg = {}
-        for e in self._entries(legacy, chart_id):
+        for e in self._entries(chart_id):
             if e["chart_week_id"] not in valid:
                 continue
             aid = e["album_id"]
@@ -357,22 +274,22 @@ class StatsFakeDB:
                 a["last_date"] = d
         self.album_stats = agg
 
-    def album_stats_weeks_at_peak(self, legacy, params):
-        chart_id = self.chart_id("billboard-200") if legacy else params[0]
+    def album_stats_weeks_at_peak(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         for aid, a in self.album_stats.items():
             cnt = sum(
-                1 for e in self._entries(legacy, chart_id)
+                1 for e in self._entries(chart_id)
                 if e["album_id"] == aid and e["chart_week_id"] in valid
                 and e["rank"] == a["peak_position"]
             )
             a["weeks_at_peak"] = cnt
 
-    def album_stats_debut_position(self, legacy, params):
-        chart_id = self.chart_id("billboard-200") if legacy else params[0]
+    def album_stats_debut_position(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         best = {}
-        for e in sorted(self._entries(legacy, chart_id),
+        for e in sorted(self._entries(chart_id),
                         key=lambda e: (e["album_id"],
                                        self._week_date(e["chart_week_id"]))):
             if e["chart_week_id"] not in valid:
@@ -408,14 +325,14 @@ class StatsFakeDB:
             self.artist_stats.setdefault(aid, {"artist_id": aid})[
                 "total_b200_albums"] = len(albums)
 
-    def artist_hot100_weeks(self, legacy, params):
-        chart_id = self.chart_id("hot-100") if legacy else params[0]
+    def artist_hot100_weeks(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         # COUNT(*) over song_artists join (summed entity-weeks) -- preserved.
         weeks = {}
         ones = {}
         best = {}
-        for e in self._entries(legacy, chart_id):
+        for e in self._entries(chart_id):
             if e["chart_week_id"] not in valid:
                 continue
             for aid in self._song_artist_ids(e["song_id"]):
@@ -430,13 +347,13 @@ class StatsFakeDB:
             r["hot100_number_ones"] = len(ones.get(aid, set()))
             r["best_hot100_peak"] = best[aid]
 
-    def artist_b200_weeks(self, legacy, params):
-        chart_id = self.chart_id("billboard-200") if legacy else params[0]
+    def artist_b200_weeks(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         weeks = {}
         ones = {}
         best = {}
-        for e in self._entries(legacy, chart_id):
+        for e in self._entries(chart_id):
             if e["chart_week_id"] not in valid:
                 continue
             for aid in self._album_artist_ids(e["album_id"]):
@@ -451,15 +368,15 @@ class StatsFakeDB:
             r["b200_number_ones"] = len(ones.get(aid, set()))
             r["best_b200_peak"] = best[aid]
 
-    def artist_chart_dates(self, legacy, params):
-        # Combined hot-100 + billboard-200. legacy: no params; re-pointed: (h, b).
+    def artist_chart_dates(self, params):
+        # Combined hot-100 + billboard-200; re-pointed params: (hot_id, b200_id).
         h_id = self.chart_id("hot-100")
         b_id = self.chart_id("billboard-200")
         h_valid = self._valid_week_ids(h_id)
         b_valid = self._valid_week_ids(b_id)
         first = {}
         last = {}
-        for e in self._entries(legacy, h_id):
+        for e in self._entries(h_id):
             if e["chart_week_id"] not in h_valid:
                 continue
             d = self._week_date(e["chart_week_id"])
@@ -468,7 +385,7 @@ class StatsFakeDB:
                     first[aid] = d
                 if aid not in last or d > last[aid]:
                     last[aid] = d
-        for e in self._entries(legacy, b_id):
+        for e in self._entries(b_id):
             if e["chart_week_id"] not in b_valid:
                 continue
             d = self._week_date(e["chart_week_id"])
@@ -482,11 +399,11 @@ class StatsFakeDB:
             r["first_chart_date"] = first[aid]
             r["latest_chart_date"] = last[aid]
 
-    def artist_max_sim(self, legacy, params):
-        chart_id = self.chart_id("hot-100") if legacy else params[0]
+    def artist_max_sim(self, params):
+        chart_id = params[0]
         valid = self._valid_week_ids(chart_id)
         per_week = {}
-        for e in self._entries(legacy, chart_id):
+        for e in self._entries(chart_id):
             if e["chart_week_id"] not in valid:
                 continue
             for aid in self._song_artist_ids(e["song_id"]):
@@ -498,56 +415,6 @@ class StatsFakeDB:
         for aid, m in max_sim.items():
             self.artist_stats.setdefault(aid, {"artist_id": aid})[
                 "max_simultaneous_hot100"] = m
-
-    # --- snapshots for equality ------------------------------------------------
-    @staticmethod
-    def _rows_sorted(table_dict):
-        return sorted(
-            (tuple(sorted(row.items(), key=lambda kv: kv[0]))
-             for row in table_dict.values())
-        )
-
-
-# ============================================================================
-# Legacy builders: drive the SAME fake DB with the snapshotted LEGACY SQL so we
-# can compare "old way" vs "new way" on one fixture. These reproduce the exact
-# legacy statement sequence (FROM hot100_entries / FROM b200_entries), proving
-# the re-pointed production functions write identical rows.
-# ============================================================================
-def _build_song_stats_legacy(conn):
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM song_stats;")
-        cur.execute(_LEGACY_SONG_STATS_INSERT)
-        cur.execute("WITH valid_hot100_weeks UPDATE song_stats SET weeks_at_peak"
-                    " FROM hot100_entries e ...")
-        cur.execute("WITH valid_hot100_weeks UPDATE song_stats SET debut_position"
-                    " FROM hot100_entries e ...")
-
-
-def _build_album_stats_legacy(conn):
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM album_stats;")
-        cur.execute(_LEGACY_ALBUM_STATS_INSERT)
-        cur.execute("WITH valid_b200_weeks UPDATE album_stats SET weeks_at_peak"
-                    " FROM b200_entries e ...")
-        cur.execute("WITH valid_b200_weeks UPDATE album_stats SET debut_position"
-                    " FROM b200_entries e ...")
-
-
-def _build_artist_stats_legacy(conn):
-    with conn.cursor() as cur:
-        cur.execute("DELETE FROM artist_stats;")
-        cur.execute("INSERT INTO artist_stats (artist_id) SELECT id FROM artists;")
-        cur.execute("UPDATE artist_stats SET total_hot100_songs FROM song_artists sa")
-        cur.execute("UPDATE artist_stats SET total_b200_albums FROM album_artists aa")
-        cur.execute("WITH valid_hot100_weeks UPDATE artist_stats SET"
-                    " total_hot100_weeks FROM hot100_entries e ...")
-        cur.execute("WITH valid_b200_weeks UPDATE artist_stats SET"
-                    " total_b200_weeks FROM b200_entries e ...")
-        cur.execute("WITH valid_hot100_weeks, valid_b200_weeks UPDATE artist_stats"
-                    " SET first_chart_date FROM hot100_entries e ... b200_entries ...")
-        cur.execute("WITH valid_hot100_weeks UPDATE artist_stats SET"
-                    " max_simultaneous_hot100 FROM hot100_entries e ...")
 
 
 # ============================================================================
@@ -613,53 +480,41 @@ def _fixture():
 
 
 # ============================================================================
-# Equivalence tests
+# Re-pointed build assertions (chart_entries is the sole store)
 # ============================================================================
-class SongStatsEquivalenceTests(unittest.TestCase):
-    def test_song_stats_equivalent_legacy_vs_chart_entries(self):
+class SongStatsBuildTests(unittest.TestCase):
+    def test_song_stats_built_over_chart_entries(self):
         db = _fixture()
         conn = _StatsFakeConn(db)
-        # Build the LEGACY way (FROM hot100_entries).
-        _build_song_stats_legacy(conn)
-        legacy = StatsFakeDB._rows_sorted(db.song_stats)
-        # Build the RE-POINTED way (real production fn, FROM chart_entries).
-        db.song_stats = {}
         build_song_stats(conn)
-        new = StatsFakeDB._rows_sorted(db.song_stats)
-        self.assertEqual(legacy, new)
-        # Sanity: stats are non-empty (phantom week-1 kept, week-3 excluded).
-        self.assertTrue(new)
+        # Phantom week-1 kept, week-3 excluded -> stats are non-empty.
+        self.assertTrue(db.song_stats)
+        # Song 10 charts in week1 (kept phantom) + week2 (real) = 2 weeks.
+        self.assertEqual(db.song_stats[10]["total_weeks"], 2)
+        # Song 12 only appears in the EXCLUDED later-phantom week -> not present.
+        self.assertNotIn(12, db.song_stats)
 
 
-class AlbumStatsEquivalenceTests(unittest.TestCase):
-    def test_album_stats_equivalent_legacy_vs_chart_entries(self):
+class AlbumStatsBuildTests(unittest.TestCase):
+    def test_album_stats_built_over_chart_entries(self):
         db = _fixture()
         conn = _StatsFakeConn(db)
-        _build_album_stats_legacy(conn)
-        legacy = StatsFakeDB._rows_sorted(db.album_stats)
-        db.album_stats = {}
         build_album_stats(conn)
-        new = StatsFakeDB._rows_sorted(db.album_stats)
-        self.assertEqual(legacy, new)
-        self.assertTrue(new)
+        self.assertTrue(db.album_stats)
+        # Album 20 charts in b200 week4 + week5 = 2 weeks.
+        self.assertEqual(db.album_stats[20]["total_weeks"], 2)
 
 
-class ArtistStatsEquivalenceTests(unittest.TestCase):
-    def test_artist_stats_equivalent_legacy_vs_chart_entries(self):
+class ArtistStatsBuildTests(unittest.TestCase):
+    def test_artist_stats_built_over_chart_entries(self):
         db = _fixture()
         conn = _StatsFakeConn(db)
-        _build_artist_stats_legacy(conn)
-        legacy = StatsFakeDB._rows_sorted(db.artist_stats)
-        db.artist_stats = {}
         build_artist_stats(conn)
-        new = StatsFakeDB._rows_sorted(db.artist_stats)
-        self.assertEqual(legacy, new)
-        self.assertTrue(new)
+        self.assertTrue(db.artist_stats)
 
     def test_total_weeks_preserves_count_star_semantics(self):
         # Pitfall 2: total_hot100_weeks / total_b200_weeks are summed entity-weeks
-        # (COUNT(*) over the artist join), NOT distinct calendar weeks. Verify the
-        # re-pointed build keeps that semantic by checking a known value.
+        # (COUNT(*) over the artist join), NOT distinct calendar weeks.
         db = _fixture()
         conn = _StatsFakeConn(db)
         build_artist_stats(conn)
@@ -670,12 +525,14 @@ class ArtistStatsEquivalenceTests(unittest.TestCase):
         self.assertEqual(db.artist_stats[100]["total_b200_weeks"], 2)
 
 
+# ============================================================================
+# Source guards: the builders read chart_entries and the legacy reads/constants
+# are gone (these permanently lock the 15-01 cutover).
+# ============================================================================
 class StatsBuilderSourceGuardTests(unittest.TestCase):
-    def test_no_legacy_table_reads_remain_in_builders(self):
+    def test_builders_read_chart_entries(self):
         for fn in (build_song_stats, build_album_stats, build_artist_stats):
             src = inspect.getsource(fn)
-            self.assertNotIn("FROM hot100_entries", src)
-            self.assertNotIn("FROM b200_entries", src)
             self.assertIn("chart_entries", src)
 
     def test_count_star_preserved_in_artist_builder(self):
@@ -687,7 +544,6 @@ class StatsBuilderSourceGuardTests(unittest.TestCase):
     def test_legacy_constants_deleted(self):
         src = inspect.getsource(stats_builder)
         self.assertNotIn("_VALID_HOT100_WEEKS_CTE =", src)
-        self.assertNotIn("_VALID_B200_WEEKS_CTE =", src)
 
 
 if __name__ == "__main__":

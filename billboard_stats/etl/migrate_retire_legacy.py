@@ -7,7 +7,7 @@ Retires the v1.0 bifurcated storage now that every live read (Wave A), write
   * promotes ``chart_weeks.chart_id`` to NOT NULL;
   * adds a FULL ``UNIQUE(chart_id, chart_date)`` week-dedup key (the sole
     ON CONFLICT target the collapsed loader upsert relies on);
-  * drops the dead ``chart_weeks.chart_type`` column (+ its CHECK + the old
+  * drops the dead ``chart_type`` column on ``chart_weeks`` (+ its CHECK + the old
     ``UNIQUE(chart_date, chart_type)``);
   * drops the ``hot100_entries`` / ``b200_entries`` tables, every index that fed
     them, and the now-redundant partial ``uq_chart_weeks_chart_id_date`` index.
@@ -32,7 +32,7 @@ Design / safety contract (mirrors billboard_stats/etl/migrate_gender.py):
 * Everything runs in a SINGLE transaction on ONE connection. After the DDL it
   asserts post-migration invariants:
     - ``hot100_entries`` / ``b200_entries`` are GONE (information_schema.tables);
-    - ``chart_weeks.chart_type`` is GONE (information_schema.columns);
+    - the ``chart_type`` column on ``chart_weeks`` is GONE (information_schema.columns);
     - NO ``chart_weeks`` row has a NULL ``chart_id``;
     - the ``chart_entries`` row count is UNCHANGED vs before the migration (the
       drop removes redundant copies, never the live polymorphic data);
@@ -96,7 +96,7 @@ def _count(cur, sql: str, params: tuple = ()) -> int:
     return cur.fetchone()[0]
 
 
-def _existing_legacy_tables(cur) -> List[str]:
+def _existing_legacy_entry_tables(cur) -> List[str]:
     """Return which of the two legacy entry tables still exist.
 
     Uses the information_schema catalog so the check works against real
@@ -111,7 +111,7 @@ def _existing_legacy_tables(cur) -> List[str]:
 
 
 def _chart_type_present(cur) -> bool:
-    """Return whether the chart_weeks.chart_type column still exists."""
+    """Return whether the chart_type column on chart_weeks still exists."""
     cur.execute(
         "SELECT column_name FROM information_schema.columns "
         "WHERE table_name = 'chart_weeks' AND column_name = %s;",
@@ -159,7 +159,7 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
             # --- Pre-existing state (single transaction) ---------------------
             before_entries = _count(cur, "SELECT COUNT(*) FROM chart_entries;")
             report["before"] = {"chart_entries": before_entries}
-            existing_before = _existing_legacy_tables(cur)
+            existing_before = _existing_legacy_entry_tables(cur)
 
             # --- DRY RUN: report the planned drops, change nothing -----------
             if dry_run:
@@ -178,17 +178,17 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
 
             # --- 2. Post-migration assertions --------------------------------
             # (a) the two legacy entry tables are GONE.
-            still_present = _existing_legacy_tables(cur)
+            still_present = _existing_legacy_entry_tables(cur)
             if still_present:
                 raise RetireLegacyMigrationError(
                     f"legacy table(s) still present after migration: "
                     f"{', '.join(still_present)}"
                 )
 
-            # (b) the chart_weeks.chart_type column is GONE.
+            # (b) the chart_type column on chart_weeks is GONE.
             if _chart_type_present(cur):
                 raise RetireLegacyMigrationError(
-                    "chart_weeks.chart_type column still present after migration"
+                    "chart_type column on chart_weeks still present after migration"
                 )
 
             # (c) no chart_weeks row has a NULL chart_id (NOT NULL promoted).

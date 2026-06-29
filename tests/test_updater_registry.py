@@ -10,9 +10,9 @@ What these tests pin down (DATA-06 success criteria #1, #4):
 * ``update_charts(conn, data_dir=...)`` runs ONE registry-driven incremental
   path: it loops ``iter_charts`` and, per chart, derives the new date window from
   the chart's ``last_loaded_date``, computes which on-disk dates are new, and
-  calls ``load_chart`` (which DUAL-WRITES) once per chart that has new weeks --
-  replacing the hardcoded hot-100 / billboard-200 branches and the
-  ``_load_hot100`` / ``_load_b200`` calls.
+  calls ``load_chart`` (which writes the single chart_entries store) once per
+  chart that has new weeks -- replacing the hardcoded hot-100 / billboard-200
+  branches and the ``_load_hot100`` / ``_load_b200`` calls.
 * A chart already current through the latest publishable week loads nothing.
 * A chart whose on-disk folder is absent/partial is skipped without raising.
 * ``build_all_stats`` (BOTH v1.0 ``artist_stats`` AND ``artist_chart_stats``) is
@@ -122,14 +122,12 @@ class UpdaterRegistryHarness(unittest.TestCase):
                 f.write('[{"rank": 1}]')
         return folder
 
-    def _chart(self, slug, folder_name, entity_kind, last_loaded_date,
-               legacy_table):
+    def _chart(self, slug, folder_name, entity_kind, last_loaded_date):
         return ChartRecord(
             slug=slug,
             entity_kind=entity_kind,
             folder=os.path.join(self.data_dir, folder_name),
             last_loaded_date=last_loaded_date,
-            legacy_table=legacy_table,
         )
 
 
@@ -147,11 +145,9 @@ class UpdateChartsRegistryLoopTests(UpdaterRegistryHarness):
         self._make_folder("b200", ["2026-06-13", "2026-06-20"])
         self._charts = [
             self._chart("hot-100", "hot100", "song",
-                        datetime.date(2026, 6, 6),
-                        ("hot100_entries", "song_id")),
+                        datetime.date(2026, 6, 6)),
             self._chart("billboard-200", "b200", "album",
-                        datetime.date(2026, 6, 13),
-                        ("b200_entries", "album_id")),
+                        datetime.date(2026, 6, 13)),
         ]
 
         updater.update_charts(conn=object(), data_dir=self.data_dir)
@@ -168,8 +164,7 @@ class UpdateChartsRegistryLoopTests(UpdaterRegistryHarness):
         self._make_folder("hot100", ["2026-06-13", "2026-06-20"])
         self._charts = [
             self._chart("hot-100", "hot100", "song",
-                        self.LATEST_WEEK,  # already current
-                        ("hot100_entries", "song_id")),
+                        self.LATEST_WEEK),  # already current
         ]
 
         updater.update_charts(conn=object(), data_dir=self.data_dir)
@@ -186,8 +181,7 @@ class UpdateChartsRegistryLoopTests(UpdaterRegistryHarness):
         )
         self._charts = [
             self._chart("hot-100", "hot100", "song",
-                        datetime.date(2026, 6, 6),
-                        ("hot100_entries", "song_id")),
+                        datetime.date(2026, 6, 6)),
         ]
 
         updater.update_charts(conn=object(), data_dir=self.data_dir)
@@ -205,7 +199,7 @@ class UpdateChartsFolderToleranceTests(UpdaterRegistryHarness):
         # a new chart not ingested until Phase 11). The loop must tolerate it.
         self._charts = [
             self._chart("country-songs", "country-songs", "song",
-                        datetime.date(2026, 6, 6), None),
+                        datetime.date(2026, 6, 6)),
         ]
 
         # Must not raise.
@@ -223,7 +217,7 @@ class UpdateChartsFolderToleranceTests(UpdaterRegistryHarness):
         )
         self._charts = [
             self._chart("country-songs", "country-songs", "song",
-                        None, None),
+                        None),
         ]
 
         updater.update_charts(conn=object(), data_dir=self.data_dir)
@@ -242,11 +236,9 @@ class UpdateChartsStatsRebuildTests(UpdaterRegistryHarness):
         self._make_folder("b200", ["2026-06-20"])
         self._charts = [
             self._chart("hot-100", "hot100", "song",
-                        datetime.date(2026, 6, 6),
-                        ("hot100_entries", "song_id")),
+                        datetime.date(2026, 6, 6)),
             self._chart("billboard-200", "b200", "album",
-                        datetime.date(2026, 6, 13),
-                        ("b200_entries", "album_id")),
+                        datetime.date(2026, 6, 13)),
         ]
 
         updater.update_charts(conn=object(), data_dir=self.data_dir)
@@ -259,8 +251,7 @@ class UpdateChartsStatsRebuildTests(UpdaterRegistryHarness):
         self._make_folder("hot100", ["2026-06-20"])
         self._charts = [
             self._chart("hot-100", "hot100", "song",
-                        self.LATEST_WEEK,
-                        ("hot100_entries", "song_id")),
+                        self.LATEST_WEEK),
         ]
 
         updater.update_charts(conn=object(), data_dir=self.data_dir)
@@ -278,8 +269,7 @@ class UpdateChartsIncrementalOnlyTests(UpdaterRegistryHarness):
         self._make_folder("hot100", ["2026-06-13"])
         self._charts = [
             self._chart("hot-100", "hot100", "song",
-                        datetime.date(2026, 6, 6),
-                        ("hot100_entries", "song_id")),
+                        datetime.date(2026, 6, 6)),
         ]
 
         updater.update_charts(conn=object(), data_dir=self.data_dir)

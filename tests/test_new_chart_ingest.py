@@ -180,40 +180,40 @@ class RegisterNewChartsTests(unittest.TestCase):
 
 
 # ============================================================================
-# Task 3 fixtures: ChartRecords with legacy_table=None for the new charts
+# Task 3 fixtures: ChartRecords for the new charts (single chart_entries store)
 # ============================================================================
 def _artist100_record():
     return ChartRecord(
         slug="artist-100", entity_kind="artist", folder="/fake/artist-100",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
 def _country_songs_record():
     return ChartRecord(
         slug="country-songs", entity_kind="song", folder="/fake/country-songs",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
 def _rock_songs_record():
     return ChartRecord(
         slug="rock-songs", entity_kind="song", folder="/fake/rock-songs",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
 def _country_albums_record():
     return ChartRecord(
         slug="country-albums", entity_kind="album", folder="/fake/country-albums",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
 def _rock_albums_record():
     return ChartRecord(
         slug="rock-albums", entity_kind="album", folder="/fake/rock-albums",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 

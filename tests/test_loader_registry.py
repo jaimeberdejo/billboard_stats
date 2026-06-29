@@ -10,17 +10,16 @@ What these tests pin down (success criteria #1, #2):
 * ``load_chart(conn, chart, ...)`` is ONE entity_kind-dispatched loader that
   replaces ``_load_hot100`` / ``_load_b200``. song -> songs/song_artists +
   chart_entries.song_id; album -> albums/album_artists + chart_entries.album_id.
-* DUAL-WRITE: for the two LEGACY charts it writes the new ``chart_entries`` row
-  AND the mapped legacy table (hot100_entries/song or b200_entries/album), same
-  count and same ``(chart_week_id, rank)``. A NEW chart (``legacy_table=None``)
-  writes ``chart_entries`` ONLY -- zero legacy rows.
-* ``chart_weeks`` carries BOTH ``chart_type`` (legacy upsert key) AND
-  ``chart_id`` (the registry id), so the old and new phantom CTEs both resolve.
+* SINGLE STORE (Phase 15): every chart — original or new — writes the polymorphic
+  ``chart_entries`` row as the SOLE entry store. The v1.0 per-chart entry tables
+  have been retired, so there is no dual-write.
+* ``chart_weeks`` carries ``chart_id`` (the registry id) and is deduped on the
+  full ``UNIQUE(chart_id, chart_date)``; the phantom CTE resolves on chart_id.
 * Every ``chart_entries`` row sets EXACTLY ONE of song_id/album_id/artist_id.
 
 The loader is driven over a parsed-entry fixture by stubbing ``parse_chart_file``
 and ``list_chart_files`` so the loader exercises the REAL per-entry path (entity
-upsert, artist links, dual-write) with no on-disk JSON.
+upsert, artist links, single-store write) with no on-disk JSON.
 """
 
 import re
@@ -37,10 +36,9 @@ class FakeCursor:
     """A psycopg2-cursor-like stand-in interpreting the SQL load_chart emits.
 
     Models charts / chart_weeks / songs / albums / artists / song_artists /
-    album_artists / chart_entries / hot100_entries / b200_entries as plain
-    Python structures and executes the exact statement shapes load_chart uses,
-    including the execute_values batch INSERTs (driven through the module-level
-    ``execute_values`` shim in this test).
+    album_artists / chart_entries as plain Python structures and executes the
+    exact statement shapes load_chart uses, including the execute_values batch
+    INSERT (driven through the module-level ``execute_values`` shim in this test).
     """
 
     def __init__(self, db):
@@ -69,7 +67,7 @@ class FakeCursor:
             self._result = [(cid,)] if cid is not None else []
             return
 
-        # --- chart_weeks upsert (legacy: chart_type + chart_id) ----------------
+        # --- chart_weeks upsert (single store: chart_id only) ------------------
         if norm.startswith("insert into chart_weeks"):
             self._result = [(self._db.upsert_chart_week(norm, params),)]
             return
@@ -128,21 +126,15 @@ class FakeConn:
 def _fake_execute_values(cur, sql, rows, page_size=None):
     """Stand-in for psycopg2.extras.execute_values.
 
-    Interprets the two batch INSERT shapes load_chart emits -- INTO chart_entries
-    and INTO the mapped legacy table -- and applies them to the fake DB with
-    ON CONFLICT (chart_week_id, rank) DO NOTHING semantics.
+    Interprets the single batch INSERT shape load_chart emits -- INTO
+    chart_entries (the SOLE entry store as of Phase 15) -- and applies it to the
+    fake DB with ON CONFLICT (chart_week_id, rank) DO NOTHING semantics.
     """
     db = cur._db
     norm = re.sub(r"\s+", " ", sql).strip().lower()
 
     if norm.startswith("insert into chart_entries"):
         db.insert_chart_entries(rows)
-        return
-    if norm.startswith("insert into hot100_entries"):
-        db.insert_legacy("hot100_entries", "song_id", rows)
-        return
-    if norm.startswith("insert into b200_entries"):
-        db.insert_legacy("b200_entries", "album_id", rows)
         return
     raise AssertionError(f"_fake_execute_values: unhandled SQL: {norm!r}")
 
@@ -160,15 +152,12 @@ class FakeDB:
         self.album_artists = []
         self.chart_weeks = []
         self.chart_entries = []
-        self.hot100_entries = []
-        self.b200_entries = []
         self._next = {
             "artist": (max((a["id"] for a in self.artists), default=0)) + 1,
             "song": 1,
             "album": 1,
             "week": 1,
             "ce": 1,
-            "legacy": 1,
         }
 
     def _take(self, kind):
@@ -186,55 +175,23 @@ class FakeDB:
     # --- upserts ---------------------------------------------------------------
     def upsert_chart_week(self, norm, params):
         """Upsert chart_weeks and return the week id, modeling the REAL Postgres
-        conflict keys (CR-01) -- NOT a chart_id-aware match that masks duplicates.
-
-        Handles BOTH week-insert shapes load_chart emits, each with its OWN
-        conflict arbiter exactly as real Postgres applies it:
-
-        * LEGACY charts: ``(chart_date, chart_type, chart_id)`` -- ON CONFLICT on
-          the existing ``UNIQUE(chart_date, chart_type)``. The dedup key is
-          (chart_date, chart_type) ONLY; chart_id is NOT part of the key. On a
-          conflict the row's chart_id is refreshed (``SET chart_id =
-          EXCLUDED.chart_id``).
-        * NEW charts: ``(chart_date, chart_id)`` -- ON CONFLICT on the partial
-          unique index ``uq_chart_weeks_chart_id_date (chart_id, chart_date)
-          WHERE chart_id IS NOT NULL``. The dedup key is (chart_id, chart_date)
-          ONLY (no chart_type). This makes a new-chart re-load idempotent instead
-          of inserting a duplicate week.
-
-        Matching the real keys here is what lets the new-chart idempotency test
-        actually exercise the dedup: an earlier chart_id-aware match key agreed
-        with real Postgres only by luck (chart_id is constant per chart in tests)
-        and silently masked the duplicate-week bug.
+        conflict key (CR-01). As of Phase 15 there is ONE week-insert shape for
+        every chart -- ``(chart_date, chart_id)`` ON CONFLICT on the full
+        ``UNIQUE(chart_id, chart_date)`` -- so the dedup key is (chart_id,
+        chart_date) and re-loading the same week conflict-resolves to the
+        existing week id instead of inserting a duplicate.
         """
-        if len(params) == 3:
-            # Legacy: dedup on (chart_date, chart_type) ONLY.
-            chart_date, chart_type, chart_id = params
-            for w in self.chart_weeks:
-                if (
-                    w["chart_date"] == chart_date
-                    and w["chart_type"] == chart_type
-                ):
-                    w["chart_id"] = chart_id  # SET chart_id = EXCLUDED.chart_id
-                    return w["id"]
-        else:
-            # New chart: dedup on (chart_id, chart_date) ONLY (chart_type NULL).
-            chart_date, chart_id = params
-            chart_type = None
-            for w in self.chart_weeks:
-                if (
-                    w["chart_id"] == chart_id
-                    and w["chart_date"] == chart_date
-                ):
-                    w["chart_id"] = chart_id  # SET chart_id = EXCLUDED.chart_id
-                    return w["id"]
+        chart_date, chart_id = params
+        for w in self.chart_weeks:
+            if w["chart_id"] == chart_id and w["chart_date"] == chart_date:
+                w["chart_id"] = chart_id  # SET chart_id = EXCLUDED.chart_id
+                return w["id"]
 
         wid = self._take("week")
         self.chart_weeks.append(
             {
                 "id": wid,
                 "chart_date": chart_date,
-                "chart_type": chart_type,
                 "chart_id": chart_id,
             }
         )
@@ -314,31 +271,6 @@ class FakeDB:
                 }
             )
 
-    def insert_legacy(self, table, entity_col, rows):
-        """Each row: (chart_week_id, entity_id, rank, peak_pos, last_pos,
-        weeks_on_chart, is_new). ON CONFLICT (chart_week_id, rank) DO NOTHING."""
-        target = getattr(self, table)
-        present = {(e["chart_week_id"], e["rank"]) for e in target}
-        for r in rows:
-            (chart_week_id, entity_id, rank, peak_pos, last_pos,
-             weeks_on_chart, is_new) = r
-            if (chart_week_id, rank) in present:
-                continue
-            present.add((chart_week_id, rank))
-            target.append(
-                {
-                    "id": self._take("legacy"),
-                    "chart_week_id": chart_week_id,
-                    entity_col: entity_id,
-                    "rank": rank,
-                    "peak_pos": peak_pos,
-                    "last_pos": last_pos,
-                    "weeks_on_chart": weeks_on_chart,
-                    "is_new": is_new,
-                }
-            )
-
-
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -368,21 +300,21 @@ _NEW_CHART_ENTRIES = [
 def _hot100_record():
     return ChartRecord(
         slug="hot-100", entity_kind="song", folder="/fake/hot100",
-        last_loaded_date=None, legacy_table=("hot100_entries", "song_id"),
+        last_loaded_date=None,
     )
 
 
 def _b200_record():
     return ChartRecord(
         slug="billboard-200", entity_kind="album", folder="/fake/b200",
-        last_loaded_date=None, legacy_table=("b200_entries", "album_id"),
+        last_loaded_date=None,
     )
 
 
 def _new_chart_record():
     return ChartRecord(
         slug="country-songs", entity_kind="song", folder="/fake/country-songs",
-        last_loaded_date=None, legacy_table=None,
+        last_loaded_date=None,
     )
 
 
@@ -392,7 +324,7 @@ class _LoaderHarness:
 
     ``chart_date_offset`` shifts the single stubbed week file's date so multiple
     ``_load`` passes for the SAME chart produce DISTINCT chart_weeks (they would
-    otherwise collide on the (chart_date, chart_type) upsert key).
+    otherwise collide on the (chart_id, chart_date) upsert key).
     """
 
     def __init__(self, entries, chart_date_offset=0):
@@ -444,31 +376,21 @@ class LoadChartDualWriteTests(unittest.TestCase):
             ]
         )
 
-    def test_hot100_dual_writes_chart_entries_and_hot100_entries(self):
+    def test_hot100_writes_chart_entries_single_store(self):
         db = self._base_db()
         _load(db, _hot100_record(), _HOT100_ENTRIES)
 
         hot_ce = [e for e in db.chart_entries if e["chart_id"] == 1]
-        # chart_entries written with chart_id=hot-100 and song_id set.
+        # chart_entries written with chart_id=hot-100 and song_id set — the SOLE
+        # entry store (no dual-write to a retired legacy table).
         self.assertEqual(len(hot_ce), len(_HOT100_ENTRIES))
         for e in hot_ce:
             self.assertIsNotNone(e["song_id"])
-        # legacy hot100_entries dual-written: same count + same (week, rank).
-        self.assertEqual(len(db.hot100_entries), len(hot_ce))
+        # one chart_entries row per fixture entry, keyed on (week, rank).
         ce_keys = {(e["chart_week_id"], e["rank"]) for e in hot_ce}
-        legacy_keys = {(e["chart_week_id"], e["rank"]) for e in db.hot100_entries}
-        self.assertEqual(ce_keys, legacy_keys)
-        # same song_id per (week, rank)
-        ce_song = {(e["chart_week_id"], e["rank"]): e["song_id"] for e in hot_ce}
-        legacy_song = {
-            (e["chart_week_id"], e["rank"]): e["song_id"]
-            for e in db.hot100_entries
-        }
-        self.assertEqual(ce_song, legacy_song)
-        # no b200 rows
-        self.assertEqual(db.b200_entries, [])
+        self.assertEqual(len(ce_keys), len(_HOT100_ENTRIES))
 
-    def test_billboard200_dual_writes_chart_entries_and_b200_entries(self):
+    def test_billboard200_writes_chart_entries_single_store(self):
         db = self._base_db()
         _load(db, _b200_record(), _B200_ENTRIES)
 
@@ -476,16 +398,10 @@ class LoadChartDualWriteTests(unittest.TestCase):
         self.assertEqual(len(b200_ce), len(_B200_ENTRIES))
         for e in b200_ce:
             self.assertIsNotNone(e["album_id"])
-        self.assertEqual(len(db.b200_entries), len(b200_ce))
         ce_keys = {(e["chart_week_id"], e["rank"], e["album_id"]) for e in b200_ce}
-        legacy_keys = {
-            (e["chart_week_id"], e["rank"], e["album_id"])
-            for e in db.b200_entries
-        }
-        self.assertEqual(ce_keys, legacy_keys)
-        self.assertEqual(db.hot100_entries, [])
+        self.assertEqual(len(ce_keys), len(_B200_ENTRIES))
 
-    def test_new_chart_writes_chart_entries_only_no_legacy(self):
+    def test_new_chart_writes_chart_entries(self):
         db = self._base_db()
         _load(db, _new_chart_record(), _NEW_CHART_ENTRIES)
 
@@ -493,45 +409,38 @@ class LoadChartDualWriteTests(unittest.TestCase):
         self.assertEqual(len(new_ce), len(_NEW_CHART_ENTRIES))
         for e in new_ce:
             self.assertIsNotNone(e["song_id"])
-        # ZERO legacy rows for a new chart.
-        self.assertEqual(db.hot100_entries, [])
-        self.assertEqual(db.b200_entries, [])
 
-    def test_new_chart_reload_is_idempotent_no_duplicate_weeks_or_entries(self):
-        # CR-01: re-loading the SAME new-chart (legacy_table=None) week must NOT
-        # duplicate chart_weeks or chart_entries. The new-chart week insert keys
-        # on (chart_id, chart_date) via the partial unique index, so the second
-        # load conflict-resolves to the existing week id and the chart_entries
-        # ON CONFLICT (chart_week_id, rank) then skips the duplicate rows. Using
-        # the SAME chart_date_offset on both passes targets the SAME week.
+    def test_chart_reload_is_idempotent_no_duplicate_weeks_or_entries(self):
+        # CR-01: re-loading the SAME week must NOT duplicate chart_weeks or
+        # chart_entries. The week insert keys on the full UNIQUE(chart_id,
+        # chart_date), so the second load conflict-resolves to the existing week
+        # id and the chart_entries ON CONFLICT (chart_week_id, rank) then skips
+        # the duplicate rows. Using the SAME chart_date_offset on both passes
+        # targets the SAME week.
         db = self._base_db()
-        chart = _new_chart_record()  # entity_kind="song", legacy_table=None
+        chart = _new_chart_record()
         _load(db, chart, _NEW_CHART_ENTRIES, chart_date_offset=0)
         _load(db, chart, _NEW_CHART_ENTRIES, chart_date_offset=0)
 
-        # Exactly ONE chart_weeks row for the new chart (no duplicate week).
+        # Exactly ONE chart_weeks row for the chart (no duplicate week).
         new_weeks = [w for w in db.chart_weeks if w["chart_id"] == 3]
         self.assertEqual(len(new_weeks), 1)
-        self.assertIsNone(new_weeks[0]["chart_type"])  # new chart -> no chart_type
 
         # chart_entries not duplicated: still exactly one row per fixture entry.
         new_ce = [e for e in db.chart_entries if e["chart_id"] == 3]
         self.assertEqual(len(new_ce), len(_NEW_CHART_ENTRIES))
-        # And still zero legacy rows.
-        self.assertEqual(db.hot100_entries, [])
-        self.assertEqual(db.b200_entries, [])
 
-    def test_new_artist_chart_reload_is_idempotent(self):
-        # CR-01, artist-entity path: exercise the genuinely new-chart (artist)
-        # branch (entity_kind="artist", legacy_table=None) and prove re-loading
-        # the same week stays idempotent end-to-end through the artist resolve +
-        # chart_entries.artist_id path.
+    def test_artist_chart_reload_is_idempotent(self):
+        # CR-01, artist-entity path: exercise the artist-entity branch
+        # (entity_kind="artist") and prove re-loading the same week stays
+        # idempotent end-to-end through the artist resolve + chart_entries.
+        # artist_id path.
         db = FakeDB(
             charts=[{"id": 7, "slug": "artist-100", "entity_kind": "artist"}]
         )
         chart = ChartRecord(
             slug="artist-100", entity_kind="artist", folder="/fake/artist-100",
-            last_loaded_date=None, legacy_table=None,
+            last_loaded_date=None,
         )
         entries = [
             {"rank": 1, "title": "", "artist": "Artist Solo", "peak_pos": 1,
@@ -555,7 +464,6 @@ class LoadChartDualWriteTests(unittest.TestCase):
         self.assertTrue(db.chart_weeks)
         for w in db.chart_weeks:
             self.assertEqual(w["chart_id"], 1)        # hot-100 registry id
-            self.assertEqual(w["chart_type"], "hot-100")  # legacy key preserved
 
     def test_every_chart_entry_sets_exactly_one_entity_fk(self):
         db = self._base_db()
@@ -576,7 +484,7 @@ class LoadChartDualWriteTests(unittest.TestCase):
         db = self._base_db()  # has hot-100 / billboard-200 / country-songs only
         ghost = ChartRecord(
             slug="not-a-real-chart", entity_kind="song",
-            folder="/fake/ghost", last_loaded_date=None, legacy_table=None,
+            folder="/fake/ghost", last_loaded_date=None,
         )
         with self.assertRaises(ValueError) as ctx:
             _load(db, ghost, _HOT100_ENTRIES)

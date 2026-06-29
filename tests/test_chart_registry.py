@@ -8,12 +8,13 @@ is injected.
 The registry is the SOURCE-OF-TRUTH adapter the loader (Plan 02) and updater
 (Plan 03) build against: it reads the DB ``charts`` table (seeded by Phase 9 with
 hot-100=song, billboard-200=album) and yields one ChartRecord per chart carrying
-``(slug, entity_kind, folder, last_loaded_date, legacy_table)``. ``folder`` maps
-each legacy chart to its REAL on-disk folder (hot-100 -> data/hot100,
+``(slug, entity_kind, folder, last_loaded_date)``. ``folder`` maps the two
+original charts to their REAL on-disk folder (hot-100 -> data/hot100,
 billboard-200 -> data/b200) and every other chart to data/{slug};
-``legacy_table`` is the dual-write target table+entity-column for the two legacy
-charts (None for new charts); ``last_loaded_date`` is the max already-loaded
-chart_date (None when no weeks are loaded -- the incremental start signal).
+``last_loaded_date`` is the max already-loaded chart_date (None when no weeks are
+loaded -- the incremental start signal). As of Phase 15 every chart writes the
+single polymorphic ``chart_entries`` store; there is no per-chart dual-write
+target field.
 """
 
 import copy
@@ -127,31 +128,28 @@ def _record_by_slug(records, slug):
 
 
 # ----------------------------------------------------------------------------
-# Folder + legacy_table mapping
+# Folder mapping (the per-chart on-disk folder)
 # ----------------------------------------------------------------------------
 class RegistryMappingTests(unittest.TestCase):
-    def test_hot100_folder_and_legacy_table(self):
+    def test_hot100_folder(self):
         db = _fixture()
         records = list_charts(FakeConn(db), data_dir="/data")
         hot100 = _record_by_slug(records, "hot-100")
         self.assertTrue(hot100.folder.endswith("/hot100"), hot100.folder)
-        self.assertEqual(hot100.legacy_table, ("hot100_entries", "song_id"))
         self.assertEqual(hot100.entity_kind, "song")
 
-    def test_b200_folder_and_legacy_table(self):
+    def test_b200_folder(self):
         db = _fixture()
         records = list_charts(FakeConn(db), data_dir="/data")
         b200 = _record_by_slug(records, "billboard-200")
         self.assertTrue(b200.folder.endswith("/b200"), b200.folder)
-        self.assertEqual(b200.legacy_table, ("b200_entries", "album_id"))
         self.assertEqual(b200.entity_kind, "album")
 
-    def test_new_chart_folder_is_slug_and_no_legacy_table(self):
+    def test_new_chart_folder_is_slug(self):
         db = _fixture()
         records = list_charts(FakeConn(db), data_dir="/data")
         country = _record_by_slug(records, "country-songs")
         self.assertTrue(country.folder.endswith("/country-songs"), country.folder)
-        self.assertIsNone(country.legacy_table)
 
     def test_folder_is_joined_under_data_dir(self):
         db = _fixture()
@@ -232,13 +230,14 @@ class RegistryRecordShapeTests(unittest.TestCase):
             entity_kind="song",
             folder="/data/x",
             last_loaded_date=None,
-            legacy_table=None,
         )
         self.assertEqual(rec.slug, "x")
         self.assertEqual(rec.entity_kind, "song")
         self.assertEqual(rec.folder, "/data/x")
         self.assertIsNone(rec.last_loaded_date)
-        self.assertIsNone(rec.legacy_table)
+        self.assertEqual(
+            ChartRecord._fields, ("slug", "entity_kind", "folder", "last_loaded_date")
+        )
 
     def test_iter_charts_yields_chartrecords(self):
         db = _fixture()
