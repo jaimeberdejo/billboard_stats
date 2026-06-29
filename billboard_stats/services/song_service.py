@@ -3,7 +3,7 @@
 from typing import List, Optional
 
 from billboard_stats.db.connection import execute_query
-from billboard_stats.etl.stats_builder import _VALID_HOT100_WEEKS_CTE
+from billboard_stats.etl.stats_builder import valid_weeks_cte
 from billboard_stats.models.schemas import (
     Artist,
     ChartRunEntry,
@@ -49,18 +49,27 @@ def get_chart_run(song_id: int) -> List[ChartRunEntry]:
     """Full weekly position history for a song (excludes phantom weeks)."""
     rows = execute_query(
         f"""
-        WITH {_VALID_HOT100_WEEKS_CTE}
+        WITH {valid_weeks_cte('valid_weeks')}
         SELECT cw.chart_date, e.rank, e.last_pos, e.is_new,
                e.peak_pos, e.weeks_on_chart
-        FROM hot100_entries e
+        FROM chart_entries e
         JOIN chart_weeks cw ON e.chart_week_id = cw.id
-        WHERE e.song_id = %s
-          AND cw.id IN (SELECT id FROM valid_hot100_weeks)
+        WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+          AND e.song_id = %s
+          AND cw.id IN (SELECT id FROM valid_weeks)
         ORDER BY cw.chart_date;
         """,
-        (song_id,),
+        (_hot100_chart_id(), song_id),
     )
     return [ChartRunEntry(**r) for r in rows]
+
+
+def _hot100_chart_id() -> int:
+    """Resolve the hot-100 chart slug to its registry chart_id (Pitfall 1)."""
+    rows = execute_query("SELECT id FROM charts WHERE slug = %s;", ("hot-100",))
+    if not rows or rows[0]["id"] is None:
+        raise ValueError("No chart registered for slug 'hot-100'")
+    return rows[0]["id"]
 
 
 def get_song_stats(song_id: int) -> Optional[SongStats]:

@@ -3,8 +3,16 @@
 from typing import List, Optional
 
 from billboard_stats.db.connection import execute_query
-from billboard_stats.etl.stats_builder import _VALID_HOT100_WEEKS_CTE, _VALID_B200_WEEKS_CTE
+from billboard_stats.etl.stats_builder import valid_weeks_cte
 from billboard_stats.models.schemas import RecordEntry
+
+
+def _chart_id(slug: str) -> int:
+    """Resolve a chart slug to its registry chart_id (an int; Pitfall 1)."""
+    rows = execute_query("SELECT id FROM charts WHERE slug = %s;", (slug,))
+    if not rows or rows[0]["id"] is None:
+        raise ValueError(f"No chart registered for slug {slug!r}")
+    return rows[0]["id"]
 
 
 def most_weeks_at_number_one(chart: str = "hot-100", limit: int = 25) -> List[RecordEntry]:
@@ -127,12 +135,13 @@ def most_simultaneous_entries(chart: str = "hot-100", limit: int = 25) -> List[R
 
     rows = execute_query(
         f"""
-        WITH {_VALID_HOT100_WEEKS_CTE},
+        WITH {valid_weeks_cte('valid_weeks')},
         artist_week_counts AS (
             SELECT sa.artist_id, e.chart_week_id, COUNT(*) AS cnt
-            FROM hot100_entries e
+            FROM chart_entries e
             JOIN song_artists sa ON e.song_id = sa.song_id
-            WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+            WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+              AND e.chart_week_id IN (SELECT id FROM valid_weeks)
             GROUP BY sa.artist_id, e.chart_week_id
         ),
         artist_max AS (
@@ -149,7 +158,7 @@ def most_simultaneous_entries(chart: str = "hot-100", limit: int = 25) -> List[R
         ORDER BY awc.cnt DESC, a.name, cw.chart_date
         LIMIT %s;
         """,
-        (limit,),
+        (_chart_id("hot-100"), limit),
     )
     return [
         RecordEntry(rank=i + 1, title=r["title"], artist_credit=r["artist_credit"],
@@ -207,8 +216,9 @@ def fastest_to_number_one(chart: str = "hot-100", limit: int = 25) -> List[Recor
                 SELECT e.song_id,
                        MIN(cw.chart_date) FILTER (WHERE e.rank = 1) AS first_no1_date,
                        MIN(cw.chart_date) AS debut_date
-                FROM hot100_entries e
+                FROM chart_entries e
                 JOIN chart_weeks cw ON e.chart_week_id = cw.id
+                WHERE e.chart_id = %s
                 GROUP BY e.song_id
                 HAVING MIN(e.rank) = 1
             ) sub
@@ -220,7 +230,7 @@ def fastest_to_number_one(chart: str = "hot-100", limit: int = 25) -> List[Recor
             ORDER BY calc.weeks_to_one ASC, s.title
             LIMIT %s;
             """,
-            (limit,),
+            (_chart_id("hot-100"), limit),
         )
         return [
             RecordEntry(rank=i + 1, title=r["title"], artist_credit=r["artist_credit"],
@@ -235,8 +245,9 @@ def fastest_to_number_one(chart: str = "hot-100", limit: int = 25) -> List[Recor
                 SELECT e.album_id,
                        MIN(cw.chart_date) FILTER (WHERE e.rank = 1) AS first_no1_date,
                        MIN(cw.chart_date) AS debut_date
-                FROM b200_entries e
+                FROM chart_entries e
                 JOIN chart_weeks cw ON e.chart_week_id = cw.id
+                WHERE e.chart_id = %s
                 GROUP BY e.album_id
                 HAVING MIN(e.rank) = 1
             ) sub
@@ -248,7 +259,7 @@ def fastest_to_number_one(chart: str = "hot-100", limit: int = 25) -> List[Recor
             ORDER BY calc.weeks_to_one ASC, a.title
             LIMIT %s;
             """,
-            (limit,),
+            (_chart_id("billboard-200"), limit),
         )
         return [
             RecordEntry(rank=i + 1, title=r["title"], artist_credit=r["artist_credit"],
@@ -401,14 +412,14 @@ def drilldown_simultaneous_entries(artist_id: int, chart: str = "hot-100",
     rows = execute_query(
         """
         SELECT s.title, s.artist_credit, e.rank AS value, s.id AS song_id
-        FROM hot100_entries e
+        FROM chart_entries e
         JOIN songs s ON e.song_id = s.id
         JOIN song_artists sa ON s.id = sa.song_id
         JOIN chart_weeks cw ON e.chart_week_id = cw.id
-        WHERE sa.artist_id = %s AND cw.chart_date = %s AND cw.chart_type = 'hot-100'
+        WHERE e.chart_id = %s AND sa.artist_id = %s AND cw.chart_date = %s
         ORDER BY e.rank ASC;
         """,
-        (artist_id, chart_date),
+        (_chart_id("hot-100"), artist_id, chart_date),
     )
     return [
         RecordEntry(rank=i + 1, title=r["title"], artist_credit=r["artist_credit"],
@@ -436,7 +447,6 @@ def custom_query(
     artist_names: optional list of substrings to match on artist_credit (OR logic)
     """
     is_hot100 = chart == "hot-100"
-    entry_table = "hot100_entries" if is_hot100 else "b200_entries"
     item_table = "songs" if is_hot100 else "albums"
     stats_table = "song_stats" if is_hot100 else "album_stats"
     id_col = "song_id" if is_hot100 else "album_id"
@@ -490,22 +500,23 @@ def custom_query(
         else:  # weeks_in_top_n
             rank_filter = "e.rank <= %s"
 
-        valid_weeks_cte = _VALID_HOT100_WEEKS_CTE if is_hot100 else _VALID_B200_WEEKS_CTE
-        valid_weeks_table = "valid_hot100_weeks" if is_hot100 else "valid_b200_weeks"
+        chart_id = _chart_id(chart)
 
         sql = f"""
-            WITH {valid_weeks_cte}
+            WITH {valid_weeks_cte('valid_weeks')}
             SELECT i.title, i.artist_credit, COUNT(*) AS value, i.id AS {id_col}
-            FROM {entry_table} e
+            FROM chart_entries e
             JOIN {item_table} i ON e.{id_col} = i.id
             JOIN {stats_table} st ON st.{id_col} = i.id
-            WHERE e.chart_week_id IN (SELECT id FROM {valid_weeks_table})
+            WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+              AND e.chart_week_id IN (SELECT id FROM valid_weeks)
               AND {rank_filter} {filter_sql}
             GROUP BY i.id, i.title, i.artist_credit
             ORDER BY value DESC, i.title
             LIMIT %s;
         """
-        params = [rank_by_param] + params
+        # CTE chart_id bind comes first (declared in WITH), then the body params.
+        params = [chart_id, rank_by_param] + params
         params.append(limit)
 
     rows = execute_query(sql, tuple(params))
