@@ -90,6 +90,16 @@ def run_etl(data_dir: str = None):
     A chart whose on-disk folder is absent or partial (the Phase 7 backfill may
     not have downloaded it yet) is skipped with a log line, never a crash.
 
+    DEPLOY-ORDERING PRECONDITION (M-02): the collapsed week upsert
+    (:func:`_upsert_chart_week`) keys on ``ON CONFLICT (chart_id, chart_date)``,
+    whose backing ``chart_weeks_chart_id_date_key`` UNIQUE constraint is added by
+    migration 003 (``db/migrations/003_retire_legacy.sql``). A fresh
+    ``schema.sql`` install already has it, but on a LIVE/migrated DB **migration
+    003 MUST be applied before this first post-Phase-15 run** — otherwise every
+    week's upsert aborts with "no unique or exclusion constraint matching the
+    ON CONFLICT specification". Sequence the deploy so 003 lands before the loader
+    runs against the live DB.
+
     Args:
         data_dir: Root directory containing the per-chart subdirectories.
                   Defaults to the project ``data`` directory.
@@ -395,8 +405,21 @@ def _upsert_chart_week(cur, chart_date, chart_id):
     index) so re-loading a week is IDEMPOTENT (CR-01): a re-run upserts the same
     row rather than inserting a duplicate week, which would otherwise let
     duplicate chart_entries escape the ``(chart_week_id, rank)`` idempotency.
+
+    DEPLOY-ORDERING PRECONDITION (M-02): the ``ON CONFLICT (chart_id, chart_date)``
+    arbiter below requires the FULL ``chart_weeks_chart_id_date_key`` UNIQUE
+    constraint, which migration 003 (``db/migrations/003_retire_legacy.sql``)
+    adds (and which a fresh ``schema.sql`` install already has). On a LIVE/migrated
+    DB the old partial ``uq_chart_weeks_chart_id_date`` index is NOT a valid
+    arbiter for this unqualified ON CONFLICT, so **migration 003 MUST be applied
+    before the first post-Phase-15 ``run_etl`` / loader run** — otherwise every
+    week's upsert aborts with "no unique or exclusion constraint matching the
+    ON CONFLICT specification". See the run_etl docstring and migration 003 header.
     """
     cur.execute(
+        # ON CONFLICT target = chart_weeks_chart_id_date_key (migration 003 / a
+        # fresh schema.sql). Apply 003 before the first live load — see the
+        # DEPLOY-ORDERING PRECONDITION note above (M-02).
         "INSERT INTO chart_weeks (chart_date, chart_id) "
         "VALUES (%s, %s) "
         "ON CONFLICT (chart_id, chart_date) "

@@ -22,6 +22,19 @@
 -- roll back.
 --
 -- =============================================================================
+-- DEPLOY ORDERING (M-02) — APPLY THIS MIGRATION BEFORE THE NEXT LIVE LOAD
+-- =============================================================================
+-- The Phase-15 loader (billboard_stats/etl/loader._upsert_chart_week) now upserts
+-- weeks with `ON CONFLICT (chart_id, chart_date)`, whose arbiter is the FULL
+-- `chart_weeks_chart_id_date_key` UNIQUE this migration adds in step 2. The old
+-- partial `uq_chart_weeks_chart_id_date` index is NOT a valid arbiter for that
+-- unqualified ON CONFLICT. Therefore on a LIVE/migrated DB this migration MUST be
+-- applied BEFORE the first post-Phase-15 `run_etl` / loader run — otherwise every
+-- week's upsert aborts with "no unique or exclusion constraint matching the
+-- ON CONFLICT specification". A fresh `schema.sql` install already carries the
+-- full constraint, so this ordering constraint is specific to live/migrated DBs.
+--
+-- =============================================================================
 -- REVERSIBILITY / SAFETY CONTRACT (success criterion 3) — READ BEFORE APPLYING
 -- =============================================================================
 -- This migration is IRREVERSIBLE at the data level: DROP TABLE destroys the
