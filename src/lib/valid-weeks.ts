@@ -5,9 +5,10 @@
  *   billboard_stats/etl/stats_builder.py:79-144 (`valid_weeks_cte`)
  *
  * This module is the SINGLE place the frontend expresses the phantom-week rule.
- * It is a line-for-line translation of the Python `valid_weeks_cte` body so the
- * parametric path provably selects the IDENTICAL weeks the v1.0 literal CTEs
- * (`_VALID_HOT100_WEEKS_CTE` / `_VALID_B200_WEEKS_CTE`) select on the same data
+ * It is a line-for-line translation of the Python `valid_weeks_cte` body. The
+ * 15-01 cutover proved this parametric path selects the IDENTICAL weeks the
+ * now-RETIRED v1.0 per-chart-type literal CTEs (`_VALID_HOT100_WEEKS_CTE` /
+ * `_VALID_B200_WEEKS_CTE`, deleted in Phase 15) selected on the same data
  * (CR-01). The load-bearing invariants preserved here:
  *
  *   - Phantom rule: a week is phantom when >= 95% of THAT chart's `chart_entries`
