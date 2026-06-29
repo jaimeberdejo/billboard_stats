@@ -6,14 +6,12 @@ dispatched :func:`load_chart`, and :func:`run_etl` drives it over the chart
 registry (:func:`billboard_stats.etl.chart_registry.iter_charts`) instead of two
 hardcoded calls.
 
-Dual-write transition contract (CONTEXT decision): :func:`load_chart` ALWAYS
-writes the new polymorphic ``chart_entries`` (and sets ``chart_weeks.chart_id``)
-for every chart, AND for the two LEGACY charts ALSO writes the old
-``hot100_entries`` / ``b200_entries`` tables via the registry's per-chart
-``legacy_table`` mapping. This keeps the live v1.0 frontend fed until the Phase
-13 cutover; NEW charts (``legacy_table=None``) write ``chart_entries`` only. The
-legacy writes are strictly additive (same INSERT shape + ON CONFLICT
-(chart_week_id, rank) DO NOTHING as v1.0) and are retired in Phase 15.
+Single-store contract (Phase 15): :func:`load_chart` writes the polymorphic
+``chart_entries`` (and sets ``chart_weeks.chart_id``) for EVERY chart — the sole
+entry store. The historical dual-write to the v1.0 entry tables was retired in
+Phase 15 (Wave B), so no code writes those tables or the ``chart_weeks``
+chart_type column any longer; the chart's identity is carried entirely by
+``chart_id`` (resolved from the slug).
 
 The psycopg2-dependent imports (``execute_values`` and the connection-pool
 helpers ``get_conn`` / ``put_conn``) are GUARDED behind ``try/except ImportError``
@@ -259,30 +257,23 @@ def _create_schema(conn):
 
 
 def load_chart(conn, chart, only_dates=None, data_dir=None):
-    """Load one registered chart's JSON into the DB, dual-writing the transition.
+    """Load one registered chart's JSON into the DB (single chart_entries store).
 
     ONE entity_kind-dispatched loader replacing ``_load_hot100`` /
     ``_load_b200``. For each week file under ``chart.folder`` it:
 
-    1. Upserts the ``chart_weeks`` row keyed by the existing
-       ``UNIQUE(chart_date, chart_type)`` for the LEGACY charts, ALSO setting
-       ``chart_weeks.chart_id`` to the registry id (``SET chart_id =
-       EXCLUDED.chart_id``) so BOTH the v1.0 chart_type-literal phantom CTE and
-       the new chart_id-keyed parametric CTE resolve the week. (The new-chart
-       week path, keyed by chart_id only, is structurally present but NOT
-       exercised in this phase -- only the two legacy charts run.)
+    1. Upserts the ``chart_weeks`` row keyed on the full
+       ``UNIQUE(chart_id, chart_date)`` for EVERY chart (``SET chart_id =
+       EXCLUDED.chart_id``), so the chart_id-keyed parametric phantom CTE
+       resolves the week. Re-loading a week is idempotent (CR-01).
     2. Dispatches on ``chart.entity_kind``: song -> upsert ``songs`` +
        ``song_artists`` (via :func:`parse_artist_credit`); album -> upsert
        ``albums`` + ``album_artists``; artist -> upsert/lookup ``artists`` and
        set ``chart_entries.artist_id`` directly.
-    3. DUAL-WRITE: ALWAYS batch-inserts ``chart_entries`` (chart_id, chart_week_id,
-       the ONE entity FK, rank, peak_pos, last_pos, weeks_on_chart, is_new) with
-       ``ON CONFLICT (chart_week_id, rank) DO NOTHING``. THEN, when
-       ``chart.legacy_table`` is not None, ALSO batch-inserts the mapped legacy
-       table (``hot100_entries``/song_id or ``b200_entries``/album_id) from the
-       SAME entry rows with the SAME conflict clause -- exactly as the v1.0
-       loaders did. NEW charts (``legacy_table=None``) write ``chart_entries``
-       only.
+    3. Batch-inserts ``chart_entries`` (chart_id, chart_week_id, the ONE entity
+       FK, rank, peak_pos, last_pos, weeks_on_chart, is_new) with
+       ``ON CONFLICT (chart_week_id, rank) DO NOTHING`` — the SOLE entry store
+       for every chart (the historical v1.0 dual-write was retired in Phase 15).
 
     Args:
         conn: DB connection (real psycopg2 at operator-time, fake in tests).
@@ -345,12 +336,9 @@ def load_chart(conn, chart, only_dates=None, data_dir=None):
             continue
 
         with conn.cursor() as cur:
-            chart_week_id = _upsert_chart_week(
-                cur, chart_date, chart.legacy_table, chart_id
-            )
+            chart_week_id = _upsert_chart_week(cur, chart_date, chart_id)
 
             ce_rows = []      # chart_entries batch
-            legacy_rows = []  # legacy table batch (only when legacy_table set)
 
             for entry in entries:
                 entity_id = _resolve_entity(
@@ -367,16 +355,8 @@ def load_chart(conn, chart, only_dates=None, data_dir=None):
                     entry["weeks"], entry["is_new"],
                 ))
 
-                if chart.legacy_table is not None:
-                    # Same entry shape the v1.0 loaders wrote: (chart_week_id,
-                    # entity_id, rank, peak_pos, last_pos, weeks_on_chart, is_new).
-                    legacy_rows.append((
-                        chart_week_id, entity_id, entry["rank"],
-                        entry["peak_pos"], entry["last_pos"],
-                        entry["weeks"], entry["is_new"],
-                    ))
-
-            # ALWAYS write chart_entries.
+            # Write chart_entries — the SOLE entry store (the legacy dual-write
+            # to the v1.0 per-chart entry tables was retired in Phase 15).
             if ce_rows:
                 execute_values(
                     cur,
@@ -386,21 +366,6 @@ def load_chart(conn, chart, only_dates=None, data_dir=None):
                     "VALUES %s "
                     "ON CONFLICT (chart_week_id, rank) DO NOTHING;",
                     ce_rows,
-                    page_size=BATCH_SIZE,
-                )
-
-            # DUAL-WRITE: for legacy charts ONLY, also write the mapped legacy
-            # table with the SAME entry rows + same conflict clause.
-            if chart.legacy_table is not None and legacy_rows:
-                legacy_table, legacy_fk = chart.legacy_table
-                execute_values(
-                    cur,
-                    f"INSERT INTO {legacy_table} "
-                    f"(chart_week_id, {legacy_fk}, rank, peak_pos, last_pos, "
-                    f"weeks_on_chart, is_new) "
-                    f"VALUES %s "
-                    f"ON CONFLICT (chart_week_id, rank) DO NOTHING;",
-                    legacy_rows,
                     page_size=BATCH_SIZE,
                 )
 
@@ -420,60 +385,26 @@ def _resolve_chart_id(conn, slug):
     return row[0] if row else None
 
 
-def _upsert_chart_week(cur, chart_date, legacy_table, chart_id):
+def _upsert_chart_week(cur, chart_date, chart_id):
     """Upsert the chart_weeks row and return its id.
 
-    For LEGACY charts the upsert keys on the existing UNIQUE(chart_date,
-    chart_type) -- supplying chart_type (derived from the legacy table mapping)
-    AND setting chart_id = EXCLUDED.chart_id so both phantom CTEs resolve.
-
-    For NEW charts (no legacy_table -> no chart_type) the upsert keys on the
-    additive partial unique index uq_chart_weeks_chart_id_date
-    (chart_id, chart_date) WHERE chart_id IS NOT NULL, so re-loading a new-chart
-    week is idempotent (CR-01) rather than inserting a duplicate week. Only the
-    two legacy charts run in Phase 10; the new-chart branch is exercised by the
-    fixture tests and ships ready for Phase 11.
+    Every chart's week is identified by ``(chart_id, chart_date)`` — the single
+    write path after the Phase 15 dual-write retirement. The upsert keys on the
+    full ``UNIQUE(chart_id, chart_date)`` constraint (added by the Wave D
+    migration, replacing the former partial ``uq_chart_weeks_chart_id_date``
+    index) so re-loading a week is IDEMPOTENT (CR-01): a re-run upserts the same
+    row rather than inserting a duplicate week, which would otherwise let
+    duplicate chart_entries escape the ``(chart_week_id, rank)`` idempotency.
     """
-    if legacy_table is not None:
-        chart_type = _legacy_chart_type(legacy_table)
-        cur.execute(
-            "INSERT INTO chart_weeks (chart_date, chart_type, chart_id) "
-            "VALUES (%s, %s, %s) "
-            "ON CONFLICT (chart_date, chart_type) DO UPDATE SET "
-            "chart_id = EXCLUDED.chart_id "
-            "RETURNING id;",
-            (chart_date, chart_type, chart_id),
-        )
-        return cur.fetchone()[0]
-
-    # New-chart path: the week is identified by chart_id + chart_date (there is
-    # no chart_type for a non-legacy chart). It is made IDEMPOTENT (CR-01) by the
-    # additive partial unique index uq_chart_weeks_chart_id_date
-    # (chart_id, chart_date) WHERE chart_id IS NOT NULL — declared in schema.sql
-    # and migration 001. Without the ON CONFLICT, re-loading a new-chart week (a
-    # re-run, or a re-fetched partial week) would INSERT a DUPLICATE chart_weeks
-    # row, and the duplicate week id would let duplicate chart_entries escape the
-    # (chart_week_id, rank) idempotency. The conflict target repeats the index's
-    # partial predicate so Postgres selects that partial index as the arbiter.
     cur.execute(
         "INSERT INTO chart_weeks (chart_date, chart_id) "
         "VALUES (%s, %s) "
-        "ON CONFLICT (chart_id, chart_date) WHERE chart_id IS NOT NULL "
+        "ON CONFLICT (chart_id, chart_date) "
         "DO UPDATE SET chart_id = EXCLUDED.chart_id "
         "RETURNING id;",
         (chart_date, chart_id),
     )
     return cur.fetchone()[0]
-
-
-def _legacy_chart_type(legacy_table):
-    """Map a legacy (table, fk) tuple back to its chart_type literal."""
-    table_name = legacy_table[0]
-    if table_name == "hot100_entries":
-        return "hot-100"
-    if table_name == "b200_entries":
-        return "billboard-200"
-    raise ValueError(f"Unknown legacy table: {table_name!r}")
 
 
 def _resolve_entity(cur, chart, dispatch, entry, entity_cache, artist_cache):
@@ -554,7 +485,6 @@ def _load_hot100(conn, directory: str, only_dates=None):
         entity_kind="song",
         folder=directory,
         last_loaded_date=None,
-        legacy_table=("hot100_entries", "song_id"),
     )
     load_chart(conn, chart, only_dates=only_dates)
 
@@ -568,7 +498,6 @@ def _load_b200(conn, directory: str, only_dates=None):
         entity_kind="album",
         folder=directory,
         last_loaded_date=None,
-        legacy_table=("b200_entries", "album_id"),
     )
     load_chart(conn, chart, only_dates=only_dates)
 
