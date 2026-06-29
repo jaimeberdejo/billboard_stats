@@ -4,11 +4,12 @@ This is the WEEKLY path (Plan 10-03, DATA-06 success criterion #4). It runs ONE
 registry-driven incremental update: it loops the chart registry
 (:func:`billboard_stats.etl.chart_registry.iter_charts`) and, per chart, derives
 the new date window from that chart's ``last_loaded_date``, fetches just the
-delta, and calls :func:`billboard_stats.etl.loader.load_chart` (which
-DUAL-WRITES the new ``chart_entries`` plus the legacy table for the two core
-charts) — replacing the hardcoded hot-100 / billboard-200 branches and the old
+delta, and calls :func:`billboard_stats.etl.loader.load_chart` (which writes
+the single ``chart_entries`` store for every chart — the legacy
+``hot100_entries`` / ``b200_entries`` dual-write was retired in Phase 15) —
+replacing the hardcoded hot-100 / billboard-200 branches and the old
 ``_load_hot100`` / ``_load_b200`` calls. After loading, when any chart got new
-weeks, it rebuilds BOTH the v1.0 ``artist_stats`` and the new
+weeks, it rebuilds BOTH the ``artist_stats`` and the new
 ``artist_chart_stats`` via :func:`build_all_stats`.
 
 INCREMENTAL-ONLY: the weekly path NEVER triggers the multi-decade backfill. Each
@@ -125,7 +126,8 @@ def update_charts(conn, data_dir: str = None, rebuild_stats: bool = True) -> dic
     window from ``last_loaded_date`` (the day after, through
     :func:`get_latest_publishable_chart_week`), fetch the delta with the
     chart-appropriate downloader, compute which on-disk dates are new, and call
-    :func:`load_chart` (which DUAL-WRITES) with those ``only_dates``. After the
+    :func:`load_chart` (single-write to ``chart_entries`` — the legacy dual-write
+    was retired in Phase 15) with those ``only_dates``. After the
     loop, when any chart loaded new weeks, rebuild BOTH stats sets via
     :func:`build_all_stats`.
 
