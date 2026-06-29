@@ -5,17 +5,25 @@ real chart for any query date before the chart actually started. These
 phantom weeks are detected (ALL entries have is_new=true AND weeks_on_chart=1)
 and excluded from stats, keeping only the earliest such week per chart type.
 
-Two phantom-filter paths coexist here (Phase 9):
+Phantom-week filtering is expressed by ONE parametric source (Phase 9, made the
+sole path in Phase 15):
 
-* The v1.0 path (``_VALID_HOT100_WEEKS_CTE`` / ``_VALID_B200_WEEKS_CTE`` +
-  ``build_artist_stats``) hardcodes the phantom rule once per chart_type over the
-  bifurcated ``hot100_entries`` / ``b200_entries`` tables. It is KEPT UNCHANGED
-  for compatibility -- the unchanged v1.0 frontend still reads ``artist_stats``.
-  Phase 15 retires it, not this module.
-* The generalized path (``valid_weeks_cte`` + ``build_artist_chart_stats``)
-  expresses the SAME phantom rule as ONE parametric CTE keyed by ``chart_id`` over
-  the polymorphic ``chart_entries`` table, feeding the ``artist_chart_stats``
-  rollup (one ROW per artist x chart). Adding a chart adds rows, never columns.
+* ``valid_weeks_cte`` expresses the phantom rule as ONE parametric CTE keyed by
+  ``chart_id`` over the polymorphic ``chart_entries`` table. Every builder
+  (``build_song_stats`` / ``build_album_stats`` / ``build_artist_stats`` and the
+  generalized ``build_artist_chart_stats``) resolves its chart slug to a
+  ``chart_id`` and binds that one int into this CTE -- so the v1.0-named stats
+  tables (``song_stats`` / ``album_stats`` / ``artist_stats``) and the
+  ``artist_chart_stats`` rollup share the SAME phantom rule over the SAME storage.
+  Adding a chart adds rows, never columns.
+
+Phase 15 retired the legacy bifurcated storage: the two hardcoded per-chart-type
+phantom CTE constants and every read of the legacy hot-100 / billboard-200 entry
+tables here were re-pointed onto ``chart_entries`` filtered by ``chart_id``. The
+re-pointed builds produce byte-identical ``*_stats`` rows (gated by
+``tests/test_stats_equivalence.py``), because ``chart_entries`` was backfilled
+from and dual-written alongside the legacy tables, and ``valid_weeks_cte`` picks
+the SAME ``MIN(chart_weeks.id)`` first-real week the legacy CTEs picked.
 """
 
 from __future__ import annotations
@@ -24,64 +32,30 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Common CTE to identify valid Hot 100 chart weeks (excluding phantoms).
-# A phantom week is one where 95%+ of entries have is_new=true AND weeks_on_chart=1.
-# (Some phantoms have a few stray entries that don't match perfectly.)
-# We keep only the earliest such week (the real first chart).
-_VALID_HOT100_WEEKS_CTE = """
-    phantom_hot100 AS (
-        SELECT e.chart_week_id
-        FROM hot100_entries e
-        GROUP BY e.chart_week_id
-        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
-               >= COUNT(*) * 95 / 100
-    ),
-    first_real_hot100 AS (
-        SELECT MIN(cw.id) AS id
-        FROM phantom_hot100 ph
-        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
-        WHERE cw.chart_type = 'hot-100'
-    ),
-    valid_hot100_weeks AS (
-        SELECT cw.id
-        FROM chart_weeks cw
-        WHERE cw.chart_type = 'hot-100'
-          AND (cw.id NOT IN (SELECT chart_week_id FROM phantom_hot100)
-               OR cw.id = (SELECT id FROM first_real_hot100))
-    )
-"""
 
-# Same for Billboard 200
-_VALID_B200_WEEKS_CTE = """
-    phantom_b200 AS (
-        SELECT e.chart_week_id
-        FROM b200_entries e
-        GROUP BY e.chart_week_id
-        HAVING COUNT(*) FILTER (WHERE e.is_new = true AND e.weeks_on_chart = 1)
-               >= COUNT(*) * 95 / 100
-    ),
-    first_real_b200 AS (
-        SELECT MIN(cw.id) AS id
-        FROM phantom_b200 ph
-        JOIN chart_weeks cw ON ph.chart_week_id = cw.id
-        WHERE cw.chart_type = 'billboard-200'
-    ),
-    valid_b200_weeks AS (
-        SELECT cw.id
-        FROM chart_weeks cw
-        WHERE cw.chart_type = 'billboard-200'
-          AND (cw.id NOT IN (SELECT chart_week_id FROM phantom_b200)
-               OR cw.id = (SELECT id FROM first_real_b200))
-    )
-"""
+def _resolve_chart_id(conn, slug: str) -> int:
+    """Resolve a chart slug to its registry ``chart_id`` (an int).
+
+    Mirrors :func:`billboard_stats.etl.loader._resolve_chart_id`. The parametric
+    ``valid_weeks_cte`` binds a ``%s::int`` chart_id, NOT a slug -- so each
+    re-pointed builder resolves its slug once and binds the int (Pitfall 1).
+    Raises ``ValueError`` if the slug is unknown (a missing registry row would
+    otherwise silently produce empty stats).
+    """
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM charts WHERE slug = %s;", (slug,))
+        row = cur.fetchone()
+    if not row or row[0] is None:
+        raise ValueError(f"No chart registered for slug {slug!r}")
+    return row[0]
 
 
 def valid_weeks_cte(name: str = "valid_weeks") -> str:
     """Return the SQL body of a parametric valid-weeks CTE keyed by ``chart_id``.
 
-    This is the SINGLE parametric source the new multi-chart rollup path uses
-    (success criterion #5). It encodes the SAME phantom-week rule the two v1.0
-    literal CTEs (``_VALID_HOT100_WEEKS_CTE`` / ``_VALID_B200_WEEKS_CTE``) encode
+    This is the SINGLE parametric source every stats build uses (success
+    criterion #5). It encodes the SAME phantom-week rule the retired v1.0
+    per-chart-type literal CTEs encoded
     -- a week is phantom when >= 95% of THAT CHART's ``chart_entries`` rows for the
     week have ``is_new = true AND weeks_on_chart = 1`` -- but keyed by a
     ``chart_id`` bind parameter over the polymorphic ``chart_entries`` table
@@ -118,8 +92,8 @@ def valid_weeks_cte(name: str = "valid_weeks") -> str:
                >= COUNT(*) * 95 / 100
     ),
     first_real_{name} AS (
-        -- Pick the SAME "first real" week the v1.0 literal CTEs pick
-        -- (_VALID_HOT100_WEEKS_CTE / _VALID_B200_WEEKS_CTE), which use
+        -- Pick the SAME "first real" week the retired v1.0 literal per-chart-type
+        -- CTEs picked, which use
         -- MIN(cw.id) scoped to the chart. Using MIN(id) -- NOT
         -- ORDER BY chart_date -- guarantees the parametric path and the v1.0
         -- path select the identical first-real week even when chart_weeks.id
@@ -224,16 +198,22 @@ def build_all_stats(conn):
 
 
 def build_song_stats(conn, commit=True):
-    """Populate song_stats from hot100_entries, excluding phantom weeks.
+    """Populate song_stats from the hot-100 ``chart_entries``, excluding phantoms.
+
+    Re-pointed in Phase 15: aggregates ``chart_entries`` filtered by the hot-100
+    ``chart_id`` (resolved once from the ``'hot-100'`` slug) under the parametric
+    ``valid_weeks_cte``, instead of the retired ``hot100_entries`` table. The rows
+    written are byte-identical to the legacy build (``tests/test_stats_equivalence``).
 
     ``commit=False`` defers the commit so :func:`build_all_stats` can wrap the
     whole multi-table rebuild in one transaction (CR-02); direct callers keep the
     default per-build commit.
     """
+    hot100_chart_id = _resolve_chart_id(conn, "hot-100")
     with conn.cursor() as cur:
         cur.execute("DELETE FROM song_stats;")
         cur.execute(f"""
-            WITH {_VALID_HOT100_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_weeks')}
             INSERT INTO song_stats (
                 song_id, total_weeks, peak_position, weeks_at_peak,
                 weeks_at_number_one, debut_date, last_date, debut_position
@@ -247,56 +227,65 @@ def build_song_stats(conn, commit=True):
                 MIN(cw.chart_date) AS debut_date,
                 MAX(cw.chart_date) AS last_date,
                 NULL AS debut_position
-            FROM hot100_entries e
+            FROM chart_entries e
             JOIN chart_weeks cw ON e.chart_week_id = cw.id
-            WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+            WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+              AND e.chart_week_id IN (SELECT id FROM valid_weeks)
             GROUP BY e.song_id;
-        """)
+        """, (hot100_chart_id,))
 
         # Update weeks_at_peak
         cur.execute(f"""
-            WITH {_VALID_HOT100_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_weeks')}
             UPDATE song_stats ss
             SET weeks_at_peak = sub.cnt
             FROM (
                 SELECT e.song_id, COUNT(*) AS cnt
-                FROM hot100_entries e
+                FROM chart_entries e
                 JOIN song_stats s ON e.song_id = s.song_id AND e.rank = s.peak_position
-                WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+                WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+                  AND e.chart_week_id IN (SELECT id FROM valid_weeks)
                 GROUP BY e.song_id
             ) sub
             WHERE ss.song_id = sub.song_id;
-        """)
+        """, (hot100_chart_id,))
 
         # Update debut_position
         cur.execute(f"""
-            WITH {_VALID_HOT100_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_weeks')}
             UPDATE song_stats ss
             SET debut_position = sub.rank
             FROM (
                 SELECT DISTINCT ON (e.song_id) e.song_id, e.rank
-                FROM hot100_entries e
+                FROM chart_entries e
                 JOIN chart_weeks cw ON e.chart_week_id = cw.id
-                WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+                WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+                  AND e.chart_week_id IN (SELECT id FROM valid_weeks)
                 ORDER BY e.song_id, cw.chart_date
             ) sub
             WHERE ss.song_id = sub.song_id;
-        """)
+        """, (hot100_chart_id,))
 
     if commit:
         conn.commit()
 
 
 def build_album_stats(conn, commit=True):
-    """Populate album_stats from b200_entries, excluding phantom weeks.
+    """Populate album_stats from the billboard-200 ``chart_entries``, excluding phantoms.
+
+    Re-pointed in Phase 15: aggregates ``chart_entries`` filtered by the
+    billboard-200 ``chart_id`` (resolved once from the ``'billboard-200'`` slug)
+    under the parametric ``valid_weeks_cte``, instead of the retired
+    ``b200_entries`` table. Rows are byte-identical to the legacy build.
 
     ``commit=False`` defers the commit for :func:`build_all_stats`'s single-
     transaction rebuild (CR-02).
     """
+    b200_chart_id = _resolve_chart_id(conn, "billboard-200")
     with conn.cursor() as cur:
         cur.execute("DELETE FROM album_stats;")
         cur.execute(f"""
-            WITH {_VALID_B200_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_weeks')}
             INSERT INTO album_stats (
                 album_id, total_weeks, peak_position, weeks_at_peak,
                 weeks_at_number_one, debut_date, last_date, debut_position
@@ -310,39 +299,42 @@ def build_album_stats(conn, commit=True):
                 MIN(cw.chart_date) AS debut_date,
                 MAX(cw.chart_date) AS last_date,
                 NULL AS debut_position
-            FROM b200_entries e
+            FROM chart_entries e
             JOIN chart_weeks cw ON e.chart_week_id = cw.id
-            WHERE e.chart_week_id IN (SELECT id FROM valid_b200_weeks)
+            WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+              AND e.chart_week_id IN (SELECT id FROM valid_weeks)
             GROUP BY e.album_id;
-        """)
+        """, (b200_chart_id,))
 
         cur.execute(f"""
-            WITH {_VALID_B200_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_weeks')}
             UPDATE album_stats ss
             SET weeks_at_peak = sub.cnt
             FROM (
                 SELECT e.album_id, COUNT(*) AS cnt
-                FROM b200_entries e
+                FROM chart_entries e
                 JOIN album_stats s ON e.album_id = s.album_id AND e.rank = s.peak_position
-                WHERE e.chart_week_id IN (SELECT id FROM valid_b200_weeks)
+                WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+                  AND e.chart_week_id IN (SELECT id FROM valid_weeks)
                 GROUP BY e.album_id
             ) sub
             WHERE ss.album_id = sub.album_id;
-        """)
+        """, (b200_chart_id,))
 
         cur.execute(f"""
-            WITH {_VALID_B200_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_weeks')}
             UPDATE album_stats ss
             SET debut_position = sub.rank
             FROM (
                 SELECT DISTINCT ON (e.album_id) e.album_id, e.rank
-                FROM b200_entries e
+                FROM chart_entries e
                 JOIN chart_weeks cw ON e.chart_week_id = cw.id
-                WHERE e.chart_week_id IN (SELECT id FROM valid_b200_weeks)
+                WHERE e.chart_id = (SELECT chart_id FROM bound_valid_weeks)
+                  AND e.chart_week_id IN (SELECT id FROM valid_weeks)
                 ORDER BY e.album_id, cw.chart_date
             ) sub
             WHERE ss.album_id = sub.album_id;
-        """)
+        """, (b200_chart_id,))
 
     if commit:
         conn.commit()
@@ -351,10 +343,22 @@ def build_album_stats(conn, commit=True):
 def build_artist_stats(conn, commit=True):
     """Populate artist_stats with cross-chart career statistics, excluding phantom weeks.
 
+    Re-pointed in Phase 15: the per-chart weeks/number-ones/peak/date blocks
+    aggregate ``chart_entries`` filtered by the resolved hot-100 / billboard-200
+    ``chart_id`` under the parametric ``valid_weeks_cte`` (one CTE namespace per
+    chart so the combined two-chart UPDATE binds both), instead of the retired
+    ``hot100_entries`` / ``b200_entries`` tables. ``COUNT(*)`` over the
+    ``song_artists`` / ``album_artists`` join is PRESERVED exactly (summed
+    entity-weeks, NOT distinct calendar weeks -- WR-01 / Pitfall 2); the
+    ``total_*_songs`` / ``total_*_albums`` counts already read the link tables and
+    are untouched. Rows are byte-identical to the legacy build.
+
     ``commit=False`` defers the commit for :func:`build_all_stats`'s single-
     transaction rebuild (CR-02), so the live frontend never reads an empty
     ``artist_stats`` mid-rebuild.
     """
+    hot100_chart_id = _resolve_chart_id(conn, "hot-100")
+    b200_chart_id = _resolve_chart_id(conn, "billboard-200")
     with conn.cursor() as cur:
         cur.execute("DELETE FROM artist_stats;")
 
@@ -388,8 +392,9 @@ def build_artist_stats(conn, commit=True):
         """)
 
         # Hot 100 total weeks & number ones & best peak (filtered)
+        # COUNT(*) over song_artists is PRESERVED (summed entity-weeks, WR-01).
         cur.execute(f"""
-            WITH {_VALID_HOT100_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_hot100')}
             UPDATE artist_stats ast
             SET total_hot100_weeks = sub.total_weeks,
                 hot100_number_ones = sub.num_ones,
@@ -401,16 +406,18 @@ def build_artist_stats(conn, commit=True):
                     COUNT(DISTINCT e.song_id) FILTER (WHERE e.rank = 1) AS num_ones,
                     MIN(e.rank) AS best_peak
                 FROM song_artists sa
-                JOIN hot100_entries e ON sa.song_id = e.song_id
-                WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+                JOIN chart_entries e ON sa.song_id = e.song_id
+                WHERE e.chart_id = (SELECT chart_id FROM bound_valid_hot100)
+                  AND e.chart_week_id IN (SELECT id FROM valid_hot100)
                 GROUP BY sa.artist_id
             ) sub
             WHERE ast.artist_id = sub.artist_id;
-        """)
+        """, (hot100_chart_id,))
 
         # Billboard 200 total weeks & number ones & best peak (filtered)
+        # COUNT(*) over album_artists is PRESERVED (summed entity-weeks, WR-01).
         cur.execute(f"""
-            WITH {_VALID_B200_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_b200')}
             UPDATE artist_stats ast
             SET total_b200_weeks = sub.total_weeks,
                 b200_number_ones = sub.num_ones,
@@ -422,17 +429,20 @@ def build_artist_stats(conn, commit=True):
                     COUNT(DISTINCT e.album_id) FILTER (WHERE e.rank = 1) AS num_ones,
                     MIN(e.rank) AS best_peak
                 FROM album_artists aa
-                JOIN b200_entries e ON aa.album_id = e.album_id
-                WHERE e.chart_week_id IN (SELECT id FROM valid_b200_weeks)
+                JOIN chart_entries e ON aa.album_id = e.album_id
+                WHERE e.chart_id = (SELECT chart_id FROM bound_valid_b200)
+                  AND e.chart_week_id IN (SELECT id FROM valid_b200)
                 GROUP BY aa.artist_id
             ) sub
             WHERE ast.artist_id = sub.artist_id;
-        """)
+        """, (b200_chart_id,))
 
         # First and latest chart dates (filtered, union of both charts)
+        # Two CTE namespaces (valid_hot100 / valid_b200), each bound to its own
+        # chart_id, so the combined UPDATE binds both ids (hot-100 first, b200 next).
         cur.execute(f"""
-            WITH {_VALID_HOT100_WEEKS_CTE},
-            {_VALID_B200_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_hot100')},
+            {valid_weeks_cte('valid_b200')}
             UPDATE artist_stats ast
             SET first_chart_date = sub.first_date,
                 latest_chart_date = sub.latest_date
@@ -444,24 +454,26 @@ def build_artist_stats(conn, commit=True):
                 FROM (
                     SELECT sa.artist_id, cw.chart_date
                     FROM song_artists sa
-                    JOIN hot100_entries e ON sa.song_id = e.song_id
+                    JOIN chart_entries e ON sa.song_id = e.song_id
                     JOIN chart_weeks cw ON e.chart_week_id = cw.id
-                    WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+                    WHERE e.chart_id = (SELECT chart_id FROM bound_valid_hot100)
+                      AND e.chart_week_id IN (SELECT id FROM valid_hot100)
                     UNION ALL
                     SELECT aa.artist_id, cw.chart_date
                     FROM album_artists aa
-                    JOIN b200_entries e ON aa.album_id = e.album_id
+                    JOIN chart_entries e ON aa.album_id = e.album_id
                     JOIN chart_weeks cw ON e.chart_week_id = cw.id
-                    WHERE e.chart_week_id IN (SELECT id FROM valid_b200_weeks)
+                    WHERE e.chart_id = (SELECT chart_id FROM bound_valid_b200)
+                      AND e.chart_week_id IN (SELECT id FROM valid_b200)
                 ) combined
                 GROUP BY artist_id
             ) sub
             WHERE ast.artist_id = sub.artist_id;
-        """)
+        """, (hot100_chart_id, b200_chart_id))
 
         # Max simultaneous Hot 100 entries (filtered)
         cur.execute(f"""
-            WITH {_VALID_HOT100_WEEKS_CTE}
+            WITH {valid_weeks_cte('valid_hot100')}
             UPDATE artist_stats ast
             SET max_simultaneous_hot100 = sub.max_sim
             FROM (
@@ -471,14 +483,15 @@ def build_artist_stats(conn, commit=True):
                 FROM (
                     SELECT sa2.artist_id, e.chart_week_id, COUNT(*) AS week_count
                     FROM song_artists sa2
-                    JOIN hot100_entries e ON sa2.song_id = e.song_id
-                    WHERE e.chart_week_id IN (SELECT id FROM valid_hot100_weeks)
+                    JOIN chart_entries e ON sa2.song_id = e.song_id
+                    WHERE e.chart_id = (SELECT chart_id FROM bound_valid_hot100)
+                      AND e.chart_week_id IN (SELECT id FROM valid_hot100)
                     GROUP BY sa2.artist_id, e.chart_week_id
                 ) sa
                 GROUP BY sa.artist_id
             ) sub
             WHERE ast.artist_id = sub.artist_id;
-        """)
+        """, (hot100_chart_id,))
 
     if commit:
         conn.commit()

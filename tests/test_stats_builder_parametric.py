@@ -625,17 +625,29 @@ class BuildArtistChartStatsTests(unittest.TestCase):
 
 
 # ============================================================================
-# v1.0 compatibility: the literal CTEs and build_artist_stats are preserved
+# Phase 15: the v1.0-named builders were RE-POINTED onto chart_entries and the
+# two literal per-chart-type CTE constants were RETIRED. The builders still
+# exist (the v1.0-named stats tables are still produced) but no longer read the
+# legacy tables or carry a hardcoded chart_type column literal.
 # ============================================================================
 class V1CompatibilityTests(unittest.TestCase):
-    def test_v1_literal_ctes_and_build_artist_stats_preserved(self):
+    def test_build_artist_stats_repointed_onto_chart_entries(self):
         src = inspect.getsource(stats_builder)
-        self.assertIn("_VALID_HOT100_WEEKS_CTE", src)
-        self.assertIn("_VALID_B200_WEEKS_CTE", src)
+        # The v1.0-named builders are PRESERVED (the live frontend still reads
+        # song_stats / album_stats / artist_stats).
+        self.assertIn("def build_song_stats", src)
+        self.assertIn("def build_album_stats", src)
         self.assertIn("def build_artist_stats", src)
-        # The literal CTEs still carry their chart_type literals (unchanged).
-        self.assertIn("chart_type = 'hot-100'", src)
-        self.assertIn("chart_type = 'billboard-200'", src)
+        # The two literal per-chart-type CTE constants were RETIRED in Phase 15.
+        self.assertNotIn("_VALID_HOT100_WEEKS_CTE =", src)
+        self.assertNotIn("_VALID_B200_WEEKS_CTE =", src)
+        # The builders no longer read the legacy entry tables nor the dropped
+        # chart_type COLUMN literal; they aggregate chart_entries instead.
+        self.assertNotIn("FROM hot100_entries", src)
+        self.assertNotIn("FROM b200_entries", src)
+        self.assertNotIn("chart_type = 'hot-100'", src)
+        self.assertNotIn("chart_type = 'billboard-200'", src)
+        self.assertIn("FROM chart_entries", src)
 
     def test_module_imports_without_psycopg(self):
         # stats_builder must import in the psycopg2-free test env.

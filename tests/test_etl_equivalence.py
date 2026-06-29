@@ -280,6 +280,13 @@ class _CountingCursor:
         norm = " ".join(sql.split()).lower()
         if self._fail_on and self._fail_on in norm:
             raise RuntimeError("boom")
+        # The re-pointed v1.0 builders resolve their chart slug to a chart_id via
+        # `SELECT id FROM charts WHERE slug = %s` (Phase 15). Return a non-NULL id
+        # so the builders proceed; this stub only exercises the CR-02 transaction
+        # semantics, not the chart data.
+        if norm.startswith("select id from charts where slug ="):
+            self._result = [(1,)]
+            return
         # SELECT id, entity_kind FROM charts -> no charts (rollup loops nothing).
         self._result = []
 
@@ -287,7 +294,7 @@ class _CountingCursor:
         return self._result
 
     def fetchone(self):
-        return None
+        return self._result[0] if self._result else None
 
 
 class _CountingConn:
