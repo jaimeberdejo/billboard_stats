@@ -20,10 +20,16 @@ sole path in Phase 15):
 Phase 15 retired the legacy bifurcated storage: the two hardcoded per-chart-type
 phantom CTE constants and every read of the legacy hot-100 / billboard-200 entry
 tables here were re-pointed onto ``chart_entries`` filtered by ``chart_id``. The
-re-pointed builds produce byte-identical ``*_stats`` rows (gated by
-``tests/test_stats_equivalence.py``), because ``chart_entries`` was backfilled
-from and dual-written alongside the legacy tables, and ``valid_weeks_cte`` picks
-the SAME ``MIN(chart_weeks.id)`` first-real week the legacy CTEs picked.
+15-01 cutover proved this re-point produced the SAME ``*_stats`` rows as the
+legacy build (``chart_entries`` was backfilled from and dual-written alongside
+the legacy tables, and ``valid_weeks_cte`` picks the SAME ``MIN(chart_weeks.id)``
+first-real week the legacy CTEs picked). With the legacy tables now dropped there
+is nothing left to diff against, so ``tests/test_stats_equivalence.py`` instead
+guards the re-pointed SQL as an ORACLE test: it EXECUTES these builders' actual
+query text against an in-memory ``sqlite3`` fixture and asserts the concrete
+resulting rows, so a regression in the load-bearing semantics -- a dropped
+``chart_id`` predicate, a ``COUNT(*)`` -> ``COUNT(DISTINCT)`` swap, or a lost
+``MIN(chart_weeks.id)`` tie-break -- fails the test.
 """
 
 from __future__ import annotations
@@ -153,28 +159,30 @@ def build_all_stats(conn):
     """Populate all stats tables in a SINGLE transaction. Call after all chart
     data is loaded.
 
-    Runs BOTH stats paths during the transition (Plan 10-02):
+    Runs all stats builders over the SINGLE polymorphic store (Phase 15 retired
+    the bifurcated hot100_entries/b200_entries tables; every builder below now
+    reads ``chart_entries`` filtered by ``chart_id``):
 
-    * The v1.0 literal path (``build_song_stats`` / ``build_album_stats`` /
-      ``build_artist_stats``) over the bifurcated hot100_entries/b200_entries
-      tables -- KEPT byte-unchanged so the unchanged v1.0 frontend keeps reading
-      ``artist_stats``. Phase 15 retires it.
-    * The generalized registry-loop rollup (``build_artist_chart_stats``), which
-      is the canonical multi-chart stats run: it loops the ``charts`` registry
-      and, per chart, aggregates the polymorphic ``chart_entries`` under the
-      single parametric phantom CTE -- adding a chart adds ROWS, never columns.
+    * The v1.0-named builds (``build_song_stats`` / ``build_album_stats`` /
+      ``build_artist_stats``) populate the ``song_stats`` / ``album_stats`` /
+      ``artist_stats`` tables the v1.0 frontend reads. Re-pointed in Phase 15 from
+      the legacy entry tables onto ``chart_entries`` (same rows, oracle-gated).
+    * The generalized registry-loop rollup (``build_artist_chart_stats``), the
+      canonical multi-chart stats run: it loops the ``charts`` registry and, per
+      chart, aggregates ``chart_entries`` under the single parametric phantom CTE
+      -- adding a chart adds ROWS, never columns.
 
-    The rollup runs AFTER the v1.0 builds and does not touch ``artist_stats``;
+    The rollup runs AFTER the v1.0-named builds and does not touch ``artist_stats``;
     it is safe to run even when ``chart_entries`` is empty (it simply writes no
     rows for charts with no entries).
 
     CR-02: every builder is a ``DELETE FROM <stats_table>`` + repopulate. They run
     here with ``commit=False`` so the whole rebuild is ONE transaction committed
-    exactly once at the end. This protects the LIVE v1.0 site during the dual-write
-    transition: a concurrent reader sees the OLD stats until the final commit
-    atomically flips to the NEW set, never an empty/half-rebuilt ``artist_stats``
-    (or any other stats table) mid-rebuild. On any failure we roll back, leaving
-    the previous stats intact rather than freezing the site on an empty table.
+    exactly once at the end. This protects the LIVE site: a concurrent reader sees
+    the OLD stats until the final commit atomically flips to the NEW set, never an
+    empty/half-rebuilt ``artist_stats`` (or any other stats table) mid-rebuild. On
+    any failure we roll back, leaving the previous stats intact rather than
+    freezing the site on an empty table.
     """
     try:
         logger.info("Building song stats...")
@@ -202,8 +210,9 @@ def build_song_stats(conn, commit=True):
 
     Re-pointed in Phase 15: aggregates ``chart_entries`` filtered by the hot-100
     ``chart_id`` (resolved once from the ``'hot-100'`` slug) under the parametric
-    ``valid_weeks_cte``, instead of the retired ``hot100_entries`` table. The rows
-    written are byte-identical to the legacy build (``tests/test_stats_equivalence``).
+    ``valid_weeks_cte``, instead of the retired ``hot100_entries`` table. The
+    re-pointed SQL is guarded by the oracle test ``tests/test_stats_equivalence``,
+    which executes this query against a sqlite fixture and pins the resulting rows.
 
     ``commit=False`` defers the commit so :func:`build_all_stats` can wrap the
     whole multi-table rebuild in one transaction (CR-02); direct callers keep the
@@ -276,7 +285,8 @@ def build_album_stats(conn, commit=True):
     Re-pointed in Phase 15: aggregates ``chart_entries`` filtered by the
     billboard-200 ``chart_id`` (resolved once from the ``'billboard-200'`` slug)
     under the parametric ``valid_weeks_cte``, instead of the retired
-    ``b200_entries`` table. Rows are byte-identical to the legacy build.
+    ``b200_entries`` table. The re-pointed SQL is guarded by the oracle test
+    ``tests/test_stats_equivalence`` (executed against a sqlite fixture).
 
     ``commit=False`` defers the commit for :func:`build_all_stats`'s single-
     transaction rebuild (CR-02).
@@ -351,7 +361,10 @@ def build_artist_stats(conn, commit=True):
     ``song_artists`` / ``album_artists`` join is PRESERVED exactly (summed
     entity-weeks, NOT distinct calendar weeks -- WR-01 / Pitfall 2); the
     ``total_*_songs`` / ``total_*_albums`` counts already read the link tables and
-    are untouched. Rows are byte-identical to the legacy build.
+    are untouched. The re-pointed SQL is guarded by the oracle test
+    ``tests/test_stats_equivalence`` (executed against a sqlite fixture), which
+    pins the summed-entity-weeks ``COUNT(*)`` value so a ``COUNT(DISTINCT)``
+    regression fails.
 
     ``commit=False`` defers the commit for :func:`build_all_stats`'s single-
     transaction rebuild (CR-02), so the live frontend never reads an empty
