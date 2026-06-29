@@ -7,8 +7,7 @@ interface DataStatusPanelProps {
 
 const COUNT_ROWS: Array<keyof DataSummary["counts"]> = [
   "chart_weeks",
-  "hot100_entries",
-  "b200_entries",
+  "chart_entries",
   "songs",
   "albums",
   "artists",

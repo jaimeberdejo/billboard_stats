@@ -6,7 +6,7 @@
  *
  * Response shape:
  *   200: { counts, latestDates, chart_weeks, songs, albums, artists,
- *           hot100_entries, b200_entries }
+ *           chart_entries }
  *   500: { error: string }
  *
  * Threat-model mitigation (TM-02-04):
@@ -27,8 +27,7 @@ export async function GET(): Promise<Response> {
       songs: summary.songs,
       albums: summary.albums,
       artists: summary.artists,
-      hot100_entries: summary.hot100_entries,
-      b200_entries: summary.b200_entries,
+      chart_entries: summary.chart_entries,
     });
   } catch {
     return Response.json(
