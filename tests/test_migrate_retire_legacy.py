@@ -208,6 +208,16 @@ class RetireDdlByteConsistencyTests(unittest.TestCase):
 # ============================================================================
 # In-memory fake DB layer (mirrors test_migrate_gender.py)
 # ============================================================================
+class _NotNullViolation(Exception):
+    """Stand-in for psycopg2.errors.NotNullViolation: what real PostgreSQL raises
+    when ``ALTER COLUMN ... SET NOT NULL`` runs against a column holding NULLs.
+
+    The runner must NEVER surface this to the operator -- a reachable pre-DDL
+    guard converts the NULL-chart_id condition into a clean
+    ``RetireLegacyMigrationError`` first.
+    """
+
+
 class FakeCursor:
     """A psycopg2-cursor-like stand-in interpreting the SQL migrate() emits.
 
@@ -338,6 +348,15 @@ class FakeDB:
 
     # --- DDL mutations ---------------------------------------------------------
     def set_chart_id_not_null(self):
+        # Model real PostgreSQL: ``ALTER COLUMN chart_id SET NOT NULL`` RAISES
+        # immediately if any row still has a NULL chart_id (it cannot promote a
+        # column that holds NULLs). The runner must therefore guard the invariant
+        # BEFORE issuing this DDL; if it does not, this raise simulates the raw
+        # driver NotNullViolation the operator would otherwise see.
+        if self.count_null_chart_id():
+            raise _NotNullViolation(
+                "column \"chart_id\" of relation \"chart_weeks\" contains null values"
+            )
         self.chart_id_not_null = True
 
     def add_unique_constraint(self):
@@ -490,9 +509,14 @@ class RetireRollbackTests(unittest.TestCase):
         self.assertFalse(conn.committed)
         self.assertEqual(db.snapshot(), before)
 
-    def test_remaining_null_chart_id_rolls_back_and_raises(self):
-        # If a chart_weeks row still has a NULL chart_id after the (no-op in the
-        # fake) NOT NULL promotion, the invariant must trip -> rollback + raise.
+    def test_null_chart_id_is_guarded_before_set_not_null_ddl(self):
+        # M-01: a NULL chart_id must be rejected with a CLEAN
+        # RetireLegacyMigrationError + rollback. The fake models real Postgres:
+        # ``set_chart_id_not_null`` RAISES a NotNullViolation if a NULL row
+        # survives to the DDL. So if the runner ever checked the invariant only
+        # AFTER the SET NOT NULL ALTER (the original unreachable-guard bug), this
+        # test would see a raw _NotNullViolation instead -- proving the guard now
+        # runs BEFORE the DDL.
         db = _fixture()
         db.chart_weeks.append(
             {"id": 3, "chart_date": "2020-01-11", "chart_id": None,
@@ -504,7 +528,11 @@ class RetireRollbackTests(unittest.TestCase):
         with self.assertRaises(RetireLegacyMigrationError) as ctx:
             migrate(conn, dry_run=False)
 
+        # The clean migration error wins (the raw NotNullViolation never escapes).
         self.assertIn("NULL chart_id", str(ctx.exception))
+        self.assertIn("before migration", str(ctx.exception))
+        # The SET NOT NULL DDL was NEVER reached (guard fired first).
+        self.assertFalse(db.chart_id_not_null)
         self.assertTrue(conn.rolled_back)
         self.assertFalse(conn.committed)
         self.assertEqual(db.snapshot(), before)

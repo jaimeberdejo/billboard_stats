@@ -29,11 +29,15 @@ Design / safety contract (mirrors billboard_stats/etl/migrate_gender.py):
 * Every statement is IDEMPOTENT (ALTER ... IF EXISTS, DROP ... IF EXISTS, a
   DO-block-guarded ADD CONSTRAINT) so a fresh install and an existing install
   converge and a re-apply is a clean no-op.
-* Everything runs in a SINGLE transaction on ONE connection. After the DDL it
-  asserts post-migration invariants:
+* Everything runs in a SINGLE transaction on ONE connection. BEFORE the DDL it
+  guards the NULL-chart_id invariant (so the ``SET NOT NULL`` ALTER cannot raise
+  a raw driver error first -- the operator gets a clean
+  ``RetireLegacyMigrationError`` + rollback). AFTER the DDL it asserts the
+  remaining post-migration invariants:
+    - NO ``chart_weeks`` row has a NULL ``chart_id`` (checked PRE-DDL so the clean
+      error is reachable; re-checked post-DDL as belt-and-braces);
     - ``hot100_entries`` / ``b200_entries`` are GONE (information_schema.tables);
     - the ``chart_type`` column on ``chart_weeks`` is GONE (information_schema.columns);
-    - NO ``chart_weeks`` row has a NULL ``chart_id``;
     - the ``chart_entries`` row count is UNCHANGED vs before the migration (the
       drop removes redundant copies, never the live polymorphic data);
     - the ``UNIQUE(chart_id, chart_date)`` constraint EXISTS (pg_constraint).
@@ -171,12 +175,31 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 )
                 return report
 
-            # --- 1. DDL (invariants BEFORE drops; idempotent) ----------------
+            # --- 1. PRE-DDL guard: no NULL chart_id (reachable clean error) --
+            # The FIRST DDL statement is ``ALTER COLUMN chart_id SET NOT NULL``,
+            # which against real PostgreSQL raises a raw NotNullViolation (and
+            # aborts the transaction) the instant any chart_weeks row has a NULL
+            # chart_id -- BEFORE we could reach the post-DDL invariant. Check the
+            # invariant HERE, before issuing the DDL, so the operator gets the
+            # intended ``RetireLegacyMigrationError`` + clean rollback instead of
+            # an opaque driver error. (The post-DDL re-check below stays as a
+            # belt-and-braces assertion.)
+            null_chart_id_pre = _count(
+                cur, "SELECT COUNT(*) FROM chart_weeks WHERE chart_id IS NULL;"
+            )
+            if null_chart_id_pre:
+                raise RetireLegacyMigrationError(
+                    f"{null_chart_id_pre} chart_weeks row(s) have a NULL chart_id "
+                    "before migration; cannot promote chart_id to NOT NULL "
+                    "(populate or delete those rows first)"
+                )
+
+            # --- 2. DDL (invariants BEFORE drops; idempotent) ----------------
             for stmt in _DDL_STATEMENTS:
                 cur.execute(stmt)
             report["dropped_tables"] = list(existing_before)
 
-            # --- 2. Post-migration assertions --------------------------------
+            # --- 3. Post-migration assertions --------------------------------
             # (a) the two legacy entry tables are GONE.
             still_present = _existing_legacy_entry_tables(cur)
             if still_present:
@@ -192,6 +215,10 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 )
 
             # (c) no chart_weeks row has a NULL chart_id (NOT NULL promoted).
+            # Belt-and-braces: the pre-DDL guard above already rejects NULL
+            # chart_id before the SET NOT NULL runs, so on real Postgres this
+            # post-DDL re-check can only ever see zero NULLs. It is retained as a
+            # defensive assertion (cheap, and documents the post-state invariant).
             null_chart_id = _count(
                 cur, "SELECT COUNT(*) FROM chart_weeks WHERE chart_id IS NULL;"
             )
