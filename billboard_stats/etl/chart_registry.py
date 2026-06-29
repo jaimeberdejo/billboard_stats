@@ -6,7 +6,7 @@ SOURCE OF TRUTH for which charts the ETL loads (seeded by the Phase 9 migration
 with hot-100=song, billboard-200=album) -- and yields one :class:`ChartRecord`
 per chart carrying everything a loader needs to drive a parametric load:
 
-    (slug, entity_kind, folder, last_loaded_date, legacy_table)
+    (slug, entity_kind, folder, last_loaded_date)
 
 Distinct from ``charts.py`` CURATED_CHARTS, which is the Phase 7 ACQUISITION
 curation (what to *download*); this registry is the LOAD list (what is in the DB
@@ -20,10 +20,6 @@ Design constraints (per the Phase 10 CONTEXT decisions):
   (default :data:`fetcher.DATA_DIR`). The folder is NOT stat-ed: a record is
   yielded even when the on-disk folder does not exist yet (the Phase 7 backfill
   may not have downloaded a chart), so callers decide whether to load.
-* ``legacy_table`` is the dual-write target during the transition: hot-100 ->
-  ``("hot100_entries", "song_id")``, billboard-200 -> ``("b200_entries",
-  "album_id")``, every other chart -> ``None``. New charts never touch a legacy
-  table.
 * ``last_loaded_date`` is ``MAX(chart_weeks.chart_date)`` for the chart (``None``
   when no weeks are loaded yet -- the incremental start signal).
 * psycopg2 is NEVER a top-level import (mirrors migrate_multichart.py): the
@@ -38,20 +34,13 @@ from __future__ import annotations
 
 import os
 from datetime import date
-from typing import Iterator, List, NamedTuple, Optional, Tuple
+from typing import Iterator, List, NamedTuple, Optional
 
 # Legacy charts -> their REAL on-disk folder name (NOT the slug). New charts use
 # the slug itself as the folder name.
 _LEGACY_FOLDER: dict = {
     "hot-100": "hot100",
     "billboard-200": "b200",
-}
-
-# Legacy charts -> (dual-write v1.0 entry table, entity FK column). Every other
-# chart writes only chart_entries (no legacy table).
-_LEGACY_TABLE: dict = {
-    "hot-100": ("hot100_entries", "song_id"),
-    "billboard-200": ("b200_entries", "album_id"),
 }
 
 
@@ -67,15 +56,12 @@ class ChartRecord(NamedTuple):
             others to ``data/{slug}``). May not exist on disk yet.
         last_loaded_date: ``MAX(chart_weeks.chart_date)`` already loaded for this
             chart, or ``None`` when nothing is loaded (incremental start signal).
-        legacy_table: ``(table_name, entity_fk_column)`` to dual-write for the
-            two legacy charts, else ``None``.
     """
 
     slug: str
     entity_kind: str
     folder: str
     last_loaded_date: Optional[date]
-    legacy_table: Optional[Tuple[str, str]]
 
 
 def _resolve_folder(slug: str, data_dir: str) -> str:
@@ -88,11 +74,6 @@ def _resolve_folder(slug: str, data_dir: str) -> str:
     """
     folder_name = _LEGACY_FOLDER.get(slug, slug)
     return os.path.join(data_dir, folder_name)
-
-
-def _resolve_legacy_table(slug: str) -> Optional[Tuple[str, str]]:
-    """Map a chart slug to its dual-write ``(table, entity_fk)`` or ``None``."""
-    return _LEGACY_TABLE.get(slug)
 
 
 def iter_charts(
@@ -163,7 +144,6 @@ def iter_charts(
             entity_kind=entity_kind,
             folder=_resolve_folder(slug, data_dir),
             last_loaded_date=last_loaded_date,
-            legacy_table=_resolve_legacy_table(slug),
         )
 
 
