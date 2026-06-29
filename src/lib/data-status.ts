@@ -17,8 +17,7 @@ import { saturdayPredicate } from "@/lib/chart-week";
 /** Row counts for all major tracked tables. */
 export interface TableCounts {
   chart_weeks: number;
-  hot100_entries: number;
-  b200_entries: number;
+  chart_entries: number;
   songs: number;
   albums: number;
   artists: number;
@@ -27,7 +26,7 @@ export interface TableCounts {
   artist_stats: number;
 }
 
-/** Latest chart_date per chart_type. */
+/** Latest chart_date per chart (keyed by chart slug). */
 export type LatestDates = Record<string, string>;
 
 /** Combined summary returned by `getDataSummary()`. */
@@ -38,8 +37,7 @@ export interface DataSummary {
   songs: number;
   albums: number;
   artists: number;
-  hot100_entries: number;
-  b200_entries: number;
+  chart_entries: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,8 +46,7 @@ export interface DataSummary {
 
 const ALLOWED_TABLES = [
   "chart_weeks",
-  "hot100_entries",
-  "b200_entries",
+  "chart_entries",
   "songs",
   "albums",
   "artists",
@@ -86,8 +83,7 @@ export async function getTableCounts(): Promise<TableCounts> {
 
   return {
     chart_weeks: counts.chart_weeks ?? 0,
-    hot100_entries: counts.hot100_entries ?? 0,
-    b200_entries: counts.b200_entries ?? 0,
+    chart_entries: counts.chart_entries ?? 0,
     songs: counts.songs ?? 0,
     albums: counts.albums ?? 0,
     artists: counts.artists ?? 0,
@@ -98,7 +94,12 @@ export async function getTableCounts(): Promise<TableCounts> {
 }
 
 /**
- * Latest chart_date per chart_type, grouped.
+ * Latest chart_date per chart, grouped (keyed by chart slug).
+ *
+ * Reads the chart identity from the `charts` registry via `chart_weeks.chart_id`
+ * (the dropped chart-type discriminator column is gone). The returned keys are
+ * chart slugs (`'hot-100'` / `'billboard-200'` / ...), unchanged from before —
+ * downstream consumers that index by slug are unaffected.
  */
 export async function getLatestChartDates(): Promise<LatestDates> {
   const sql = getSql();
@@ -108,17 +109,18 @@ export async function getLatestChartDates(): Promise<LatestDates> {
   // uses the sql.query(text) form (matching how records.ts composes constant
   // predicate text) rather than the tagged-template form.
   const rows = await sql.query(
-    `SELECT chart_type,
-           MAX(chart_date)::text AS latest_date
-    FROM chart_weeks
-    WHERE chart_date <= CURRENT_DATE
-      AND ${saturdayPredicate("chart_date")}
-    GROUP BY chart_type`,
+    `SELECT c.slug,
+           MAX(cw.chart_date)::text AS latest_date
+    FROM chart_weeks cw
+    JOIN charts c ON cw.chart_id = c.id
+    WHERE cw.chart_date <= CURRENT_DATE
+      AND ${saturdayPredicate("cw.chart_date")}
+    GROUP BY c.slug`,
   );
 
   const result: LatestDates = {};
   for (const row of rows) {
-    result[row.chart_type as string] = row.latest_date as string;
+    result[row.slug as string] = row.latest_date as string;
   }
   return result;
 }
@@ -140,7 +142,6 @@ export async function getDataSummary(): Promise<DataSummary> {
     songs: counts.songs,
     albums: counts.albums,
     artists: counts.artists,
-    hot100_entries: counts.hot100_entries,
-    b200_entries: counts.b200_entries,
+    chart_entries: counts.chart_entries,
   };
 }
