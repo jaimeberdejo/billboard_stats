@@ -31,6 +31,17 @@ from billboard_stats.etl.migrate_multichart import (
 )
 
 
+class SimulatedUndefinedTable(Exception):
+    """Stand-in for ``psycopg2.errors.UndefinedTable``.
+
+    Raised by the pristine FakeCursor when a read touches a ``charts`` /
+    ``chart_entries`` table that does NOT yet exist (prod's real pre-migration
+    state). Subclasses Exception so the runner's broad
+    ``except Exception: conn.rollback(); raise`` propagates it unchanged — the
+    same way the real psycopg2 error surfaces on a pristine v1.0 DB.
+    """
+
+
 # ============================================================================
 # In-memory fake DB layer
 # ============================================================================
@@ -59,12 +70,46 @@ class FakeCursor:
         norm = re.sub(r"\s+", " ", sql).strip().lower()
         params = params or ()
 
+        # --- PRISTINE-DB guard: reads of a not-yet-created object raise --------
+        # Models prod's real pre-migration state where `charts` / `chart_entries`
+        # do NOT exist yet. Any read (or to_regclass existence check that is NOT
+        # the guard short-circuit) touching an ABSENT table raises a simulated
+        # UndefinedTable -- exactly what real PostgreSQL does -- UNTIL the
+        # CREATE TABLE IF NOT EXISTS DDL below flips the table present. The
+        # `to_regclass('public.<table>')` existence probe is handled by its own
+        # branch (it must NOT raise -- that is the whole point of the guard).
+        if not norm.startswith("select to_regclass("):
+            for table in ("chart_entries", "charts"):
+                if not self._db.is_present(table) and (
+                    f"from {table}" in norm or f"{table} ce" in norm
+                ):
+                    raise SimulatedUndefinedTable(
+                        f'relation "{table}" does not exist'
+                    )
+
+        # --- to_regclass existence probe (the runner's pristine-DB guard) -----
+        # `SELECT to_regclass('public.<table>') IS NOT NULL` -- returns the
+        # boolean presence of the table WITHOUT raising even when absent.
+        if norm.startswith("select to_regclass("):
+            m = re.search(r"to_regclass\('public\.(\w+)'\)", norm)
+            table = m.group(1) if m else None
+            self._result = [(bool(self._db.is_present(table)),)]
+            return
+
         # --- DDL: accepted as no-ops (the fake DB models the target shape) ----
         if (
             norm.startswith("create table")
             or norm.startswith("alter table")
             or norm.startswith("create index")
         ):
+            # CREATE TABLE IF NOT EXISTS flips an absent table present-and-empty
+            # (prod-faithful: the read now succeeds and returns 0 rows). Other
+            # DDL (ALTER, CREATE INDEX, CREATE TABLE for an already-present
+            # table) stays a pure no-op.
+            if norm.startswith("create table if not exists charts"):
+                self._db.mark_present("charts")
+            elif norm.startswith("create table if not exists chart_entries"):
+                self._db.mark_present("chart_entries")
             self._result = None
             return
 
@@ -232,6 +277,11 @@ class FakeDB:
     """In-memory model of charts / chart_weeks / hot100_entries / b200_entries /
     chart_entries for the migration."""
 
+    # The tables whose presence the pristine-DB model tracks. Every other table
+    # (chart_weeks, hot100_entries, b200_entries, ...) is a v1.0 table that
+    # ALWAYS exists, so it is never gated.
+    _GATED_TABLES = ("charts", "chart_entries")
+
     def __init__(
         self,
         chart_weeks=None,
@@ -239,6 +289,7 @@ class FakeDB:
         b200_entries=None,
         charts=None,
         chart_entries=None,
+        present_tables=None,
     ):
         # chart_weeks: {"id": int, "chart_type": str, "chart_id": int|None}
         self.chart_weeks = [dict(w) for w in (chart_weeks or [])]
@@ -251,6 +302,24 @@ class FakeDB:
         self.chart_entries = [dict(e) for e in (chart_entries or [])]
         self._next_chart_id = (max((c["id"] for c in self.charts), default=0)) + 1
         self._next_ce_id = (max((e["id"] for e in self.chart_entries), default=0)) + 1
+        # Which gated tables currently EXIST. Defaults to all-present so every
+        # existing fixture behaves exactly as before; the pristine factory passes
+        # an empty set so charts/chart_entries start ABSENT until DDL creates them.
+        self.present_tables = (
+            set(self._GATED_TABLES) if present_tables is None else set(present_tables)
+        )
+
+    # --- pristine-DB presence tracking ----------------------------------------
+    def is_present(self, table):
+        """Whether a gated table currently exists. Non-gated (v1.0) tables are
+        always present."""
+        if table not in self._GATED_TABLES:
+            return True
+        return table in self.present_tables
+
+    def mark_present(self, table):
+        """Flip a gated table from absent to present (CREATE TABLE IF NOT EXISTS)."""
+        self.present_tables.add(table)
 
     # --- seed ------------------------------------------------------------------
     def seed_chart(self, slug, title, entity_kind, category, sort_order):
@@ -406,6 +475,7 @@ class FakeDB:
                 "b200_entries": self.b200_entries,
                 "charts": self.charts,
                 "chart_entries": self.chart_entries,
+                "present_tables": sorted(self.present_tables),
             }
         )
 
@@ -416,6 +486,7 @@ class FakeDB:
         self.b200_entries = snap["b200_entries"]
         self.charts = snap["charts"]
         self.chart_entries = snap["chart_entries"]
+        self.present_tables = set(snap.get("present_tables", self._GATED_TABLES))
 
 
 def _fixture():
@@ -441,6 +512,79 @@ def _fixture():
          "peak_pos": 2, "last_pos": 2, "weeks_on_chart": 4, "is_new": False},
     ]
     return FakeDB(chart_weeks, hot100_entries, b200_entries)
+
+
+def _pristine_fixture():
+    """Prod's ACTUAL pre-migration shape: chart_weeks + hot100_entries +
+    b200_entries populated, but `charts` and `chart_entries` ABSENT (the tables
+    don't exist yet -- not merely empty). Any read of `charts` / `chart_entries`
+    raises a simulated UndefinedTable until the migration's
+    CREATE TABLE IF NOT EXISTS DDL flips them present.
+
+    This is the fixture the FakeDB-seeded `_fixture()` could NOT model (it
+    pre-defines `chart_entries=[]`), which is exactly why the pristine-DB
+    UndefinedTable defect slipped past the offline suite.
+    """
+    db = _fixture()
+    db.present_tables = set()  # charts + chart_entries do NOT exist yet
+    return db
+
+
+# ----------------------------------------------------------------------------
+# Pristine v1.0 DB: charts / chart_entries absent until the DDL creates them
+# (MIG-01 regression — the CONFIRMED DEFECT: pre-DDL reads of those tables
+# raise UndefinedTable on the real prod DB in BOTH dry-run and apply).
+# ----------------------------------------------------------------------------
+class MigratePristineDbTests(unittest.TestCase):
+    def test_dry_run_on_pristine_db_succeeds(self):
+        db = _pristine_fixture()
+        before = db.snapshot()
+        conn = FakeConn(db)
+
+        report = migrate(conn, dry_run=True)
+
+        self.assertTrue(report["dry_run"])
+        # A missing `charts` table => no chart seeded yet => both planned.
+        self.assertEqual(report["seeded_charts"], 2)
+        # A missing `chart_entries` table => every source row is a planned insert.
+        self.assertEqual(report["backfill"]["hot-100"], len(db.hot100_entries))
+        self.assertEqual(
+            report["backfill"]["billboard-200"], len(db.b200_entries)
+        )
+        # Dry-run still writes nothing and commits nothing.
+        self.assertEqual(db.snapshot(), before)
+        self.assertFalse(conn.committed)
+
+    def test_apply_on_pristine_db_succeeds(self):
+        db = _pristine_fixture()
+        conn = FakeConn(db)
+
+        report = migrate(conn, dry_run=False)
+
+        self.assertFalse(report["dry_run"])
+        # Seeded both charts and backfilled the full source counts.
+        self.assertEqual(report["seeded_charts"], 2)
+        self.assertEqual(report["backfill"]["hot-100"], len(db.hot100_entries))
+        self.assertEqual(
+            report["backfill"]["billboard-200"], len(db.b200_entries)
+        )
+        # Parity + content checks held -> committed (no rollback).
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+        # The DDL flipped both tables present.
+        self.assertTrue(db.is_present("charts"))
+        self.assertTrue(db.is_present("chart_entries"))
+        # Per-chart parity holds on the now-created chart_entries.
+        hot100_id = db.chart_id("hot-100")
+        b200_id = db.chart_id("billboard-200")
+        self.assertEqual(
+            len([e for e in db.chart_entries if e["chart_id"] == hot100_id]),
+            len(db.hot100_entries),
+        )
+        self.assertEqual(
+            len([e for e in db.chart_entries if e["chart_id"] == b200_id]),
+            len(db.b200_entries),
+        )
 
 
 # ----------------------------------------------------------------------------
