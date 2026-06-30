@@ -120,6 +120,16 @@ primary.
   already applied (idempotent no-op) — you are done with the apply; you may still
   re-run the §4 stats rebuild if catalog data changed.
 
+> **Pristine-DB safe (MIG-01).** Both `--dry-run` and the §4 apply are proven to
+> run cleanly against a **pristine v1.0 DB** where `charts` and `chart_entries`
+> do **not exist yet** (the real prod state). The runner's pre-DDL reads of those
+> two tables are guarded with a `to_regclass('public.<table>') IS NOT NULL`
+> existence check, so a missing table reads as 0 rows / a full planned backfill
+> instead of raising `psycopg2.errors.UndefinedTable`. Previously the FakeDB
+> tests masked this because they pre-defined `chart_entries=[]`; a
+> `MigratePristineDbTests` regression (charts/chart_entries absent until the
+> `CREATE TABLE IF NOT EXISTS` DDL creates them) now covers it.
+
 ---
 
 ## 3. SNAPSHOT — take a `pg_dump` backup BEFORE applying
