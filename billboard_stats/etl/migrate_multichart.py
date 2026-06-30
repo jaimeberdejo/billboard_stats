@@ -134,7 +134,29 @@ def _count(cur, sql: str, params: tuple = ()) -> int:
     return cur.fetchone()[0]
 
 
+def _table_exists(cur, table: str) -> bool:
+    """Whether ``public.<table>`` exists, via ``to_regclass`` (never raises).
+
+    The pre-DDL reads in ``migrate()`` touch ``charts`` / ``chart_entries``
+    BEFORE the ``_DDL_STATEMENTS`` loop creates them. On a PRISTINE v1.0
+    production DB those tables do NOT exist yet, so an unguarded read raises
+    ``psycopg2.errors.UndefinedTable`` and the migration cannot be applied at
+    all (MIG-01). ``to_regclass`` returns NULL for a missing relation instead of
+    raising, letting the caller short-circuit the dependent read to its
+    pristine-equivalent value (missing table => 0 rows / nothing seeded yet =>
+    full planned backfill). Lower-risk than reordering the DDL ahead of the
+    reads (no need to re-verify dry-run's commit/rollback handling).
+    """
+    cur.execute(f"SELECT to_regclass('public.{table}') IS NOT NULL;")
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
 def _chart_id(cur, slug: str) -> Optional[int]:
+    # On a pristine DB the `charts` table does not exist yet; treat a missing
+    # table as "no chart present" rather than letting the read raise.
+    if not _table_exists(cur, "charts"):
+        return None
     cur.execute("SELECT id FROM charts WHERE slug = %s;", (slug,))
     row = cur.fetchone()
     return row[0] if row else None
@@ -171,7 +193,16 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
             # --- Source + pre-existing counts (single transaction) -----------
             src_hot100 = _count(cur, "SELECT COUNT(*) FROM hot100_entries;")
             src_b200 = _count(cur, "SELECT COUNT(*) FROM b200_entries;")
-            before_ce = _count(cur, "SELECT COUNT(*) FROM chart_entries;")
+            # PRISTINE-DB tolerance (MIG-01): chart_entries does not exist on a
+            # fresh v1.0 DB until the DDL loop below creates it. Guard the
+            # pre-DDL snapshot so a missing table reads as 0 instead of raising
+            # UndefinedTable.
+            ce_exists = _table_exists(cur, "chart_entries")
+            before_ce = (
+                _count(cur, "SELECT COUNT(*) FROM chart_entries;")
+                if ce_exists
+                else 0
+            )
             report["before"] = {
                 "hot100_entries": src_hot100,
                 "b200_entries": src_b200,
@@ -200,24 +231,37 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 # source rows whose (chart_week_id, rank) is not yet present
                 # matches the real insert exactly. With a pristine DB this is the
                 # full source count; a re-run reports 0.
-                planned_backfill = {
-                    "hot-100": _count(
-                        cur,
-                        "SELECT COUNT(*) FROM hot100_entries h "
-                        "WHERE NOT EXISTS ("
-                        "  SELECT 1 FROM chart_entries ce "
-                        "  WHERE ce.chart_week_id = h.chart_week_id "
-                        "    AND ce.rank = h.rank);",
-                    ),
-                    "billboard-200": _count(
-                        cur,
-                        "SELECT COUNT(*) FROM b200_entries b "
-                        "WHERE NOT EXISTS ("
-                        "  SELECT 1 FROM chart_entries ce "
-                        "  WHERE ce.chart_week_id = b.chart_week_id "
-                        "    AND ce.rank = b.rank);",
-                    ),
-                }
+                # PRISTINE-DB tolerance (MIG-01): when chart_entries does not
+                # exist yet, the `... NOT EXISTS (... chart_entries ...)` reads
+                # would raise UndefinedTable. A missing table means NOTHING has
+                # been backfilled, so EVERY source row is a planned insert ->
+                # the full bare source count (hot100_entries / b200_entries DO
+                # exist on v1.0). When the table exists, run the real
+                # conflict-aware NOT EXISTS counts exactly as before.
+                if not ce_exists:
+                    planned_backfill = {
+                        "hot-100": src_hot100,
+                        "billboard-200": src_b200,
+                    }
+                else:
+                    planned_backfill = {
+                        "hot-100": _count(
+                            cur,
+                            "SELECT COUNT(*) FROM hot100_entries h "
+                            "WHERE NOT EXISTS ("
+                            "  SELECT 1 FROM chart_entries ce "
+                            "  WHERE ce.chart_week_id = h.chart_week_id "
+                            "    AND ce.rank = h.rank);",
+                        ),
+                        "billboard-200": _count(
+                            cur,
+                            "SELECT COUNT(*) FROM b200_entries b "
+                            "WHERE NOT EXISTS ("
+                            "  SELECT 1 FROM chart_entries ce "
+                            "  WHERE ce.chart_week_id = b.chart_week_id "
+                            "    AND ce.rank = b.rank);",
+                        ),
+                    }
                 for slug, _src, _col in _BACKFILL_SOURCES:
                     report["backfill"][slug] = planned_backfill[slug]
 
