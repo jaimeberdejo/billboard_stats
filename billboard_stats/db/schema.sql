@@ -133,7 +133,6 @@ ALTER TABLE chart_weeks ADD COLUMN IF NOT EXISTS chart_id INT REFERENCES charts(
 -- weeks_on_chart, is_new) and the UNIQUE(chart_week_id, rank) idempotency
 -- constraint carried over from the retired v1.0 per-chart entry tables.
 CREATE TABLE IF NOT EXISTS chart_entries (
-    id              BIGSERIAL PRIMARY KEY,
     chart_id        INT NOT NULL REFERENCES charts(id),
     chart_week_id   INT NOT NULL REFERENCES chart_weeks(id),
     song_id         INT REFERENCES songs(id),    -- exactly one of the three is non-null
@@ -144,7 +143,7 @@ CREATE TABLE IF NOT EXISTS chart_entries (
     last_pos        SMALLINT,
     weeks_on_chart  SMALLINT,
     is_new          BOOLEAN NOT NULL DEFAULT FALSE,
-    UNIQUE (chart_week_id, rank),
+    PRIMARY KEY (chart_week_id, rank),  -- natural key; the v1.0 surrogate id was dropped (migration 004)
     CHECK (num_nonnulls(song_id, album_id, artist_id) = 1)  -- one-of-three polymorphism guard
 );
 
@@ -219,7 +218,7 @@ CREATE TABLE artist_stats (
 -- the polymorphic chart_entries table — by week, by chart, and a partial index
 -- per entity FK so each lookup matches the v1.0 access pattern.
 CREATE INDEX IF NOT EXISTS idx_ce_chart ON chart_entries(chart_id);
-CREATE INDEX IF NOT EXISTS idx_ce_week ON chart_entries(chart_week_id);
+-- (no idx_ce_week: redundant with the (chart_week_id, rank) PRIMARY KEY's leading column — migration 004)
 CREATE INDEX IF NOT EXISTS idx_ce_song ON chart_entries(song_id) WHERE song_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_ce_album ON chart_entries(album_id) WHERE album_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_ce_artist ON chart_entries(artist_id) WHERE artist_id IS NOT NULL;

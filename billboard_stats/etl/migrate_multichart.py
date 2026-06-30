@@ -91,7 +91,6 @@ _DDL_STATEMENTS: List[str] = [
     "ALTER TABLE chart_weeks ADD COLUMN IF NOT EXISTS chart_id INT REFERENCES charts(id);",
     """
     CREATE TABLE IF NOT EXISTS chart_entries (
-        id              BIGSERIAL PRIMARY KEY,
         chart_id        INT NOT NULL REFERENCES charts(id),
         chart_week_id   INT NOT NULL REFERENCES chart_weeks(id),
         song_id         INT REFERENCES songs(id),
@@ -102,7 +101,7 @@ _DDL_STATEMENTS: List[str] = [
         last_pos        SMALLINT,
         weeks_on_chart  SMALLINT,
         is_new          BOOLEAN NOT NULL DEFAULT FALSE,
-        UNIQUE (chart_week_id, rank),
+        PRIMARY KEY (chart_week_id, rank),
         CHECK (num_nonnulls(song_id, album_id, artist_id) = 1)
     );
     """,
@@ -121,7 +120,7 @@ _DDL_STATEMENTS: List[str] = [
     );
     """,
     "CREATE INDEX IF NOT EXISTS idx_ce_chart ON chart_entries(chart_id);",
-    "CREATE INDEX IF NOT EXISTS idx_ce_week ON chart_entries(chart_week_id);",
+    # No idx_ce_week: redundant with the (chart_week_id, rank) PRIMARY KEY's leading column (migration 004).
     "CREATE INDEX IF NOT EXISTS idx_ce_song ON chart_entries(song_id) WHERE song_id IS NOT NULL;",
     "CREATE INDEX IF NOT EXISTS idx_ce_album ON chart_entries(album_id) WHERE album_id IS NOT NULL;",
     "CREATE INDEX IF NOT EXISTS idx_ce_artist ON chart_entries(artist_id) WHERE artist_id IS NOT NULL;",
@@ -429,7 +428,7 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 "ON ce.chart_week_id = h.chart_week_id "
                 "AND ce.rank = h.rank AND ce.song_id = h.song_id "
                 "AND ce.chart_id = (SELECT id FROM charts WHERE slug = 'hot-100') "
-                "WHERE ce.id IS NULL;",
+                "WHERE ce.chart_week_id IS NULL;",  # anti-join marker (NOT NULL when matched)
             )
             if hot100_orphans or hot100_missing:
                 raise MigrationParityError(
@@ -457,7 +456,7 @@ def migrate(conn, *, dry_run: bool = False) -> Dict[str, object]:
                 "ON ce.chart_week_id = b.chart_week_id "
                 "AND ce.rank = b.rank AND ce.album_id = b.album_id "
                 "AND ce.chart_id = (SELECT id FROM charts WHERE slug = 'billboard-200') "
-                "WHERE ce.id IS NULL;",
+                "WHERE ce.chart_week_id IS NULL;",  # anti-join marker (NOT NULL when matched)
             )
             if b200_orphans or b200_missing:
                 raise MigrationParityError(
