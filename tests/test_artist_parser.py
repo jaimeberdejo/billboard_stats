@@ -163,5 +163,71 @@ class EmptyInputTests(unittest.TestCase):
         self.assertEqual(parse_artist_credit(None), [])
 
 
+class XSeparatorLookupTests(unittest.TestCase):
+    """Regression lock for the ` X ` / ` x ` group separator.
+
+    The ` X ` separator in _GROUP_SPLIT silently shattered multi-word act names
+    into orphan fragments in production (e.g. the K-pop group "TOMORROW X
+    TOGETHER" became two artists "TOMORROW" and "TOGETHER"). Lookup-first must
+    preserve a known ` X `-containing act as ONE artist, while genuine unknown
+    ` X ` collaborations still split.
+    """
+
+    def test_unknown_x_collaboration_splits(self):
+        # Documents intended split behavior: an unknown ` X ` credit splits into
+        # two primary artists.
+        self.assertEqual(
+            parse_artist_credit("Alpha X Beta"),
+            [("Alpha", "primary"), ("Beta", "primary")],
+        )
+
+    def test_lowercase_x_collaboration_splits(self):
+        # Lowercase ` x ` is also a separator and splits into two artists.
+        self.assertEqual(
+            parse_artist_credit("Alpha x Beta"),
+            [("Alpha", "primary"), ("Beta", "primary")],
+        )
+
+    def test_known_x_act_preserved_as_single(self):
+        # THE REGRESSION: with the full name supplied via known_acts, the ` X `
+        # act is preserved as one artist instead of being shattered.
+        self.assertEqual(
+            parse_artist_credit(
+                "TOMORROW X TOGETHER", known_acts=["TOMORROW X TOGETHER"]
+            ),
+            [("TOMORROW X TOGETHER", "primary")],
+        )
+
+    def test_known_x_act_lookup_is_case_and_whitespace_insensitive(self):
+        # Casefolded, whitespace-collapsed lookup resolves a messy credit to the
+        # canonical known_act name.
+        self.assertEqual(
+            parse_artist_credit(
+                "tomorrow   x   together", known_acts=["TOMORROW X TOGETHER"]
+            ),
+            [("TOMORROW X TOGETHER", "primary")],
+        )
+
+    def test_known_x_act_primary_with_featured(self):
+        # Whole-segment lookup preserves the ` X ` act as primary; the featured
+        # artist after the Featuring split is still resolved separately.
+        self.assertEqual(
+            parse_artist_credit(
+                "TOMORROW X TOGETHER Featuring Alpha",
+                known_acts=["TOMORROW X TOGETHER"],
+            ),
+            [("TOMORROW X TOGETHER", "primary"), ("Alpha", "featured")],
+        )
+
+    def test_slash_joined_token_is_not_split(self):
+        # `/` is NOT in _GROUP_SPLIT, so a slash-joined token stays intact even
+        # without any known_acts entry (the trailing "X" has no surrounding
+        # whitespace, so the ` X ` separator never matches).
+        self.assertEqual(
+            parse_artist_credit("HUNTR/X"),
+            [("HUNTR/X", "primary")],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

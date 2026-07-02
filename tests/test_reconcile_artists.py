@@ -28,6 +28,7 @@ import re
 import unittest
 
 from billboard_stats.etl import artist_aliases
+from billboard_stats.etl import artist_parser
 from billboard_stats.etl import reconcile_artists
 from billboard_stats.etl.reconcile_artists import (
     ReconciliationInvariantError,
@@ -643,6 +644,131 @@ class ReconcileMemberArtistSafetyTests(unittest.TestCase):
         # Real member with her own credit kept.
         self.assertIsNotNone(db.artist_id("Diana Ross"))
         self.assertIsNotNone(db.artist_id("Diana Ross & The Supremes"))
+
+
+class ShatterFragmentHealingTests(unittest.TestCase):
+    """Regression for the production incident: 64 orphan fragment-artists left by
+    the OLD parser splitting real act names on ``&`` / ``,`` / `` X `` / ``and``.
+
+    Each case seeds the shattered fragment links exactly as the old parser left
+    them, then proves reconcile RE-PARSES the stored credit with the current
+    parser and heals the links onto the SINGLE canonical act, deleting the now
+    zero-link fragments — while never over-merging a real solo member that has
+    its own primary credit.
+    """
+
+    def test_blood_sweat_and_tears_shatter_heals_to_canonical_act(self):
+        # "Blood, Sweat & Tears" is a curated protected act (it lives in the
+        # parser's _PROTECTED_AMPERSAND_ACTS allowlist). The old parser split it
+        # on "," and " & " into standalone rows Blood / Sweat / Tears, each
+        # carrying the song's link. Re-parsing the stored credit yields ONLY the
+        # canonical act, so the fragments end zero-link and are deleted.
+        self.assertIn(
+            "Blood, Sweat & Tears", artist_parser._PROTECTED_AMPERSAND_ACTS
+        )
+        artists = [
+            {"id": 1, "name": "Blood, Sweat & Tears"},  # canonical act
+            {"id": 2, "name": "Blood"},  # pure shatter fragment
+            {"id": 3, "name": "Sweat"},  # pure shatter fragment
+            {"id": 4, "name": "Tears"},  # pure shatter fragment
+        ]
+        songs = [{"id": 100, "artist_credit": "Blood, Sweat & Tears"}]
+        song_artists = [
+            {"song_id": 100, "artist_id": 2, "role": "primary"},
+            {"song_id": 100, "artist_id": 3, "role": "primary"},
+            {"song_id": 100, "artist_id": 4, "role": "primary"},
+        ]
+        db = FakeDB(artists, songs, [], song_artists, [], [1, 2, 3, 4])
+        conn = FakeConn(db)
+
+        report = reconcile(conn, dry_run=False)
+
+        # The link resolves to the SINGLE canonical act, exactly once.
+        canonical = db.artist_id("Blood, Sweat & Tears")
+        self.assertEqual(db.song_artist_ids(100), [canonical])
+        # The three zero-link fragments are deleted.
+        self.assertIsNone(db.artist_id("Blood"))
+        self.assertIsNone(db.artist_id("Sweat"))
+        self.assertIsNone(db.artist_id("Tears"))
+        self.assertEqual(
+            {d["name"] for d in report["deleted_artists"]},
+            {"Blood", "Sweat", "Tears"},
+        )
+        # Fragment artist_stats rows are cleaned up; canonical stays.
+        self.assertEqual(sorted(db.artist_stats), [canonical])
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+
+    def test_x_act_from_known_acts_heals_shatter(self):
+        # A `` X `` act — "TOMORROW X TOGETHER" — shattered into TOMORROW /
+        # TOGETHER. Note: reconcile's DB-derived known-acts set only auto-covers
+        # names containing "," or " & " (see _db_known_acts), so an `` X `` act
+        # must be supplied through reconcile()'s ``known_acts`` parameter (the
+        # documented hook for exactly this). With it supplied, the credit
+        # re-parses whole and the fragments heal onto the single canonical act.
+        artists = [
+            {"id": 1, "name": "TOMORROW X TOGETHER"},  # canonical act
+            {"id": 2, "name": "TOMORROW"},  # pure shatter fragment
+            {"id": 3, "name": "TOGETHER"},  # pure shatter fragment
+        ]
+        songs = [{"id": 100, "artist_credit": "TOMORROW X TOGETHER"}]
+        song_artists = [
+            {"song_id": 100, "artist_id": 2, "role": "primary"},
+            {"song_id": 100, "artist_id": 3, "role": "primary"},
+        ]
+        db = FakeDB(artists, songs, [], song_artists, [], [1, 2, 3])
+        conn = FakeConn(db)
+
+        report = reconcile(
+            conn, dry_run=False, known_acts=["TOMORROW X TOGETHER"]
+        )
+
+        canonical = db.artist_id("TOMORROW X TOGETHER")
+        self.assertEqual(db.song_artist_ids(100), [canonical])
+        self.assertIsNone(db.artist_id("TOMORROW"))
+        self.assertIsNone(db.artist_id("TOGETHER"))
+        self.assertEqual(
+            {d["name"] for d in report["deleted_artists"]},
+            {"TOMORROW", "TOGETHER"},
+        )
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
+
+    def test_solo_member_with_own_primary_credit_survives_healing(self):
+        # Protection assertion (mirrors ReconcileMemberArtistSafetyTests): the
+        # curated act "Sonny & Cher" shatters into Sonny / Cher, but "Cher" is a
+        # genuine solo artist with her OWN primary credit. Healing must delete the
+        # pure fragment "Sonny" while KEEPING solo Cher (link-driven, not
+        # name-driven) — proving healing does not over-merge a real member.
+        artists = [
+            {"id": 1, "name": "Sonny & Cher"},  # curated act
+            {"id": 2, "name": "Sonny"},  # pure shatter fragment
+            {"id": 3, "name": "Cher"},  # genuine solo member
+        ]
+        songs = [
+            {"id": 100, "artist_credit": "Sonny & Cher"},  # shattered onto 2,3
+            {"id": 101, "artist_credit": "Cher"},  # her solo catalog
+        ]
+        song_artists = [
+            {"song_id": 100, "artist_id": 2, "role": "primary"},
+            {"song_id": 100, "artist_id": 3, "role": "primary"},
+            {"song_id": 101, "artist_id": 3, "role": "primary"},
+        ]
+        db = FakeDB(artists, songs, [], song_artists, [], [1, 2, 3])
+        conn = FakeConn(db)
+
+        reconcile(conn, dry_run=False)
+
+        # Solo Cher SURVIVES with her own solo credit intact.
+        cher = db.artist_id("Cher")
+        self.assertIsNotNone(cher)
+        self.assertEqual(db.song_artist_ids(101), [cher])
+        # The act itself is healed whole onto song 100.
+        self.assertEqual(db.song_artist_ids(100), [db.artist_id("Sonny & Cher")])
+        # The pure fragment with no standalone credit is deleted.
+        self.assertIsNone(db.artist_id("Sonny"))
+        self.assertTrue(conn.committed)
+        self.assertFalse(conn.rolled_back)
 
 
 class ReconcileCreditJustifiedAddTests(unittest.TestCase):
